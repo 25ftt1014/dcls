@@ -1,6 +1,8 @@
 package edu.pb.dcls;
 
 import javafx.animation.KeyFrame;
+import javafx.animation.FadeTransition;
+import javafx.animation.ScaleTransition;
 import javafx.animation.Timeline;
 import javafx.application.Application;
 import javafx.application.Platform;
@@ -88,6 +90,8 @@ public final class DclsApp extends Application {
     private Label trackingEta;
     private String routeNameInput = "";
     private final ObservableList<String> routeStopsDraft = FXCollections.observableArrayList();
+    private Timeline signInRipple;
+    private Runnable pendingSignIn;
 
     @Override public void start(Stage stage) {
         this.stage = stage;
@@ -156,13 +160,24 @@ public final class DclsApp extends Application {
         Label demoInfo = new Label("Demo: admin@dcls.local  ·  demo1234"); demoInfo.getStyleClass().add("muted"); demoInfo.setStyle("-fx-font-size:10px;");
         Button register = new Button("Create a new account"); register.getStyleClass().add("link-button"); register.setMaxWidth(Double.MAX_VALUE);
         Runnable signIn = () -> {
+            pendingSignIn = null;
+            submit.setDisable(true);
+            submit.setText("Signing in…");
             try {
                 currentUser = auth.login(email.getText(), password.getText().toCharArray());
                 showShell("dashboard");
-            } catch (AppException exception) { error.setText(exception.getMessage()); }
+            } catch (RuntimeException exception) {
+                error.setText(exception instanceof AppException ? exception.getMessage() : "Sign in is temporarily unavailable. Please try again.");
+                submit.setDisable(false);
+                submit.setText("Sign in");
+            }
         };
-        submit.setOnAction(event -> signIn.run());
-        password.setOnAction(event -> signIn.run());
+        submit.setOnAction(event -> {
+            if (submit.isDisabled()) return;
+            pendingSignIn = signIn;
+            playRipple(submit);
+        });
+        password.setOnAction(event -> submit.fire());
         register.setOnAction(event -> registerDialog());
         forgot.setOnAction(event -> alert(Alert.AlertType.INFORMATION, "Password reset", "For this local demo, ask an administrator to reset your account password."));
         card.getChildren().addAll(formTitle, hint, new Region(), labeled("EMAIL", email), labeled("PASSWORD", password), loginOptions, error, demoInfo, submit, register);
@@ -191,14 +206,35 @@ public final class DclsApp extends Application {
         TextField email = new TextField(); email.setPromptText("name@example.com");
         TextField phone = new TextField(); phone.setPromptText("Phone number");
         PasswordField password = new PasswordField(); password.setPromptText("At least 8 characters");
-        VBox form = new VBox(10, labeled("Full name", name), labeled("Email", email), labeled("Phone", phone), labeled("Password", password));
-        Optional<ButtonType> result = confirmDialog("Create driver account", form, "Create account");
-        if (result.isPresent() && result.get().getButtonData() == ButtonType.OK.getButtonData()) {
+        Label heading = new Label("Create your account"); heading.setStyle("-fx-font-size:20px;-fx-font-weight:700;-fx-text-fill:#172033;");
+        Label description = new Label("Join Trackify to manage your deliveries."); description.getStyleClass().add("muted");
+        Label error = new Label(); error.setWrapText(true); error.setStyle("-fx-text-fill:#9b2c24;");
+        Button create = button("Create account", "primary-button"); create.setMaxWidth(Double.MAX_VALUE);
+        Button back = new Button("Already have an account? Sign in"); back.getStyleClass().add("link-button"); back.setMaxWidth(Double.MAX_VALUE);
+        VBox form = new VBox(12, heading, description, new Region(), labeled("FULL NAME", name), labeled("EMAIL", email), labeled("PHONE NUMBER", phone), labeled("PASSWORD", password), error, create, back);
+        form.setPadding(new Insets(24)); form.setPrefWidth(338); form.setMinWidth(338); form.getStyleClass().add("login-card");
+        Stage registration = new Stage(); registration.initOwner(stage); registration.initModality(Modality.WINDOW_MODAL); registration.setTitle("Create your account");
+        HBox frame = new HBox(0); frame.setAlignment(Pos.CENTER); frame.setMaxSize(742, 432); frame.setPrefSize(742, 432);
+        VBox introduction = new VBox(0); introduction.setPrefWidth(404); introduction.setMinWidth(404); introduction.setPadding(new Insets(24, 32, 24, 32)); introduction.getStyleClass().add("login-brand-panel");
+        Label brand = new Label("Trackify"); brand.setStyle("-fx-font-size:21px;-fx-font-weight:800;-fx-text-fill:white;");
+        Label subtitle = new Label("Delivery Logistics Simulator"); subtitle.setStyle("-fx-font-size:11px;-fx-text-fill:#d1d9eb;");
+        Label slogan = new Label("MOVE SMARTER"); slogan.setStyle("-fx-font-size:22px;-fx-font-weight:800;-fx-text-fill:white;");
+        Label sloganText = new Label("Plan, dispatch, and monitor every delivery."); sloganText.setWrapText(true); sloganText.setStyle("-fx-font-size:10px;-fx-text-fill:#d1d9eb;");
+        Region topGap = new Region(); VBox.setVgrow(topGap, ALWAYS); Region bottomGap = new Region(); VBox.setVgrow(bottomGap, ALWAYS);
+        VBox message = new VBox(4, slogan, sloganText); message.setAlignment(Pos.CENTER);
+        introduction.getChildren().addAll(new VBox(2, brand, subtitle), topGap, message, bottomGap);
+        frame.getChildren().addAll(introduction, form);
+        BorderPane page = new BorderPane(); page.getStyleClass().add("login-background"); page.setCenter(frame);
+        Scene scene = new Scene(page, 900, 560); scene.getStylesheets().add(getClass().getResource("/edu/pb/dcls/styles.css").toExternalForm()); registration.setScene(scene);
+        Runnable submit = () -> {
             try {
                 currentUser = auth.register(name.getText(), email.getText(), phone.getText(), password.getText().toCharArray());
-                showShell("dashboard");
-            } catch (AppException exception) { alert(Alert.AlertType.WARNING, "Account not created", exception.getMessage()); }
-        }
+                registration.close(); showShell("dashboard");
+            } catch (AppException exception) { error.setText(exception.getMessage()); }
+        };
+        create.setOnAction(event -> submit.run()); password.setOnAction(event -> submit.run());
+        back.setOnAction(event -> registration.close());
+        registration.showAndWait();
     }
 
     private void showShell(String page) {
@@ -880,6 +916,22 @@ public final class DclsApp extends Application {
     private VBox panel(Node heading) { VBox box = new VBox(13); box.setPadding(new Insets(16)); box.getStyleClass().add("panel"); box.getChildren().add(heading); return box; }
     private HBox labeled(String label, Node control) { VBox item = new VBox(5); Label text = new Label(label); text.getStyleClass().add("eyebrow"); item.getChildren().addAll(text, control); return new HBox(item); }
     private Button button(String text, String style) { Button button = new Button(text); button.getStyleClass().add(style); return button; }
+
+    private void playRipple(Button target) {
+        if (signInRipple != null) signInRipple.stop();
+        ScaleTransition press = new ScaleTransition(Duration.millis(90), target);
+        press.setFromX(1); press.setFromY(1); press.setToX(.975); press.setToY(.94);
+        ScaleTransition release = new ScaleTransition(Duration.millis(150), target);
+        release.setFromX(.975); release.setFromY(.94); release.setToX(1); release.setToY(1);
+        signInRipple = new Timeline(new KeyFrame(Duration.ZERO), new KeyFrame(Duration.millis(90)));
+        signInRipple.setOnFinished(event -> {
+            release.playFromStart();
+            Runnable action = pendingSignIn;
+            if (action != null) action.run();
+        });
+        press.playFromStart();
+        signInRipple.playFromStart();
+    }
     private GridPane formGrid() { GridPane grid = new GridPane(); grid.setHgap(12); grid.setVgap(10); ColumnConstraints left = new ColumnConstraints(145), right = new ColumnConstraints(280); grid.getColumnConstraints().addAll(left, right); return grid; }
     private void addField(GridPane grid, int row, String label, Node field) { grid.add(new Label(label), 0, row); grid.add(field, 1, row); if (field instanceof Region region) region.setMaxWidth(Double.MAX_VALUE); }
 
