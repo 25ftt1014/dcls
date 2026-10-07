@@ -165,9 +165,24 @@ public final class DclsApp extends Application {
             submit.setText("Signing in…");
             try {
                 currentUser = auth.login(email.getText(), password.getText().toCharArray());
+            } catch (AppException exception) {
+                error.setText(exception.getMessage());
+                submit.setDisable(false);
+                submit.setText("Sign in");
+                return;
+            } catch (RuntimeException exception) {
+                exception.printStackTrace();
+                error.setText("Sign in is temporarily unavailable. Please try again.");
+                submit.setDisable(false);
+                submit.setText("Sign in");
+                return;
+            }
+            try {
                 showShell("dashboard");
             } catch (RuntimeException exception) {
-                error.setText(exception instanceof AppException ? exception.getMessage() : "Sign in is temporarily unavailable. Please try again.");
+                exception.printStackTrace();
+                currentUser = null;
+                error.setText("Your account was verified, but the dashboard could not be opened. Please restart the app.");
                 submit.setDisable(false);
                 submit.setText("Sign in");
             }
