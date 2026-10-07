@@ -1,0 +1,11 @@
+target/
+.maven-repository/
+.idea/
+.vscode/
+*.iml
+application.properties
+config/application.properties
+*.log
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/graft/
