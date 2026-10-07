@@ -16,6 +16,7 @@ import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.control.Alert;
 import javafx.scene.control.Button;
 import javafx.scene.control.ButtonType;
+import javafx.scene.control.CheckBox;
 import javafx.scene.control.ChoiceBox;
 import javafx.scene.control.ComboBox;
 import javafx.scene.control.DatePicker;
@@ -39,6 +40,8 @@ import javafx.scene.layout.HBox;
 import javafx.scene.layout.Region;
 import javafx.scene.layout.StackPane;
 import javafx.scene.layout.VBox;
+import javafx.scene.image.Image;
+import javafx.scene.image.ImageView;
 import javafx.stage.Modality;
 import javafx.stage.Stage;
 import javafx.util.Duration;
@@ -79,6 +82,7 @@ public final class DclsApp extends Application {
     private Label pageHeading;
     private Label dataModeLabel;
     private String activePage = "dashboard";
+    private String fleetRecordsView = "vehicles";
     private Timeline trackingTimer;
     private Canvas trackingCanvas;
     private Label trackingEta;
@@ -119,42 +123,38 @@ public final class DclsApp extends Application {
         stopTracking();
         BorderPane page = new BorderPane();
         page.getStyleClass().add("login-background");
-        HBox frame = new HBox(44);
+        HBox frame = new HBox(0);
         frame.setAlignment(Pos.CENTER);
-        frame.setPadding(new Insets(40));
+        frame.setMaxSize(742, 432);
+        frame.setPrefSize(742, 432);
+        VBox introduction = new VBox(0); introduction.setPrefWidth(404); introduction.setMinWidth(404); introduction.setPadding(new Insets(24, 50, 24, 50));
+        introduction.getStyleClass().add("login-brand-panel");
+        Label brand = new Label("Trackify"); brand.setStyle("-fx-font-size: 21px;-fx-font-weight:800;-fx-text-fill:white;");
+        Label subtitle = new Label("Delivery Logistics Simulator"); subtitle.setStyle("-fx-font-size:11px;-fx-text-fill:#d1d9eb;");
+        VBox brandLine = new VBox(2, brand, subtitle);
+        Region brandGap = new Region(); VBox.setVgrow(brandGap, ALWAYS);
+        VBox statement = new VBox(3); statement.setAlignment(Pos.CENTER);
+        Label title = new Label("MOVE SMARTER"); title.setStyle("-fx-font-size:22px;-fx-font-weight:800;-fx-text-fill:white;");
+        Label body = new Label("Plan, dispatch, and monitor every delivery."); body.setStyle("-fx-font-size:10px;-fx-text-fill:#d1d9eb;");
+        statement.getChildren().addAll(title, body);
+        Region brandGap2 = new Region(); VBox.setVgrow(brandGap2, ALWAYS);
+        introduction.getChildren().addAll(brandLine, brandGap, statement, brandGap2);
 
-        VBox introduction = new VBox(20);
-        introduction.setMaxWidth(410);
-        Label brand = new Label("DCLS");
-        brand.setStyle("-fx-font-size: 16px; -fx-font-weight: 800; -fx-text-fill: #1457c5;");
-        Label title = new Label("Keep every delivery\nmoving with purpose.");
-        title.setStyle("-fx-font-size: 32px; -fx-font-weight: 700; -fx-text-fill: #172033;");
-        Label body = new Label("A clear view of your fleet, routes, and orders — from dispatch to delivery.");
-        body.setWrapText(true);
-        body.getStyleClass().add("muted");
-        body.setStyle("-fx-font-size: 15px;");
-        VBox preview = new VBox(13,
-                previewRow("Fleet readiness", "12 vehicles available", "#e8f5ef", "#17613f"),
-                previewRow("Delivery in progress", "08 active shipments", "#eaf1ff", "#174c9a"),
-                previewRow("Needs attention", "02 service reminders", "#fff4df", "#7a5100"));
-        preview.setPadding(new Insets(17));
-        preview.getStyleClass().add("panel");
-        introduction.getChildren().addAll(brand, title, body, preview);
-
-        VBox card = new VBox(15);
-        card.setMaxWidth(370);
-        card.setPadding(new Insets(30));
+        VBox card = new VBox(13);
+        card.setPrefWidth(338); card.setMinWidth(338);
+        card.setPadding(new Insets(35, 30, 28, 30));
         card.getStyleClass().add("login-card");
-        Label formTitle = new Label("Sign in to your workspace");
-        formTitle.setStyle("-fx-font-size: 20px; -fx-font-weight: 700;");
-        Label hint = new Label("Use your DCLS account to continue."); hint.getStyleClass().add("muted");
+        Label formTitle = new Label("Welcome back"); formTitle.setStyle("-fx-font-size:20px;-fx-font-weight:700;-fx-text-fill:#172033;");
+        Label hint = new Label("Sign in to continue"); hint.getStyleClass().add("muted");
         TextField email = new TextField(DEMO_EMAIL); email.setPromptText("Email address"); email.setAccessibleText("Email address");
         PasswordField password = new PasswordField(); password.setText(DEMO_PASSWORD); password.setPromptText("Password"); password.setAccessibleText("Password");
+        CheckBox remember = new CheckBox("Remember me"); remember.getStyleClass().add("muted");
+        Button forgot = new Button("Forgot password?"); forgot.getStyleClass().add("link-button");
+        HBox loginOptions = new HBox(8, remember, new Region(), forgot); loginOptions.setAlignment(Pos.CENTER_LEFT); HBox.setHgrow(loginOptions.getChildren().get(1), ALWAYS);
         Label error = new Label(); error.setWrapText(true); error.setStyle("-fx-text-fill: #9b2c24;");
         Button submit = button("Sign in", "primary-button"); submit.setMaxWidth(Double.MAX_VALUE);
-        Button useDemo = button("Use demo account", "secondary-button"); useDemo.setMaxWidth(Double.MAX_VALUE);
-        Label demoInfo = new Label("Demo: admin@dcls.local  ·  demo1234"); demoInfo.getStyleClass().add("muted");
-        Button register = button("Create a driver account", "secondary-button"); register.setMaxWidth(Double.MAX_VALUE);
+        Label demoInfo = new Label("Demo: admin@dcls.local  ·  demo1234"); demoInfo.getStyleClass().add("muted"); demoInfo.setStyle("-fx-font-size:10px;");
+        Button register = new Button("Create a new account"); register.getStyleClass().add("link-button"); register.setMaxWidth(Double.MAX_VALUE);
         Runnable signIn = () -> {
             try {
                 currentUser = auth.login(email.getText(), password.getText().toCharArray());
@@ -163,10 +163,9 @@ public final class DclsApp extends Application {
         };
         submit.setOnAction(event -> signIn.run());
         password.setOnAction(event -> signIn.run());
-        useDemo.setOnAction(event -> { email.setText(DEMO_EMAIL); password.setText(DEMO_PASSWORD); signIn.run(); });
         register.setOnAction(event -> registerDialog());
-        card.getChildren().addAll(formTitle, hint, labeled("Email", email), labeled("Password", password), error, submit, useDemo,
-                new Separator(), demoInfo, register);
+        forgot.setOnAction(event -> alert(Alert.AlertType.INFORMATION, "Password reset", "For this local demo, ask an administrator to reset your account password."));
+        card.getChildren().addAll(formTitle, hint, new Region(), labeled("EMAIL", email), labeled("PASSWORD", password), loginOptions, error, demoInfo, submit, register);
         frame.getChildren().addAll(introduction, card);
         page.setCenter(frame);
         Scene scene = new Scene(page);
@@ -223,9 +222,8 @@ public final class DclsApp extends Application {
         VBox sidebar = new VBox(7);
         sidebar.setPrefWidth(72); sidebar.setMinWidth(72); sidebar.setPadding(new Insets(15, 8, 8, 8));
         sidebar.getStyleClass().add("sidebar");
-        Label mark = new Label("◇");
-        mark.setMinSize(36, 36); mark.setAlignment(Pos.CENTER);
-        mark.setStyle("-fx-background-color: #176df6; -fx-background-radius: 9; -fx-text-fill: white; -fx-font-size: 21px; -fx-font-weight: 800;");
+        ImageView mark = new ImageView(new Image(getClass().getResourceAsStream("/edu/pb/dcls/Logo.svg")));
+        mark.setFitWidth(36); mark.setFitHeight(36); mark.setPreserveRatio(true);
         VBox markWrap = new VBox(mark); markWrap.setAlignment(Pos.CENTER); markWrap.setPadding(new Insets(0, 0, 17, 0));
         sidebar.getChildren().add(markWrap);
         addNav(sidebar, "dashboard", "▦", "Dashboard");
@@ -235,8 +233,9 @@ public final class DclsApp extends Application {
         addNav(sidebar, "routes", "⌁", "Route planning");
         addNav(sidebar, "tracking", "◉", "Live tracking");
         Region spacer = new Region(); VBox.setVgrow(spacer, ALWAYS); sidebar.getChildren().add(spacer);
-        Button settings = button("Setting  ›", "settings-button"); settings.setMaxWidth(Double.MAX_VALUE); settings.setAccessibleText("Settings and profile");
-        settings.setOnAction(event -> profileDialog()); sidebar.getChildren().add(settings);
+        MenuButton settings = new MenuButton("Setting  ›"); settings.setMaxWidth(Double.MAX_VALUE); settings.setAccessibleText("Settings and profile"); settings.getStyleClass().add("settings-button");
+        settings.getItems().addAll(menu("My profile", this::profileDialog), menu("Change password", this::passwordDialog), menu("Sign out", () -> { stopTracking(); currentUser = null; showLogin(); }));
+        sidebar.getChildren().add(settings);
         return sidebar;
     }
 
@@ -254,12 +253,9 @@ public final class DclsApp extends Application {
         HBox bar = new HBox(10); bar.setAlignment(Pos.CENTER_LEFT); bar.setPadding(new Insets(9, 24, 9, 24)); bar.getStyleClass().add("topbar");
         Label back = new Label("‹"); back.setStyle("-fx-font-size: 21px; -fx-text-fill: #172033;");
         Label title = new Label(activePage.equals("dashboard") ? "Dashboard" : pageLabel(activePage)); title.setStyle("-fx-font-size: 16px; -fx-font-weight: 700;");
-        dataModeLabel = new Label(repository.persistent() ? "MySQL" : "Demo data");
-        dataModeLabel.setStyle("-fx-text-fill: #7a8698; -fx-font-size: 11px;");
+        dataModeLabel = new Label("");
         Region spacer = new Region(); HBox.setHgrow(spacer, ALWAYS);
-        MenuButton account = new MenuButton(currentUser.name() + "  ·  " + currentUser.role().label());
-        account.getItems().addAll(menu("My profile", this::profileDialog), menu("Change password", this::passwordDialog), menu("Sign out", () -> { stopTracking(); currentUser = null; showLogin(); }));
-        bar.getChildren().addAll(back, title, spacer, dataModeLabel, account);
+        bar.getChildren().addAll(back, title, spacer);
         return bar;
     }
 
@@ -290,7 +286,7 @@ public final class DclsApp extends Application {
         List<Vehicle> vehicleRows = currentUser.role() == Role.DRIVER
                 ? repository.vehicles().stream().filter(v -> currentUser.id().equals(v.driverId())).toList()
                 : repository.vehicles();
-        long active = shipmentRows.stream().filter(s -> s.status() == OrderStatus.IN_TRANSIT).count();
+        long active = shipmentRows.stream().filter(s -> s.status() == OrderStatus.ASSIGNED || s.status() == OrderStatus.IN_TRANSIT).count();
         long pending = shipmentRows.stream().filter(s -> s.status() == OrderStatus.PENDING).count();
         long completed = shipmentRows.stream().filter(s -> s.status() == OrderStatus.DELIVERED).count();
         VBox page = pageHeader("", ""); page.setSpacing(18); page.setPadding(new Insets(18, 20, 20, 58));
@@ -301,7 +297,7 @@ public final class DclsApp extends Application {
                 metric("Completed today", String.valueOf(completed), ""));
         for (Node node : metrics.getChildren()) HBox.setHgrow(node, ALWAYS);
         VBox mapPanel = panel(new Label("Operations map")); ((Label) mapPanel.getChildren().get(0)).getStyleClass().add("section-title");
-        Canvas map = mapCanvas(455, 210);
+        Canvas map = mapCanvas(430, 210);
         if (!repository.routes().isEmpty()) drawRoute(map, repository.routes().getFirst().stops(), null); else drawDashboardRoads(map);
         mapPanel.getChildren().add(map);
         VBox activity = panel(new Label("Active deliveries")); ((Label) activity.getChildren().get(0)).getStyleClass().add("section-title");
@@ -347,12 +343,15 @@ public final class DclsApp extends Application {
     }
 
     private VBox fleetPage() {
-        VBox page = pageHeader("Fleet & vehicles", "Manage vehicle availability, assignments, and service records.");
-        TabPane tabs = new TabPane(); tabs.setTabClosingPolicy(TabPane.TabClosingPolicy.UNAVAILABLE);
-        tabs.getTabs().add(new Tab("Vehicles", vehiclesTab()));
-        tabs.getTabs().add(new Tab("Maintenance", maintenanceTab()));
-        tabs.getTabs().add(new Tab("Fuel records", fuelTab()));
-        page.getChildren().add(tabs); VBox.setVgrow(tabs, ALWAYS);
+        VBox page = pageHeader("Fleet", "Manage vehicle availability, assignments, and service records.");
+        HBox recordLinks = new HBox(8); recordLinks.setAlignment(Pos.CENTER_RIGHT);
+        Button maintenance = button("Maintenance records", "secondary-button"); maintenance.setOnAction(event -> { page.getChildren().setAll(recordLinks, maintenanceTab()); });
+        Button fuelRecords = button("Fuel records", "secondary-button"); fuelRecords.setOnAction(event -> { page.getChildren().setAll(recordLinks, fuelTab()); });
+        Button vehicles = button("‹  Fleet inventory", "secondary-button"); vehicles.setOnAction(event -> { fleetRecordsView="vehicles"; showPage("fleet"); });
+        recordLinks.getChildren().addAll(vehicles, maintenance, fuelRecords);
+        if (fleetRecordsView.equals("maintenance")) page.getChildren().addAll(recordLinks, maintenanceTab());
+        else if (fleetRecordsView.equals("fuel")) page.getChildren().addAll(recordLinks, fuelTab());
+        else page.getChildren().add(vehiclesTab());
         return page;
     }
 
@@ -364,7 +363,14 @@ public final class DclsApp extends Application {
         filter.getItems().add(0, null); filter.setValue(null); filter.setConverter(new StringConverter<>() { public String toString(VehicleStatus value) { return value == null ? "All statuses" : value.label(); } public VehicleStatus fromString(String value) { return null; } });
         Region gap = new Region(); HBox.setHgrow(gap, ALWAYS);
         Button add = button("Add vehicle", "primary-button"); add.setDisable(!access.canManageFleet(currentUser.role())); add.setOnAction(event -> vehicleDialog(null));
-        tools.getChildren().addAll(search, filter, gap, add);
+        MenuButton records = new MenuButton("Records");
+        records.getItems().addAll(menu("Maintenance", () -> { fleetRecordsView="maintenance"; showPage("fleet"); }), menu("Fuel records", () -> { fleetRecordsView="fuel"; showPage("fleet"); }));
+        MenuButton filters = new MenuButton("Filter");
+        MenuItem allStatuses = new MenuItem("All statuses"); allStatuses.setOnAction(event -> filter.setValue(null));
+        filters.getItems().add(allStatuses);
+        for (VehicleStatus value : VehicleStatus.values()) filters.getItems().add(menu(value.label(), () -> { filter.setValue(value); filters.setText(value.label()); }));
+        allStatuses.setOnAction(event -> { filter.setValue(null); filters.setText("Filter"); });
+        tools.getChildren().addAll(search, gap, filters, records, add);
         TableView<Vehicle> table = vehicleTable();
         Runnable refresh = () -> {
             String q = search.getText() == null ? "" : search.getText().toLowerCase(Locale.ROOT).trim();
@@ -374,7 +380,7 @@ public final class DclsApp extends Application {
                     .toList(); table.setItems(FXCollections.observableArrayList(rows));
         };
         search.textProperty().addListener((observable, oldValue, newValue) -> refresh.run()); filter.valueProperty().addListener((observable, oldValue, newValue) -> refresh.run());
-        refresh.run(); table.setPrefHeight(360);
+        refresh.run(); table.setPrefHeight(330);
         HBox actions = new HBox(8);
         Button edit = button("Edit", "secondary-button"), status = button("Change status", "secondary-button"), remove = button("Delete", "danger-button");
         edit.setDisable(!access.canManageFleet(currentUser.role())); status.setDisable(!access.canManageFleet(currentUser.role())); remove.setDisable(currentUser.role() != Role.ADMIN);
@@ -383,18 +389,17 @@ public final class DclsApp extends Application {
         remove.setOnAction(event -> { Vehicle selected = table.getSelectionModel().getSelectedItem(); if (selected != null && confirm("Delete vehicle?", "This action is available only for vehicles without shipment history.")) { try { repository.deleteVehicle(selected.id()); refresh.run(); } catch (RuntimeException ex) { alert(Alert.AlertType.WARNING, "Vehicle is in use", "This vehicle is linked to an order. Set it to Unavailable instead."); } } });
         Label reminders = new Label(fleet.maintenanceDue().size() + " service reminder(s) based on current mileage"); reminders.getStyleClass().add("muted");
         actions.getChildren().addAll(edit, status, remove, new Region(), reminders);
-        content.getChildren().addAll(tools, table, actions); VBox.setVgrow(table, ALWAYS);
+        VBox inventory = panel(new Label("Fleet inventory")); ((Label)inventory.getChildren().get(0)).getStyleClass().add("section-title");
+        inventory.getChildren().addAll(table, actions); VBox.setVgrow(table, ALWAYS);
+        content.getChildren().addAll(tools, inventory); VBox.setVgrow(inventory, ALWAYS);
         return content;
     }
 
     private TableView<Vehicle> vehicleTable() {
         TableView<Vehicle> table = new TableView<>(); table.setPlaceholder(new Label("No vehicles match this search."));
-        table.getColumns().add(textCol("Plate", Vehicle::plate, 100));
-        table.getColumns().add(textCol("Model", Vehicle::model, 160));
-        table.getColumns().add(textCol("Type", Vehicle::type, 110));
-        table.getColumns().add(textCol("Capacity", v -> String.format("%.0f kg", v.capacityKg()), 90));
-        table.getColumns().add(textCol("Driver", v -> driverName(v.driverId()), 140));
-        table.getColumns().add(textCol("Mileage", v -> String.format("%,.0f km", v.mileageKm()), 100));
+        table.getColumns().add(textCol("Plate", Vehicle::plate, 110));
+        table.getColumns().add(textCol("Vehicle", Vehicle::model, 180));
+        table.getColumns().add(textCol("Driver", v -> driverName(v.driverId()), 150));
         table.getColumns().add(textCol("Status", v -> v.status().label(), 140));
         table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY);
         return table;
@@ -431,7 +436,7 @@ public final class DclsApp extends Application {
     private VBox ordersPage() {
         VBox page = pageHeader("Orders & shipments", "Follow each delivery from intake through customer confirmation.");
         HBox tools = new HBox(9); tools.setAlignment(Pos.CENTER_LEFT);
-        TextField search = new TextField(); search.setPromptText("Order ID, customer, phone, or address"); search.setPrefWidth(310); search.setAccessibleText("Search orders");
+        TextField search = new TextField(); search.setPromptText("Search order or customer..."); search.setPrefWidth(310); search.setAccessibleText("Search orders");
         ChoiceBox<OrderStatus> statusFilter = enumFilter(OrderStatus.values(), "All statuses");
         ChoiceBox<Priority> priorityFilter = enumFilter(Priority.values(), "All priorities");
         Region gap = new Region(); HBox.setHgrow(gap, ALWAYS);
@@ -459,19 +464,36 @@ public final class DclsApp extends Application {
         advance.setOnAction(event -> { Shipment selected = table.getSelectionModel().getSelectedItem(); if (selected != null) advanceShipment(selected, refresh); });
         cancel.setOnAction(event -> { Shipment selected = table.getSelectionModel().getSelectedItem(); if (selected != null && confirm("Cancel order", "Cancel " + selected.id() + "?")) { runAction(() -> orders.transition(selected, OrderStatus.CANCELLED, currentUser), "Order cancelled."); refresh.run(); } });
         actions.getChildren().addAll(edit, assign, advance, cancel);
-        page.getChildren().addAll(tools, table, actions); VBox.setVgrow(table, ALWAYS); return page;
+        VBox list = panel(new Label("Orders")); ((Label)list.getChildren().get(0)).getStyleClass().add("section-title");
+        table.setPrefWidth(475); table.setPrefHeight(335); list.getChildren().addAll(table, actions); VBox.setVgrow(table, ALWAYS);
+        VBox detail = panel(new Label("Order details")); ((Label)detail.getChildren().get(0)).getStyleClass().add("section-title"); detail.setPrefWidth(230); detail.setMinWidth(215);
+        Shipment initial = table.getItems().isEmpty() ? null : table.getItems().getFirst();
+        showShipmentDetails(detail, initial);
+        table.getSelectionModel().selectedItemProperty().addListener((o, old, selected) -> showShipmentDetails(detail, selected));
+        HBox body = new HBox(14, list, detail); HBox.setHgrow(list, ALWAYS);
+        page.getChildren().addAll(tools, body); VBox.setVgrow(body, ALWAYS); return page;
+    }
+
+    private void showShipmentDetails(VBox panel, Shipment shipment) {
+        while (panel.getChildren().size() > 1) panel.getChildren().removeLast();
+        if (shipment == null) { panel.getChildren().add(new Label("Select an order to see its details.")); return; }
+        Label orderId=new Label(shipment.id()); orderId.setStyle("-fx-font-size:16px;-fx-font-weight:700;");
+        panel.getChildren().addAll(orderId, detailField("Customer", shipment.customerName()), detailField("Phone", shipment.customerContact()),
+                detailField("Driver / vehicle", driverName(shipment.driverId())+" · "+vehiclePlate(shipment.vehicleId())),
+                detailField("Shipment", shipment.quantity()+" packages · "+shipment.weightKg()+" kg"), detailField("Status", shipment.status().label()));
+        Button trackingButton=button("Open tracking", "primary-button"); trackingButton.setMaxWidth(Double.MAX_VALUE);
+        trackingButton.setOnAction(event -> showPage("tracking")); panel.getChildren().add(trackingButton);
+    }
+
+    private Node detailField(String title, String value) {
+        VBox box=new VBox(4); Label heading=new Label(title); heading.getStyleClass().add("eyebrow"); Label content=new Label(value==null||value.isBlank()?"—":value); content.setWrapText(true); content.getStyleClass().add("detail-value"); box.getChildren().addAll(heading,content); return box;
     }
 
     private TableView<Shipment> shipmentTable() {
         TableView<Shipment> table = new TableView<>(); table.setPlaceholder(new Label("No orders match this search."));
-        table.getColumns().add(textCol("Order", Shipment::id, 105));
-        table.getColumns().add(textCol("Customer", Shipment::customerName, 140));
-        table.getColumns().add(textCol("Destination", Shipment::address, 210));
-        table.getColumns().add(textCol("Priority", s -> s.priority().label(), 85));
-        table.getColumns().add(textCol("Driver", s -> driverName(s.driverId()), 120));
-        table.getColumns().add(textCol("Vehicle", s -> vehiclePlate(s.vehicleId()), 100));
-        table.getColumns().add(textCol("Status", s -> s.status().label(), 100));
-        table.getColumns().add(textCol("Received", s -> s.createdAt().format(DATE_TIME), 120));
+        table.getColumns().add(textCol("Order", Shipment::id, 115));
+        table.getColumns().add(textCol("Customer", Shipment::customerName, 190));
+        table.getColumns().add(textCol("Status", s -> s.status().label(), 110));
         table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY);
         return table;
     }
@@ -488,19 +510,35 @@ public final class DclsApp extends Application {
         addStop.setOnAction(event -> { if (place.getValue() != null && !routeStopsDraft.contains(place.getValue())) routeStopsDraft.add(place.getValue()); });
         if (routeStopsDraft.isEmpty()) routeStopsDraft.add("DCLS Depot");
         ComboBox<User> driver = driverCombo(); driver.setPromptText("Assign driver (optional)");
-        Button optimize = button("Optimize route", "primary-button");
+        Button optimize = button("Optimize route", "secondary-button");
+        Button saveAssign = button("Save & assign", "primary-button");
         Label routeResult = new Label("Add at least one delivery stop after the depot."); routeResult.getStyleClass().add("muted"); routeResult.setWrapText(true);
-        Canvas preview = mapCanvas(620, 330);
-        optimize.setOnAction(event -> {
+        Canvas preview = mapCanvas(430, 330);
+        final RoutePlan[] planned = {null};
+        final boolean[] saved = {false};
+        Runnable optimizeRoute = () -> {
             try {
-                RoutePlan plan = routeService.optimize(name.getText(), new ArrayList<>(routeStopsDraft), driver.getValue());
+                List<String> orderedNames = new ArrayList<>(routeStopsDraft);
+                RoutePlan plan = routeService.optimize(name.getText(), orderedNames, null);
+                planned[0] = plan; saved[0] = false;
                 routeResult.setText(String.format("%s  ·  %.1f km  ·  about %d minutes", plan.name(), plan.distanceKm(), plan.estimatedMinutes()));
                 drawRoute(preview, plan.stops(), null);
-                showPage("routes");
             } catch (AppException exception) { alert(Alert.AlertType.WARNING, "Route not created", exception.getMessage()); }
+        };
+        optimize.setOnAction(event -> optimizeRoute.run());
+        saveAssign.setOnAction(event -> {
+            if (planned[0] == null) { optimizeRoute.run(); return; }
+            if (driver.getValue() == null) { alert(Alert.AlertType.INFORMATION, "Choose a driver", "Select a driver before saving and assigning this route."); return; }
+            if (!saved[0]) {
+                RoutePlan route = planned[0];
+                planned[0] = new RoutePlan(route.id(), route.name(), driver.getValue().id(), route.stops(), route.distanceKm(), route.estimatedMinutes(), route.completed(), route.createdAt());
+                repository.saveRoute(planned[0]); saved[0] = true;
+            }
+            alert(Alert.AlertType.INFORMATION, "Route assigned", "Route " + planned[0].name() + " has been saved and assigned to " + driver.getValue().name() + ".");
+            showPage("routes");
         });
-        controls.getChildren().addAll(new Label("Name"), name, new Label("Add a depot and stops"), place, addStop, draft, driver, optimize, routeResult);
-        controls.setPrefWidth(285); VBox.setVgrow(draft, ALWAYS);
+        controls.getChildren().addAll(new Label("Pickup location"), place, new Label("Delivery stops"), draft, addStop, driver, optimize, saveAssign, routeResult);
+        controls.setPrefWidth(260); controls.setMinWidth(250); VBox.setVgrow(draft, ALWAYS);
         VBox mapPanel = panel(new Label("Route preview")); ((Label) mapPanel.getChildren().get(0)).getStyleClass().add("section-title"); mapPanel.getChildren().add(preview);
         builder.getChildren().addAll(controls, mapPanel); HBox.setHgrow(mapPanel, ALWAYS);
         VBox history = panel(new Label("Route history")); ((Label) history.getChildren().get(0)).getStyleClass().add("section-title");
@@ -519,7 +557,7 @@ public final class DclsApp extends Application {
 
     private VBox trackingPage() {
         VBox page = pageHeader("Real-time tracking", "Live positions are simulated along assigned routes. No GPS data is used.");
-        trackingCanvas = mapCanvas(700, 430);
+        trackingCanvas = mapCanvas(470, 350);
         VBox map = panel(new Label("Fleet map  ·  Brunei-Muara")); ((Label) map.getChildren().get(0)).getStyleClass().add("section-title"); map.getChildren().add(trackingCanvas);
         VBox active = panel(new Label("Active deliveries")); ((Label) active.getChildren().get(0)).getStyleClass().add("section-title");
         trackingEta = new Label("Select a delivery to view its latest estimate."); trackingEta.getStyleClass().add("muted"); trackingEta.setWrapText(true);
@@ -532,7 +570,7 @@ public final class DclsApp extends Application {
         table.setItems(FXCollections.observableArrayList(activeShipments)); table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY); table.setPrefHeight(300);
         table.getSelectionModel().selectedItemProperty().addListener((o, old, selected) -> showEta(selected));
         active.getChildren().addAll(table, trackingEta);
-        HBox content = new HBox(12, map, active); HBox.setHgrow(map, ALWAYS); active.setPrefWidth(410);
+        HBox content = new HBox(12, map, active); HBox.setHgrow(map, ALWAYS); active.setPrefWidth(230); active.setMinWidth(220);
         page.getChildren().add(content);
         drawTracking();
         return page;
@@ -827,18 +865,16 @@ public final class DclsApp extends Application {
     }
 
     private VBox pageHeader(String title, String subtitle) {
-        VBox page = new VBox(17); page.setPadding(new Insets(26, 28, 28, 28)); page.getStyleClass().add("workspace");
-        Label heading = new Label(title); heading.getStyleClass().add("page-title");
-        Label description = new Label(subtitle); description.getStyleClass().add("muted");
-        page.getChildren().addAll(new VBox(4, heading, description)); return page;
+        VBox page = new VBox(14); page.setPadding(new Insets(15, 20, 22, 58)); page.getStyleClass().add("workspace");
+        return page;
     }
 
     private Node metric(String title, String value, String caption) {
-        VBox card = new VBox(8); card.setPadding(new Insets(16)); card.setMinWidth(140); card.getStyleClass().add("panel-tight");
+        VBox card = new VBox(8); card.setPadding(new Insets(12, 14, 12, 14)); card.setMinWidth(140); card.setPrefHeight(80); card.getStyleClass().add("panel-tight");
         Label t = new Label(title); t.getStyleClass().add("metric-caption");
         Label v = new Label(value); v.getStyleClass().add("metric-value");
         Label c = new Label(caption); c.getStyleClass().add("muted"); c.setStyle("-fx-font-size: 11px;");
-        card.getChildren().addAll(t, v, c); return card;
+        card.getChildren().addAll(t, v); if (caption != null && !caption.isBlank()) card.getChildren().add(c); return card;
     }
 
     private VBox panel(Node heading) { VBox box = new VBox(13); box.setPadding(new Insets(16)); box.getStyleClass().add("panel"); box.getChildren().add(heading); return box; }
