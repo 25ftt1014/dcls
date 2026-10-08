@@ -49,6 +49,7 @@ import javafx.stage.Stage;
 import javafx.util.Duration;
 import javafx.util.StringConverter;
 
+import java.io.InputStream;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -273,10 +274,13 @@ public final class DclsApp extends Application {
         VBox sidebar = new VBox(7);
         sidebar.setPrefWidth(72); sidebar.setMinWidth(72); sidebar.setPadding(new Insets(15, 8, 8, 8));
         sidebar.getStyleClass().add("sidebar");
-        ImageView mark = new ImageView(new Image(getClass().getResourceAsStream("/edu/pb/dcls/Logo.svg")));
-        mark.setFitWidth(36); mark.setFitHeight(36); mark.setPreserveRatio(true);
-        VBox markWrap = new VBox(mark); markWrap.setAlignment(Pos.CENTER); markWrap.setPadding(new Insets(0, 0, 17, 0));
-        sidebar.getChildren().add(markWrap);
+        InputStream logo = getClass().getResourceAsStream("/edu/pb/dcls/Logo.svg");
+        if (logo != null) {
+            ImageView mark = new ImageView(new Image(logo));
+            mark.setFitWidth(36); mark.setFitHeight(36); mark.setPreserveRatio(true);
+            VBox markWrap = new VBox(mark); markWrap.setAlignment(Pos.CENTER); markWrap.setPadding(new Insets(0, 0, 17, 0));
+            sidebar.getChildren().add(markWrap);
+        }
         addNav(sidebar, "dashboard", "▦", "Dashboard");
         addNav(sidebar, "users", "♙", "Users and roles");
         addNav(sidebar, "fleet", "▤", "Fleet");
