@@ -58,7 +58,7 @@ final class UsersView {
         ComboBox<Role> role = new ComboBox<>(FXCollections.observableArrayList(Role.values())); role.setValue(existing == null ? Role.DRIVER : existing.role());
         PasswordField password = new PasswordField(); password.setPromptText("At least 8 characters");
         VBox form = new VBox(10, labeled("Full name", name), labeled("Email", email), labeled("Phone", phone), labeled("Role", role));
-        if (existing == null) form.getChildren().add(labeled("Temporary password", password));
+        if (existing == null) form.getChildren().add(labeled("Temporary password", UiFactory.passwordInput(password)));
         Optional<ButtonType> result = app.confirmDialog(existing == null ? "Register user" : "Edit user", form, existing == null ? "Create" : "Save");
         if (result.isPresent() && result.get().getButtonData() == ButtonType.OK.getButtonData()) {
             try {

@@ -179,7 +179,7 @@ public final class DclsApp extends Application {
         password.setOnAction(event -> submit.fire());
         register.setOnAction(event -> registerDialog());
         forgot.setOnAction(event -> alert(Alert.AlertType.INFORMATION, "Password reset", "For this local demo, ask an administrator to reset your account password."));
-        card.getChildren().addAll(formTitle, hint, new Region(), labeled("EMAIL", email), labeled("PASSWORD", password), loginOptions, error, demoInfo, submit, register);
+        card.getChildren().addAll(formTitle, hint, new Region(), labeled("EMAIL", email), labeled("PASSWORD", UiFactory.passwordInput(password)), loginOptions, error, demoInfo, submit, register);
         frame.getChildren().addAll(introduction, card);
         page.setCenter(frame);
         Scene scene = new Scene(page);
@@ -197,7 +197,7 @@ public final class DclsApp extends Application {
         Label error = new Label(); error.setWrapText(true); error.setStyle("-fx-text-fill:#9b2c24;");
         Button create = button("Create account", "primary-button"); create.setMaxWidth(Double.MAX_VALUE);
         Button back = new Button("Already have an account? Sign in"); back.getStyleClass().add("link-button"); back.setMaxWidth(Double.MAX_VALUE);
-        VBox form = new VBox(12, heading, description, new Region(), labeled("FULL NAME", name), labeled("EMAIL", email), labeled("PHONE NUMBER", phone), labeled("PASSWORD", password), error, create, back);
+        VBox form = new VBox(12, heading, description, new Region(), labeled("FULL NAME", name), labeled("EMAIL", email), labeled("PHONE NUMBER", phone), labeled("PASSWORD", UiFactory.passwordInput(password)), error, create, back);
         form.setPadding(new Insets(24)); form.setPrefWidth(338); form.setMinWidth(338); form.getStyleClass().add("login-card");
         Stage registration = new Stage(); registration.initOwner(stage); registration.initModality(Modality.WINDOW_MODAL); registration.setTitle("Create your account");
         HBox frame = new HBox(0); frame.setAlignment(Pos.CENTER); frame.setMaxSize(742, 432); frame.setPrefSize(742, 432);
@@ -276,11 +276,10 @@ public final class DclsApp extends Application {
 
     private Node buildTopbar() {
         HBox bar = new HBox(10); bar.setAlignment(Pos.CENTER_LEFT); bar.setPadding(new Insets(9, 24, 9, 24)); bar.getStyleClass().add("topbar");
-        Label back = new Label("‹"); back.setStyle("-fx-font-size: 21px; -fx-text-fill: #172033;");
         Label title = new Label(activePage.equals("dashboard") ? "Dashboard" : pageLabel(activePage)); title.setStyle("-fx-font-size: 16px; -fx-font-weight: 700;");
         dataModeLabel = new Label("");
         Region spacer = new Region(); HBox.setHgrow(spacer, ALWAYS);
-        bar.getChildren().addAll(back, title, spacer);
+        bar.getChildren().addAll(title, spacer);
         return bar;
     }
 
@@ -319,7 +318,7 @@ public final class DclsApp extends Application {
 
     private void passwordDialog() {
         PasswordField current = new PasswordField(), next = new PasswordField(), confirm = new PasswordField();
-        VBox form = new VBox(10, labeled("Current password", current), labeled("New password", next), labeled("Confirm new password", confirm));
+        VBox form = new VBox(10, labeled("Current password", UiFactory.passwordInput(current)), labeled("New password", UiFactory.passwordInput(next)), labeled("Confirm new password", UiFactory.passwordInput(confirm)));
         Optional<ButtonType> result = confirmDialog("Change password", form, "Update password");
         if (result.isPresent() && result.get().getButtonData() == ButtonType.OK.getButtonData()) {
             if (!next.getText().equals(confirm.getText())) { alert(Alert.AlertType.WARNING, "Password not changed", "The new passwords do not match."); return; }

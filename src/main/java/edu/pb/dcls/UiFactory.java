@@ -116,4 +116,40 @@ final class UiFactory {
         grid.add(field, 1, row);
         if (field instanceof Region region) region.setMaxWidth(Double.MAX_VALUE);
     }
+
+    static javafx.scene.Node passwordInput(javafx.scene.control.PasswordField password) {
+        javafx.scene.control.TextField revealed = new javafx.scene.control.TextField();
+        revealed.setPromptText(password.getPromptText());
+        revealed.setAccessibleText(password.getAccessibleText());
+        revealed.textProperty().bindBidirectional(password.textProperty());
+        password.setPadding(new javafx.geometry.Insets(6, 56, 6, 8));
+        revealed.setPadding(new javafx.geometry.Insets(6, 56, 6, 8));
+        revealed.setManaged(false);
+        revealed.setVisible(false);
+
+        javafx.scene.control.Button toggle = button("Show", "password-toggle");
+        toggle.setAccessibleText("Show password");
+        toggle.setFocusTraversable(true);
+        toggle.setStyle("-fx-background-color: transparent; -fx-text-fill: #176df6; -fx-font-size: 11px; -fx-font-weight: 700; -fx-padding: 5 7; -fx-cursor: hand;");
+        javafx.scene.layout.StackPane input = new javafx.scene.layout.StackPane(password, revealed, toggle);
+        javafx.scene.layout.StackPane.setAlignment(toggle, javafx.geometry.Pos.CENTER_RIGHT);
+        javafx.scene.layout.StackPane.setMargin(toggle, new javafx.geometry.Insets(0, 5, 0, 0));
+        toggle.setOnAction(event -> {
+            boolean show = !revealed.isVisible();
+            password.setVisible(!show);
+            password.setManaged(!show);
+            revealed.setVisible(show);
+            revealed.setManaged(show);
+            toggle.setText(show ? "Hide" : "Show");
+            toggle.setAccessibleText(show ? "Hide password" : "Show password");
+            if (show) {
+                revealed.requestFocus();
+                revealed.positionCaret(revealed.getText().length());
+            } else {
+                password.requestFocus();
+                password.positionCaret(password.getText().length());
+            }
+        });
+        return input;
+    }
 }
