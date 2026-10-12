@@ -116,8 +116,8 @@ CREATE TABLE IF NOT EXISTS tracking_history (
     y_coord DECIMAL(8,5) NOT NULL,
     eta_minutes INT NOT NULL,
     recorded_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT fk_tracking_vehicle FOREIGN KEY (vehicle_id) REFERENCES vehicles(id),
-    CONSTRAINT fk_tracking_shipment FOREIGN KEY (shipment_id) REFERENCES shipments(id)
+    CONSTRAINT fk_tracking_vehicle FOREIGN KEY (vehicle_id) REFERENCES vehicles(id) ON DELETE CASCADE,
+    CONSTRAINT fk_tracking_shipment FOREIGN KEY (shipment_id) REFERENCES shipments(id) ON DELETE CASCADE
 );
 
 INSERT IGNORE INTO roles(role_code, display_name) VALUES
