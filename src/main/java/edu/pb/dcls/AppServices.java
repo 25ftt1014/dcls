@@ -47,8 +47,9 @@ final class AppServices {
             if (password == null || password.length < 8) throw new AppException("Use a password with at least 8 characters.");
             if (repository.userByEmail(email.trim()).isPresent()) throw new AppException("An account with that email already exists.");
             Security.Credentials credentials = Security.credentials(password);
+            boolean firstAccount = repository.users().isEmpty();
             User user = new User(id(), name.trim(), email.trim(), phone == null ? "" : phone.trim(),
-                    credentials.hash(), credentials.salt(), Role.DRIVER, false, true);
+                    credentials.hash(), credentials.salt(), firstAccount ? Role.ADMIN : Role.DRIVER, firstAccount, !firstAccount);
             repository.saveUser(user);
             return user;
         }
@@ -57,8 +58,11 @@ final class AppServices {
             if (!Security.matches(current, user.passwordHash(), user.passwordSalt())) throw new AppException("Current password is incorrect.");
             if (next == null || next.length < 8) throw new AppException("Use a password with at least 8 characters.");
             Security.Credentials credentials = Security.credentials(next);
+            User updated = new User(user.id(), user.name(), user.email(), user.phone(), user.passwordHash(), user.passwordSalt(),
+                    user.role(), user.active(), user.pending());
+            updated.setPassword(credentials.hash(), credentials.salt());
+            repository.saveUser(updated);
             user.setPassword(credentials.hash(), credentials.salt());
-            repository.saveUser(user);
         }
     }
 
@@ -86,37 +90,82 @@ final class AppServices {
             }
             boolean duplicate = repository.vehicles().stream().anyMatch(other -> !other.id().equals(vehicle.id()) && other.plate().equalsIgnoreCase(vehicle.plate().trim()));
             if (duplicate) throw new AppException("That plate number is already registered.");
-            vehicle.update(vehicle.plate().trim().toUpperCase(), vehicle.model().trim(), vehicle.type().trim(),
+            Vehicle updated = copy(vehicle);
+            updated.update(vehicle.plate().trim().toUpperCase(), vehicle.model().trim(), vehicle.type().trim(),
                     vehicle.capacityKg(), vehicle.mileageKm(), vehicle.status(), vehicle.driverId(), vehicle.nextServiceKm());
-            repository.saveVehicle(vehicle);
+            repository.saveVehicle(updated);
         }
         void setStatus(Vehicle vehicle, VehicleStatus status) {
             if (status == null) throw new AppException("Choose a vehicle status.");
-            vehicle.setStatus(status);
-            repository.saveVehicle(vehicle);
+            Vehicle updated = copy(vehicle); updated.setStatus(status);
+            repository.saveVehicle(updated);
         }
         List<Vehicle> maintenanceDue() {
             return repository.vehicles().stream().filter(vehicle -> vehicle.mileageKm() >= vehicle.nextServiceKm() - 500).toList();
         }
         void logMaintenance(Vehicle vehicle, LocalDate date, double mileage, String details, double cost) {
-            if (details.isBlank() || mileage < vehicle.mileageKm() || cost < 0) throw new AppException("Check the service details, mileage, and cost.");
-            repository.saveMaintenance(new MaintenanceRecord(id(), vehicle.id(), date, mileage, details.trim(), cost));
-            vehicle.update(vehicle.plate(), vehicle.model(), vehicle.type(), vehicle.capacityKg(), mileage,
+            if (vehicle == null || date == null || details == null || details.isBlank() || mileage < vehicle.mileageKm() || cost < 0) throw new AppException("Check the service details, date, mileage, and cost.");
+            MaintenanceRecord record = new MaintenanceRecord(id(), vehicle.id(), date, mileage, details.trim(), cost);
+            Vehicle updated = copy(vehicle);
+            updated.update(vehicle.plate(), vehicle.model(), vehicle.type(), vehicle.capacityKg(), mileage,
                     VehicleStatus.AVAILABLE, vehicle.driverId(), Math.max(vehicle.nextServiceKm(), mileage + 5000));
-            repository.saveVehicle(vehicle);
+            repository.saveMaintenanceAndVehicle(record, updated);
         }
         void logFuel(Vehicle vehicle, LocalDate date, double mileage, double litres, double cost) {
-            if (mileage < vehicle.mileageKm() || litres <= 0 || cost < 0) throw new AppException("Check the fuel amount, mileage, and cost.");
-            repository.saveFuel(new FuelRecord(id(), vehicle.id(), date, mileage, litres, cost));
-            vehicle.update(vehicle.plate(), vehicle.model(), vehicle.type(), vehicle.capacityKg(), mileage,
+            if (vehicle == null || date == null || mileage < vehicle.mileageKm() || litres <= 0 || cost < 0) throw new AppException("Check the fuel amount, date, mileage, and cost.");
+            FuelRecord record = new FuelRecord(id(), vehicle.id(), date, mileage, litres, cost);
+            Vehicle updated = copy(vehicle);
+            updated.update(vehicle.plate(), vehicle.model(), vehicle.type(), vehicle.capacityKg(), mileage,
                     vehicle.status(), vehicle.driverId(), vehicle.nextServiceKm());
-            repository.saveVehicle(vehicle);
+            repository.saveFuelAndVehicle(record, updated);
+        }
+        void deleteVehicle(String id) {
+            boolean usedByShipment = repository.shipments().stream().anyMatch(shipment -> id.equals(shipment.vehicleId()));
+            boolean hasMaintenance = repository.maintenanceRecords().stream().anyMatch(record -> id.equals(record.vehicleId()));
+            boolean hasFuel = repository.fuelRecords().stream().anyMatch(record -> id.equals(record.vehicleId()));
+            if (usedByShipment || hasMaintenance || hasFuel) {
+                throw new AppException("This vehicle is linked to orders or service history. Remove those records first, then try again.");
+            }
+            repository.deleteVehicle(id);
+        }
+        void updateMaintenance(MaintenanceRecord existing, LocalDate date, double mileage, String details, double cost) {
+            if (existing == null || date == null || details == null || details.isBlank() || mileage < 0 || cost < 0) throw new AppException("Check the service details, date, mileage, and cost.");
+            Vehicle vehicle = repository.vehicle(existing.vehicleId()).orElseThrow(() -> new AppException("The vehicle for this record no longer exists."));
+            Vehicle updated = copy(vehicle);
+            double currentMileage = Math.max(vehicle.mileageKm(), mileage);
+            updated.update(vehicle.plate(), vehicle.model(), vehicle.type(), vehicle.capacityKg(), currentMileage,
+                    vehicle.status(), vehicle.driverId(), Math.max(vehicle.nextServiceKm(), mileage + 5000));
+            repository.saveMaintenanceAndVehicle(new MaintenanceRecord(existing.id(), existing.vehicleId(), date, mileage, details.trim(), cost), updated);
+        }
+        void deleteMaintenance(String id) { repository.deleteMaintenance(id); }
+        void updateFuel(FuelRecord existing, LocalDate date, double mileage, double litres, double cost) {
+            if (existing == null || date == null || mileage < 0 || litres <= 0 || cost < 0) throw new AppException("Check the fuel amount, date, mileage, and cost.");
+            Vehicle vehicle = repository.vehicle(existing.vehicleId()).orElseThrow(() -> new AppException("The vehicle for this record no longer exists."));
+            Vehicle updated = copy(vehicle);
+            updated.update(vehicle.plate(), vehicle.model(), vehicle.type(), vehicle.capacityKg(), Math.max(vehicle.mileageKm(), mileage),
+                    vehicle.status(), vehicle.driverId(), vehicle.nextServiceKm());
+            repository.saveFuelAndVehicle(new FuelRecord(existing.id(), existing.vehicleId(), date, mileage, litres, cost), updated);
+        }
+        void deleteFuel(String id) { repository.deleteFuel(id); }
+        private Vehicle copy(Vehicle vehicle) {
+            return new Vehicle(vehicle.id(), vehicle.plate(), vehicle.model(), vehicle.type(), vehicle.capacityKg(),
+                    vehicle.mileageKm(), vehicle.status(), vehicle.driverId(), vehicle.nextServiceKm());
         }
     }
 
     static final class OrderService {
         private final Repository repository;
         OrderService(Repository repository) { this.repository = repository; }
+        void delete(Shipment shipment) {
+            if (shipment == null) return;
+            if (shipment.status() == OrderStatus.ASSIGNED || shipment.status() == OrderStatus.IN_TRANSIT) {
+                throw new AppException("Cancel or complete this delivery before deleting it.");
+            }
+            if (shipment.status() == OrderStatus.DELIVERED) {
+                throw new AppException("Delivered orders are retained as delivery history.");
+            }
+            repository.deleteShipment(shipment.id());
+        }
         void save(Shipment shipment) {
             if (shipment.customerName().isBlank() || shipment.address().isBlank() || shipment.packageDescription().isBlank()) {
                 throw new AppException("Customer, delivery address, and package details are required.");
@@ -129,12 +178,17 @@ final class AppServices {
             if (vehicle == null || vehicle.status() != VehicleStatus.AVAILABLE) throw new AppException("Choose an available vehicle.");
             if (shipment.weightKg() > vehicle.capacityKg()) throw new AppException("The shipment exceeds this vehicle's capacity.");
             if (shipment.status() == OrderStatus.DELIVERED || shipment.status() == OrderStatus.CANCELLED) throw new AppException("Completed or cancelled orders cannot be assigned.");
-            shipment.setAssignments(driver.id(), vehicle.id(), routeId);
-            shipment.setStatus(OrderStatus.ASSIGNED);
-            vehicle.setStatus(VehicleStatus.IN_DELIVERY);
-            repository.saveAssignment(shipment, vehicle);
+            Shipment updatedShipment = copy(shipment);
+            Vehicle updatedVehicle = copy(vehicle);
+            updatedShipment.setAssignments(driver.id(), vehicle.id(), routeId);
+            updatedShipment.setStatus(OrderStatus.ASSIGNED);
+            updatedVehicle.setStatus(VehicleStatus.IN_DELIVERY);
+            repository.saveAssignment(updatedShipment, updatedVehicle);
         }
         void transition(Shipment shipment, OrderStatus next, User actor) {
+            transition(shipment, next, actor, 0);
+        }
+        void transition(Shipment shipment, OrderStatus next, User actor, int rating) {
             if (next == OrderStatus.CANCELLED) {
                 if (shipment.status() == OrderStatus.DELIVERED) throw new AppException("A delivered order cannot be cancelled.");
             } else if (next == OrderStatus.ASSIGNED) {
@@ -149,13 +203,27 @@ final class AppServices {
                 throw new AppException("This order is already closed.");
             }
             if (actor.role() == Role.DRIVER && !actor.id().equals(shipment.driverId())) throw new AppException("Drivers can update only their assigned deliveries.");
-            shipment.setStatus(next);
+            Shipment updatedShipment = copy(shipment);
+            if (rating > 0) updatedShipment.setCustomerSatisfaction(rating);
+            updatedShipment.setStatus(next);
             if (shipment.vehicleId() != null && (next == OrderStatus.DELIVERED || next == OrderStatus.CANCELLED)) {
                 repository.vehicle(shipment.vehicleId()).ifPresent(vehicle -> {
-                    vehicle.setStatus(VehicleStatus.AVAILABLE);
-                    repository.saveShipmentAndVehicle(shipment, vehicle);
+                    Vehicle updatedVehicle = copy(vehicle);
+                    updatedVehicle.setStatus(VehicleStatus.AVAILABLE);
+                    repository.saveShipmentAndVehicle(updatedShipment, updatedVehicle);
                 });
-            } else repository.saveShipment(shipment);
+            } else repository.saveShipment(updatedShipment);
+        }
+        private Shipment copy(Shipment shipment) {
+            Shipment copied = new Shipment(shipment.id(), shipment.customerName(), shipment.customerContact(), shipment.address(),
+                    shipment.packageDescription(), shipment.quantity(), shipment.weightKg(), shipment.priority(), shipment.status(),
+                    shipment.driverId(), shipment.vehicleId(), shipment.routeId(), shipment.createdAt(), shipment.deliveredAt());
+            copied.setDeliveryMetrics(shipment.deliveryMinutes(), shipment.customerSatisfaction());
+            return copied;
+        }
+        private Vehicle copy(Vehicle vehicle) {
+            return new Vehicle(vehicle.id(), vehicle.plate(), vehicle.model(), vehicle.type(), vehicle.capacityKg(),
+                    vehicle.mileageKm(), vehicle.status(), vehicle.driverId(), vehicle.nextServiceKm());
         }
     }
 
@@ -310,15 +378,27 @@ final class AppServices {
 
         /** Optimize a mixed list of district and map-clicked custom stops. */
         RoutePlan optimizeStops(String routeName, List<Stop> stops, User driver) {
+            RoutePlan route = calculateStops(routeName, stops, driver);
+            repository.saveRoute(route);
+            return route;
+        }
+
+        RoutePlan calculateStops(String routeName, List<Stop> stops, User driver) {
             if (stops == null || stops.size() < 2) throw new AppException("Add a depot and at least one stop.");
             List<Stop> ordered = nearestNeighbor(new ArrayList<>(stops));
             twoOpt(ordered);
             double km = totalKm(ordered);
             int minutes = Math.max(1, (int) Math.ceil(km / BruneiPlaces.AVG_SPEED_KMH * 60));
-            RoutePlan route = new RoutePlan(id(), routeName == null || routeName.isBlank() ? "Delivery route" : routeName.trim(),
+            return new RoutePlan(id(), routeName == null || routeName.isBlank() ? "Delivery route" : routeName.trim(),
                     driver == null ? null : driver.id(), ordered, round(km), minutes, false, LocalDateTime.now());
-            repository.saveRoute(route);
-            return route;
+        }
+
+        void delete(RoutePlan route) {
+            if (route == null) return;
+            if (repository.shipments().stream().anyMatch(shipment -> route.id().equals(shipment.routeId()))) {
+                throw new AppException("This route is assigned to an order. Reassign the order before deleting the route.");
+            }
+            repository.deleteRoute(route.id());
         }
 
         /** Cumulative arrival minutes per stop along the given order (road km @ demo speed). */

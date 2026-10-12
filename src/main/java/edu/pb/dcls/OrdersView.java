@@ -73,14 +73,18 @@ final class OrdersView {
         statusFilter.valueProperty().addListener((observable, oldValue, newValue) -> refresh.run());
         priorityFilter.valueProperty().addListener((observable, oldValue, newValue) -> refresh.run()); refresh.run(); table.setPrefHeight(340);
         HBox actions = new HBox(8);
-        Button edit = button("Edit details", "secondary-button"), assign = button("Assign driver / vehicle", "secondary-button"), advance = button("Advance status", "primary-button"), cancel = button("Cancel order", "danger-button");
+        Button edit = button("Edit details", "secondary-button"), assign = button("Assign driver / vehicle", "secondary-button"), advance = button("Advance status", "primary-button"), cancel = button("Cancel order", "danger-button"), delete = button("Delete", "danger-button");
         boolean canDispatch = app.access.canDispatch(app.currentUser.role());
-        edit.setDisable(!canDispatch); assign.setDisable(!canDispatch); advance.setDisable(!app.access.canUpdateDelivery(app.currentUser.role())); cancel.setDisable(!canDispatch);
+        edit.setDisable(!canDispatch); assign.setDisable(!canDispatch); advance.setDisable(!app.access.canUpdateDelivery(app.currentUser.role())); cancel.setDisable(!canDispatch); delete.setDisable(true);
         edit.setOnAction(event -> { Shipment selected = table.getSelectionModel().getSelectedItem(); if (selected != null) shipmentDialog(selected); });
         assign.setOnAction(event -> { Shipment selected = table.getSelectionModel().getSelectedItem(); if (selected != null) assignmentDialog(selected); });
         advance.setOnAction(event -> { Shipment selected = table.getSelectionModel().getSelectedItem(); if (selected != null) advanceShipment(selected, refresh); });
-        cancel.setOnAction(event -> { Shipment selected = table.getSelectionModel().getSelectedItem(); if (selected != null && app.confirm("Cancel order", "Cancel " + selected.id() + "?")) { app.runAction(() -> app.orders.transition(selected, OrderStatus.CANCELLED, app.currentUser), "Order cancelled."); refresh.run(); } });
-        actions.getChildren().addAll(edit, assign, advance, cancel);
+        cancel.setOnAction(event -> { Shipment selected = table.getSelectionModel().getSelectedItem(); if (selected != null && app.confirm("Cancel order", "Cancel " + selected.id() + "?")) app.runAction(() -> app.orders.transition(selected, OrderStatus.CANCELLED, app.currentUser), "Order cancelled.", refresh); });
+        delete.setOnAction(event -> { Shipment selected = table.getSelectionModel().getSelectedItem(); if (selected != null && app.confirm("Delete order", "Delete " + selected.id() + "? Delivered and active deliveries are retained.")) app.runAction(() -> app.orders.delete(selected), "Order deleted.", refresh); });
+        table.getSelectionModel().selectedItemProperty().addListener((o, old, selected) -> {
+            delete.setDisable(!canDispatch || selected == null || (selected.status() != OrderStatus.PENDING && selected.status() != OrderStatus.CANCELLED));
+        });
+        actions.getChildren().addAll(edit, assign, advance, cancel, delete);
         VBox list = panel(new Label("Orders")); ((Label)list.getChildren().get(0)).getStyleClass().add("section-title");
         table.setPrefWidth(475); table.setPrefHeight(335); list.getChildren().addAll(table, actions); VBox.setVgrow(table, ALWAYS);
         VBox detail = panel(new Label("Order details")); ((Label)detail.getChildren().get(0)).getStyleClass().add("section-title"); detail.setPrefWidth(230); detail.setMinWidth(215);
@@ -121,11 +125,16 @@ final class OrdersView {
         ComboBox<Priority> priority = new ComboBox<>(FXCollections.observableArrayList(Priority.values())); priority.setValue(existing == null ? Priority.NORMAL : existing.priority());
         GridPane form = formGrid(); addField(form, 0, "Customer", customer); addField(form, 1, "Contact", contact); addField(form, 2, "Delivery address", address);
         addField(form, 3, "Package details", packageText); addField(form, 4, "Quantity", quantity); addField(form, 5, "Weight (kg)", weight); addField(form, 6, "Priority", priority);
-        app.confirmForm(existing == null ? "Create order" : "Edit order details", form, existing == null ? "Create order" : "Save changes", () -> {
-            Shipment shipment = existing == null ? new Shipment("DCLS-" + (2400 + app.repository.shipments().size() + 1), customer.getText().trim(), contact.getText().trim(), address.getText().trim(), packageText.getText().trim(),
-                    app.integer(quantity.getText()), app.number(weight.getText()), priority.getValue(), OrderStatus.PENDING, null, null, null, LocalDateTime.now(), null) : existing;
-            if (existing != null) shipment.update(customer.getText().trim(), contact.getText().trim(), address.getText().trim(), packageText.getText().trim(), app.integer(quantity.getText()), app.number(weight.getText()), priority.getValue(), shipment.driverId(), shipment.vehicleId(), shipment.routeId());
-            app.orders.save(shipment); app.showPage("orders");
+        app.confirmForm(existing == null ? "Create order" : "Edit order details", form, existing == null ? "Create order" : "Save changes", complete -> {
+            try {
+                String id = existing == null ? AppServices.id() : existing.id();
+                Shipment shipment = new Shipment(id, customer.getText().trim(), contact.getText().trim(), address.getText().trim(), packageText.getText().trim(),
+                        app.integer(quantity.getText()), app.number(weight.getText()), priority.getValue(), existing == null ? OrderStatus.PENDING : existing.status(),
+                        existing == null ? null : existing.driverId(), existing == null ? null : existing.vehicleId(), existing == null ? null : existing.routeId(),
+                        existing == null ? LocalDateTime.now() : existing.createdAt(), existing == null ? null : existing.deliveredAt());
+                if (existing != null) shipment.setDeliveryMetrics(existing.deliveryMinutes(), existing.customerSatisfaction());
+                app.runAsync(() -> app.orders.save(shipment), () -> { complete.accept(null); app.showPage("orders"); }, complete);
+            } catch (RuntimeException exception) { complete.accept(exception); }
         });
     }
 
@@ -141,7 +150,8 @@ final class OrdersView {
         VBox form = new VBox(10, labeled("Driver", driver), labeled("Available vehicle", vehicle), labeled("Route", route));
         Optional<ButtonType> result = app.confirmDialog("Assign delivery · " + shipment.id(), form, "Assign");
         if (result.isPresent() && result.get().getButtonData() == ButtonType.OK.getButtonData()) {
-            app.runAction(() -> app.orders.assign(shipment, driver.getValue(), vehicle.getValue(), route.getValue() == null ? null : route.getValue().id()), "Driver and vehicle assigned."); app.showPage("orders");
+            User selectedDriver = driver.getValue(); Vehicle selectedVehicle = vehicle.getValue(); String selectedRoute = route.getValue() == null ? null : route.getValue().id();
+            app.runAction(() -> app.orders.assign(shipment, selectedDriver, selectedVehicle, selectedRoute), "Driver and vehicle assigned.", () -> app.showPage("orders"));
         }
     }
 
@@ -164,8 +174,6 @@ final class OrdersView {
         if (next == OrderStatus.ASSIGNED && shipment.driverId() == null) { assignmentDialog(shipment); return; }
         OrderStatus finalNext = next;
         int finalRating = ratingValue;
-        app.runAction(() -> { if (finalRating > 0) shipment.setCustomerSatisfaction(finalRating); app.orders.transition(shipment, finalNext, app.currentUser); }, "Order moved to " + finalNext.label() + ".");
-        refresh.run();
-        if (app.activePage.equals("dashboard")) app.showPage("dashboard");
+        app.runAction(() -> app.orders.transition(shipment, finalNext, app.currentUser, finalRating), "Order moved to " + finalNext.label() + ".", refresh);
     }
 }

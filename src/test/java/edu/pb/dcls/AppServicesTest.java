@@ -15,6 +15,8 @@ import static edu.pb.dcls.AppServices.FleetService;
 import static edu.pb.dcls.AppServices.OrderService;
 import static edu.pb.dcls.AppServices.RouteService;
 import static edu.pb.dcls.Domain.OrderStatus;
+import static edu.pb.dcls.Domain.FuelRecord;
+import static edu.pb.dcls.Domain.MaintenanceRecord;
 import static edu.pb.dcls.Domain.Priority;
 import static edu.pb.dcls.Domain.Repository;
 import static edu.pb.dcls.Domain.Role;
@@ -98,6 +100,17 @@ class AppServicesTest {
             assertFalse(user.active(), "a self-registered account must not be able to sign in yet");
             assertTrue(user.pending(), "a self-registered account must await administrator approval");
             assertTrue(repo.userByEmail("new@dcls.local").isPresent());
+        }
+
+        @Test
+        void firstAccountOnEmptyRepositoryBootstrapsAdministrator() {
+            repo.users().forEach(user -> repo.deleteUser(user.id()));
+            User first = auth.register("Database Owner", "owner@dcls.local", "+673 000",
+                    "password1".toCharArray());
+            assertEquals(Role.ADMIN, first.role());
+            assertTrue(first.active());
+            assertFalse(first.pending());
+            assertEquals(Role.ADMIN, auth.login("owner@dcls.local", "password1".toCharArray()).role());
         }
 
         @Test
@@ -216,7 +229,7 @@ class AppServicesTest {
         void saveNormalisesPlateToUpperCase() {
             Vehicle v = new Vehicle(AppServices.id(), "bq 9999", "Model", "Light truck", 1000, 0, VehicleStatus.AVAILABLE, null, 5000);
             fleet.save(v);
-            assertEquals("BQ 9999", v.plate());
+            assertEquals("BQ 9999", repo.vehicle(v.id()).orElseThrow().plate());
         }
 
         @Test
@@ -246,7 +259,34 @@ class AppServicesTest {
             int before = repo.maintenanceRecords().size();
             fleet.logMaintenance(v, LocalDate.now(), 53000, "Full service", 400);
             assertEquals(before + 1, repo.maintenanceRecords().size());
-            assertEquals(VehicleStatus.AVAILABLE, v.status());
+            assertEquals(VehicleStatus.AVAILABLE, repo.vehicle(v.id()).orElseThrow().status());
+        }
+
+        @Test
+        void maintenanceAndFuelRecordsCanBeUpdatedAndDeleted() {
+            Vehicle vehicle = repo.vehicle("v-3310").orElseThrow();
+            fleet.logMaintenance(vehicle, LocalDate.now(), 32000, "Oil change", 60);
+            MaintenanceRecord maintenance = repo.maintenanceRecords().getLast();
+            fleet.updateMaintenance(maintenance, LocalDate.now().minusDays(1), 31900, "Corrected service", 55);
+            assertEquals("Corrected service", repo.maintenanceRecords().stream().filter(r -> r.id().equals(maintenance.id())).findFirst().orElseThrow().description());
+            assertEquals(32000, repo.vehicle(vehicle.id()).orElseThrow().mileageKm(), "editing a historical record must not roll back the odometer");
+            fleet.deleteMaintenance(maintenance.id());
+            assertFalse(repo.maintenanceRecords().stream().anyMatch(r -> r.id().equals(maintenance.id())));
+
+            fleet.logFuel(repo.vehicle("v-3310").orElseThrow(), LocalDate.now(), 32000, 48, 40);
+            FuelRecord fuel = repo.fuelRecords().getLast();
+            fleet.updateFuel(fuel, LocalDate.now().minusDays(1), 31950, 46, 39);
+            assertEquals(46, repo.fuelRecords().stream().filter(r -> r.id().equals(fuel.id())).findFirst().orElseThrow().litres());
+            assertEquals(32000, repo.vehicle(vehicle.id()).orElseThrow().mileageKm());
+            fleet.deleteFuel(fuel.id());
+            assertFalse(repo.fuelRecords().stream().anyMatch(r -> r.id().equals(fuel.id())));
+        }
+
+        @Test
+        void deleteVehicleProtectsLinkedRecordsAndAllowsUnusedVehicles() {
+            assertThrows(AppException.class, () -> fleet.deleteVehicle("v-1934"));
+            fleet.deleteVehicle("v-8817");
+            assertTrue(repo.vehicle("v-8817").isEmpty());
         }
     }
 
@@ -272,8 +312,8 @@ class AppServicesTest {
             Shipment pending = repo.shipment("DCLS-2403").orElseThrow(); // 64 kg, PENDING
             Vehicle available = repo.vehicle("v-8817").orElseThrow();     // AVAILABLE, 1600 kg
             orders.assign(pending, driver01(), available, null);
-            assertEquals(OrderStatus.ASSIGNED, pending.status());
-            assertEquals(VehicleStatus.IN_DELIVERY, available.status());
+            assertEquals(OrderStatus.ASSIGNED, repo.shipment(pending.id()).orElseThrow().status());
+            assertEquals(VehicleStatus.IN_DELIVERY, repo.vehicle(available.id()).orElseThrow().status());
         }
 
         @Test
@@ -302,14 +342,14 @@ class AppServicesTest {
         void transitionAssignedToInTransit() {
             Shipment assigned = repo.shipment("DCLS-2402").orElseThrow(); // ASSIGNED
             orders.transition(assigned, OrderStatus.IN_TRANSIT, admin());
-            assertEquals(OrderStatus.IN_TRANSIT, assigned.status());
+            assertEquals(OrderStatus.IN_TRANSIT, repo.shipment(assigned.id()).orElseThrow().status());
         }
 
         @Test
         void deliveringFreesTheVehicle() {
             Shipment transit = repo.shipment("DCLS-2401").orElseThrow(); // IN_TRANSIT, vehicle v-1934
             orders.transition(transit, OrderStatus.DELIVERED, admin());
-            assertEquals(OrderStatus.DELIVERED, transit.status());
+            assertEquals(OrderStatus.DELIVERED, repo.shipment(transit.id()).orElseThrow().status());
             assertEquals(VehicleStatus.AVAILABLE, repo.vehicle("v-1934").orElseThrow().status());
         }
 
@@ -323,6 +363,15 @@ class AppServicesTest {
         void deliveredOrderCannotBeCancelled() {
             Shipment delivered = repo.shipment("DCLS-2398").orElseThrow(); // DELIVERED
             assertThrows(AppException.class, () -> orders.transition(delivered, OrderStatus.CANCELLED, admin()));
+        }
+
+        @Test
+        void pendingOrderCanBeDeletedButActiveAndDeliveredOrdersAreRetained() {
+            Shipment pending = repo.shipment("DCLS-2403").orElseThrow();
+            orders.delete(pending);
+            assertTrue(repo.shipment(pending.id()).isEmpty());
+            assertThrows(AppException.class, () -> orders.delete(repo.shipment("DCLS-2402").orElseThrow()));
+            assertThrows(AppException.class, () -> orders.delete(repo.shipment("DCLS-2398").orElseThrow()));
         }
     }
 
@@ -355,6 +404,17 @@ class AppServicesTest {
             assertTrue(plan.estimatedMinutes() >= 1);
             assertEquals("DCLS Depot", plan.stops().get(0).name()); // starts from the first supplied stop
             assertEquals(before + 1, repo.routes().size());
+        }
+
+        @Test
+        void routeCanBeDeletedOnlyWhenNoShipmentUsesIt() {
+            RoutePlan unused = new RoutePlan(AppServices.id(), "Unused route", null,
+                    List.of(AppServices.BruneiPlaces.DEPOT, AppServices.BruneiPlaces.places().get("Kiulap")), 2, 4, false, java.time.LocalDateTime.now());
+            repo.saveRoute(unused);
+            routes.delete(unused);
+            assertTrue(repo.routes().stream().noneMatch(route -> route.id().equals(unused.id())));
+            RoutePlan linked = repo.routes().stream().filter(route -> route.id().equals("r-1001")).findFirst().orElseThrow();
+            assertThrows(AppException.class, () -> routes.delete(linked));
         }
     }
 }

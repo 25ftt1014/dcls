@@ -86,10 +86,15 @@ public final class MockRepository implements Repository {
     @Override public void deleteShipment(String id) { shipments.remove(id); }
     @Override public List<RoutePlan> routes() { return new ArrayList<>(routes.values()); }
     @Override public void saveRoute(RoutePlan route) { routes.put(route.id(), route); }
+    @Override public void deleteRoute(String id) { routes.remove(id); }
     @Override public List<MaintenanceRecord> maintenanceRecords() { return new ArrayList<>(maintenance); }
     @Override public void saveMaintenance(MaintenanceRecord record) { maintenance.removeIf(item -> item.id().equals(record.id())); maintenance.add(record); }
+    @Override public void saveMaintenanceAndVehicle(MaintenanceRecord record, Vehicle vehicle) { saveMaintenance(record); saveVehicle(vehicle); }
+    @Override public void deleteMaintenance(String id) { maintenance.removeIf(item -> item.id().equals(id)); }
     @Override public List<FuelRecord> fuelRecords() { return new ArrayList<>(fuel); }
     @Override public void saveFuel(FuelRecord record) { fuel.removeIf(item -> item.id().equals(record.id())); fuel.add(record); }
+    @Override public void saveFuelAndVehicle(FuelRecord record, Vehicle vehicle) { saveFuel(record); saveVehicle(vehicle); }
+    @Override public void deleteFuel(String id) { fuel.removeIf(item -> item.id().equals(id)); }
     @Override public List<TrackingPoint> trackingHistory() { return new ArrayList<>(tracking); }
     @Override public void saveTrackingPoint(TrackingPoint point) { tracking.add(point); }
     @Override public boolean persistent() { return false; }

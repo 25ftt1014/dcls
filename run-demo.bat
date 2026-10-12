@@ -1,5 +1,6 @@
 @echo off
 setlocal
+set DCLS_DEMO_MODE=true
 where java >nul 2>nul
 if errorlevel 1 (
   echo Java 21 or later is required. Install a JDK and try again.

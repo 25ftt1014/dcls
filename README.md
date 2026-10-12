@@ -1,14 +1,28 @@
 # DCLS — Delivery Logistics Simulator
 
-Java 21 and JavaFX desktop application for the DCLS mini project. The current classroom demo runs with local in-memory sample data and does not need a database or network connection.
+Java 21 and JavaFX desktop application for the DCLS mini project. MySQL is the normal data mode so app changes survive restarts. The in-memory classroom demo is available by explicit opt-in.
 
-## Run the demo
+## Run the app with MySQL
 
-Requirements: Java 21 (JDK) and Maven 3.9 or later.
+Requirements: Java 21 (JDK), Maven 3.9 or later, and a running MySQL database initialized with `src\main\resources\db\schema.sql`.
 
-From this folder:
+Set the database connection variables in PowerShell, then start the app:
 
 ```powershell
+$env:DCLS_DB_URL = 'jdbc:mysql://localhost:3306/dcls'
+$env:DCLS_DB_USER = 'dcls_app'
+$env:DCLS_DB_PASSWORD = 'choose-a-strong-password'
+mvn javafx:run
+```
+
+If the database settings are missing or the connection fails, startup shows an error instead of silently using temporary data.
+
+## Run the in-memory demo
+
+Set the explicit demo flag in PowerShell, then start the app:
+
+```powershell
+$env:DCLS_DEMO_MODE = 'true'
 mvn javafx:run
 ```
 
@@ -19,7 +33,7 @@ Sign in with:
 - Dispatcher: `dispatcher@dcls.local` / `demo1234`
 - Driver: `driver@dcls.local` / `demo1234`
 
-The sign-in screen opens with the Admin demo credentials filled in. The local demo data resets when the app closes.
+The sign-in screen opens with the Admin demo credentials filled in. Demo data resets when the app closes. Clear `DCLS_DEMO_MODE` to return to MySQL mode.
 
 Map data © OpenStreetMap contributors (bundled zoom-11 country + zoom-13 Bandar-metro/Tutong/Muara renders and a 90-pair road network, all used offline; vehicle movement is simulated).
 
@@ -47,9 +61,9 @@ java -jar target\distribution\delivery-logistics-simulator-1.0.0.jar
 
 Java 21 must be installed on the computer running the JAR. JavaFX runtime libraries are included in `lib` for Windows builds.
 
-## Optional MySQL persistence
+## MySQL setup
 
-The demo does not need MySQL. To use the JDBC repository for development or the final submission:
+The app uses the JDBC repository by default. To set up a local MySQL database:
 
 1. Install and start MySQL Server.
 2. Run `src\main\resources\db\schema.sql` in a MySQL client. The script creates the `dcls` database and its tables.
@@ -70,11 +84,11 @@ $env:DCLS_DB_PASSWORD = 'choose-a-strong-password'
 mvn javafx:run
 ```
 
-When `DCLS_DB_URL` is absent, the app uses the in-memory demo repository. When the database has no users, it seeds the same demo accounts and sample data. Keep real database credentials out of source control. Import the schema before starting the JDBC mode, and remember that `schema.sql` needs an administrative account — the app itself only ever reads and writes rows, so it never needs permission to create or alter tables.
+On an empty database, the first account registered becomes its administrator. Later self-registered accounts must be approved by an administrator. MySQL mode does not insert demo users or sample business records. Keep real database credentials out of source control. Import the schema before starting the app; `schema.sql` needs an administrative account, while the app account only needs permission to read and write rows.
 
 ### Setting up on a new machine
 
-Every developer runs their own local MySQL server. Nothing is shared over the network, so there is no port to open and no credentials to distribute — each person picks their own password and gets an identical seeded database.
+Every developer runs their own local MySQL server. Nothing is shared over the network, so there is no port to open or credentials to distribute. Each person initializes an empty database and creates its first administrator through the app.
 
 `mysql.exe` is usually not on `PATH`. Use MySQL Workbench (**File → Open SQL Script**, pick `src\main\resources\db\schema.sql`, then run), or the full path:
 

@@ -68,16 +68,28 @@ final class RoutesView {
             if (optimizeRouteRef[0] != null) optimizeRouteRef[0].run();
         };
         final RoutePlan[] planned = {null};
+        final RoutePlan[] editing = {null};
         final boolean[] saved = {false};
         Runnable optimizeRoute = () -> {
-            try {
-                RoutePlan plan = app.routeService.optimizeStops(name.getText(), new ArrayList<>(app.routeStopsDraft), null);
-                planned[0] = plan; saved[0] = false;
+            String routeName = name.getText();
+            List<Stop> stops = new ArrayList<>(app.routeStopsDraft);
+            User selectedDriver = driver.getValue();
+            RoutePlan currentEdit = editing[0];
+            optimize.setDisable(true);
+            optimize.setText("Optimizing…");
+            app.runAsync(() -> {
+                RoutePlan calculated = app.routeService.calculateStops(routeName, stops, selectedDriver);
+                planned[0] = currentEdit == null ? calculated : new RoutePlan(currentEdit.id(), calculated.name(), calculated.driverId(),
+                        calculated.stops(), calculated.distanceKm(), calculated.estimatedMinutes(), currentEdit.completed(), currentEdit.createdAt());
+                saved[0] = false;
+            }, () -> {
+                optimize.setDisable(false); optimize.setText("Optimize route");
+                RoutePlan plan = planned[0];
                 app.previewStops = plan.stops();
                 routeResult.setText(String.format("%s  ·  %.1f km  ·  about %d minutes", plan.name(), plan.distanceKm(), plan.estimatedMinutes()));
                 app.showEtaBreakdown(etaBreakdown, plan);
                 previewMap.redraw();
-            } catch (AppException exception) { app.alert(Alert.AlertType.WARNING, "Route not created", exception.getMessage()); }
+            }, exception -> { optimize.setDisable(false); optimize.setText("Optimize route"); app.showError(app.readable(exception)); });
         };
         optimizeRouteRef[0] = optimizeRoute;
         optimize.setOnAction(event -> optimizeRoute.run());
@@ -99,11 +111,15 @@ final class RoutesView {
             if (driver.getValue() == null) { app.alert(Alert.AlertType.INFORMATION, "Choose a driver", "Select a driver before saving and assigning this route."); return; }
             if (!saved[0]) {
                 RoutePlan route = planned[0];
-                planned[0] = new RoutePlan(route.id(), route.name(), driver.getValue().id(), route.stops(), route.distanceKm(), route.estimatedMinutes(), route.completed(), route.createdAt());
-                app.repository.saveRoute(planned[0]); saved[0] = true;
+                RoutePlan toSave = new RoutePlan(route.id(), route.name(), driver.getValue().id(), route.stops(), route.distanceKm(), route.estimatedMinutes(), route.completed(), route.createdAt());
+                saveAssign.setDisable(true);
+                app.runAsync(() -> app.repository.saveRoute(toSave), () -> {
+                    planned[0] = toSave; saved[0] = true; saveAssign.setDisable(false); editing[0] = null;
+                    app.toast("Route saved and assigned to " + driver.getValue().name() + "."); app.showPage("routes");
+                }, exception -> { saveAssign.setDisable(false); app.showError(app.readable(exception)); });
+                return;
             }
-            app.alert(Alert.AlertType.INFORMATION, "Route assigned", "Route " + planned[0].name() + " has been saved and assigned to " + driver.getValue().name() + ".");
-            app.showPage("routes");
+            app.toast("Route " + planned[0].name() + " is already saved.");
         });
         controls.getChildren().addAll(new Label("Pickup location"), place, new Label("Delivery stops"), draft, addStop, driver, optimize, saveAssign, clickToggle, routeResult, etaBreakdown);
         controls.setPrefWidth(260); controls.setMinWidth(250); VBox.setVgrow(draft, ALWAYS);
@@ -119,6 +135,27 @@ final class RoutesView {
         table.getColumns().add(textCol("Driver", r -> app.driverName(r.driverId()), 140));
         table.getColumns().add(textCol("Created", r -> r.createdAt().format(DclsApp.DATE_TIME), 130));
         table.setItems(FXCollections.observableArrayList(app.repository.routes())); table.setPrefHeight(180); table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY);
+        Button editRoute = button("Edit selected route", "secondary-button"), deleteRoute = button("Delete selected route", "danger-button");
+        editRoute.setDisable(true); deleteRoute.setDisable(true);
+        editRoute.setOnAction(event -> {
+            RoutePlan selected = table.getSelectionModel().getSelectedItem();
+            if (selected == null) return;
+            editing[0] = selected; planned[0] = null; saved[0] = false;
+            name.setText(selected.name()); app.routeStopsDraft.setAll(selected.stops());
+            app.repository.users().stream().filter(user -> user.id().equals(selected.driverId())).findFirst().ifPresent(driver::setValue);
+            app.previewStops = selected.stops(); previewMap.redraw();
+            routeResult.setText("Editing " + selected.name() + ". Optimize and save to update this route.");
+        });
+        deleteRoute.setOnAction(event -> {
+            RoutePlan selected = table.getSelectionModel().getSelectedItem();
+            if (selected != null && app.confirm("Delete route?", "Delete " + selected.name() + "? Routes assigned to orders cannot be removed.")) {
+                app.runAction(() -> app.routeService.delete(selected), "Route deleted.", () -> app.showPage("routes"));
+            }
+        });
+        table.getSelectionModel().selectedItemProperty().addListener((o, old, selected) -> {
+            editRoute.setDisable(selected == null); deleteRoute.setDisable(selected == null);
+        });
+        HBox routeActions = new HBox(8, editRoute, deleteRoute);
         table.getSelectionModel().selectedItemProperty().addListener((o, old, selected) -> {
             if (selected != null) {
                 app.previewStops = selected.stops();
@@ -131,6 +168,6 @@ final class RoutesView {
             app.showEtaBreakdown(etaBreakdown, route);
         });
         previewMap.redraw();
-        history.getChildren().add(table); page.getChildren().addAll(builder, history); return page;
+        history.getChildren().addAll(table, routeActions); page.getChildren().addAll(builder, history); return page;
     }
 }

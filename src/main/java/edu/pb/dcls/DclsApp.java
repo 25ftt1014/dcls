@@ -54,6 +54,8 @@ import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.stream.Collectors;
 
 import static edu.pb.dcls.AppServices.*;
@@ -85,6 +87,8 @@ public final class DclsApp extends Application {
     String activePage = "dashboard";
     String fleetRecordsView = "vehicles";
     private Timeline trackingTimer;
+    private boolean trackingTickRunning;
+    private int trackingGeneration;
     Canvas trackingCanvas;
     Label trackingEta;
     String routeNameInput = "";
@@ -99,35 +103,47 @@ public final class DclsApp extends Application {
     private Timeline signInRipple;
     private Runnable pendingSignIn;
     private String loginNotice;
+    private final ExecutorService ioExecutor = Executors.newSingleThreadExecutor(task -> {
+        Thread thread = new Thread(task, "dcls-database");
+        thread.setDaemon(true);
+        return thread;
+    });
 
     @Override public void start(Stage stage) {
         this.stage = stage;
-        try {
-            repository = configuredRepository();
-        } catch (RuntimeException exception) {
-            showStartupError(exception.getMessage());
-            Platform.exit();
-            return;
-        }
-        auth = new AuthService(repository);
-        access = new AccessService();
-        fleet = new FleetService(repository);
-        orders = new OrderService(repository);
-        routeService = new RouteService(repository);
-        tracking = new TrackingService(repository);
-        autoRoutes = new AutoRouteService(repository, routeService, tracking);
         stage.setTitle("DCLS — Delivery Logistics Simulator");
         stage.setMinWidth(900);
         stage.setMinHeight(560);
         stage.setWidth(900);
         stage.setHeight(560);
-        showLogin();
+        BorderPane loading = new BorderPane(new Label("Connecting to the database…"));
+        loading.getStyleClass().add("login-background");
+        Scene starting = new Scene(loading);
+        starting.getStylesheets().add(getClass().getResource("/edu/pb/dcls/styles.css").toExternalForm());
+        stage.setScene(starting);
         stage.show();
+        runIo(() -> {
+            Repository source = configuredRepository();
+            CachedRepository cached = new CachedRepository(source);
+            cached.refresh();
+            return cached;
+        }, cached -> {
+            repository = cached;
+            auth = new AuthService(repository);
+            access = new AccessService();
+            fleet = new FleetService(repository);
+            orders = new OrderService(repository);
+            routeService = new RouteService(repository);
+            tracking = new TrackingService(repository);
+            autoRoutes = new AutoRouteService(repository, routeService, tracking);
+            showLogin();
+        }, exception -> showStartupError(readable(exception)));
     }
 
     private Repository configuredRepository() {
+        if ("true".equalsIgnoreCase(System.getenv("DCLS_DEMO_MODE"))) return new MockRepository();
         String url = System.getenv("DCLS_DB_URL");
-        if (url == null || url.isBlank()) return new MockRepository();
+        if (url == null || url.isBlank()) throw new AppException("MySQL is the default data mode. Set DCLS_DB_URL, DCLS_DB_USER, and DCLS_DB_PASSWORD, or set DCLS_DEMO_MODE=true to use resettable demo data.");
         return new JdbcRepository(url, nullToEmpty(System.getenv("DCLS_DB_USER")), nullToEmpty(System.getenv("DCLS_DB_PASSWORD")));
     }
 
@@ -158,8 +174,8 @@ public final class DclsApp extends Application {
         card.getStyleClass().add("login-card");
         Label formTitle = new Label("Welcome back"); formTitle.setStyle("-fx-font-size:20px;-fx-font-weight:700;-fx-text-fill:#172033;");
         Label hint = new Label("Sign in to continue"); hint.getStyleClass().add("muted");
-        TextField email = new TextField(DEMO_EMAIL); email.setPromptText("Email address"); email.setAccessibleText("Email address");
-        PasswordField password = new PasswordField(); password.setText(DEMO_PASSWORD); password.setPromptText("Password"); password.setAccessibleText("Password");
+        TextField email = new TextField(repository.persistent() ? "" : DEMO_EMAIL); email.setPromptText("Email address"); email.setAccessibleText("Email address");
+        PasswordField password = new PasswordField(); if (!repository.persistent()) password.setText(DEMO_PASSWORD); password.setPromptText("Password"); password.setAccessibleText("Password");
         CheckBox remember = new CheckBox("Remember me"); remember.getStyleClass().add("muted");
         Button forgot = new Button("Forgot password?"); forgot.getStyleClass().add("link-button");
         HBox loginOptions = new HBox(8, remember, new Region(), forgot); loginOptions.setAlignment(Pos.CENTER_LEFT); HBox.setHgrow(loginOptions.getChildren().get(1), ALWAYS);
@@ -171,29 +187,23 @@ public final class DclsApp extends Application {
             pendingSignIn = null;
             submit.setDisable(true);
             submit.setText("Signing in…");
-            try {
-                currentUser = auth.login(email.getText(), password.getText().toCharArray());
-            } catch (AppException exception) {
-                error.setText(exception.getMessage());
+            String loginEmail = email.getText();
+            char[] loginPassword = password.getText().toCharArray();
+            runIo(() -> auth.login(loginEmail, loginPassword), user -> {
+                currentUser = user;
+                try {
+                    showShell("dashboard");
+                } catch (RuntimeException exception) {
+                    currentUser = null;
+                    error.setText("Your account was verified, but the dashboard could not be opened. Please restart the app.");
+                    submit.setDisable(false);
+                    submit.setText("Sign in");
+                }
+            }, exception -> {
+                error.setText(readable(exception));
                 submit.setDisable(false);
                 submit.setText("Sign in");
-                return;
-            } catch (RuntimeException exception) {
-                exception.printStackTrace();
-                error.setText("Sign in is temporarily unavailable. Please try again.");
-                submit.setDisable(false);
-                submit.setText("Sign in");
-                return;
-            }
-            try {
-                showShell("dashboard");
-            } catch (RuntimeException exception) {
-                exception.printStackTrace();
-                currentUser = null;
-                error.setText("Your account was verified, but the dashboard could not be opened. Please restart the app.");
-                submit.setDisable(false);
-                submit.setText("Sign in");
-            }
+            });
         };
         submit.setOnAction(event -> {
             if (submit.isDisabled()) return;
@@ -202,8 +212,10 @@ public final class DclsApp extends Application {
         });
         password.setOnAction(event -> submit.fire());
         register.setOnAction(event -> registerDialog());
-        forgot.setOnAction(event -> alert(Alert.AlertType.INFORMATION, "Password reset", "For this local demo, ask an administrator to reset your account password."));
-        card.getChildren().addAll(formTitle, hint, new Region(), labeled("EMAIL", email), labeled("PASSWORD", password), loginOptions, error, demoInfo, submit, register);
+        forgot.setOnAction(event -> alert(Alert.AlertType.INFORMATION, "Password reset", "Ask an administrator to update your account password."));
+        card.getChildren().addAll(formTitle, hint, new Region(), labeled("EMAIL", email), labeled("PASSWORD", password), loginOptions, error);
+        if (!repository.persistent()) card.getChildren().add(demoInfo);
+        card.getChildren().addAll(submit, register);
         if (loginNotice != null && !loginNotice.isBlank()) {
             Label notice = new Label(loginNotice);
             notice.setWrapText(true);
@@ -225,7 +237,7 @@ public final class DclsApp extends Application {
         TextField phone = new TextField(); phone.setPromptText("Phone number");
         PasswordField password = new PasswordField(); password.setPromptText("At least 8 characters");
         Label heading = new Label("Create your account"); heading.setStyle("-fx-font-size:20px;-fx-font-weight:700;-fx-text-fill:#172033;");
-        Label description = new Label("Create an account, then wait for an administrator to approve it and set your role."); description.setWrapText(true); description.getStyleClass().add("muted");
+        Label description = new Label("The first account on an empty database becomes its administrator. Later accounts need administrator approval."); description.setWrapText(true); description.getStyleClass().add("muted");
         Label error = new Label(); error.setWrapText(true); error.setStyle("-fx-text-fill:#9b2c24;");
         Button create = button("Create account", "primary-button"); create.setMaxWidth(Double.MAX_VALUE);
         Button back = new Button("Already have an account? Sign in"); back.getStyleClass().add("link-button"); back.setMaxWidth(Double.MAX_VALUE);
@@ -245,12 +257,20 @@ public final class DclsApp extends Application {
         BorderPane page = new BorderPane(); page.getStyleClass().add("login-background"); page.setCenter(frame);
         Scene scene = new Scene(page, 900, 560); scene.getStylesheets().add(getClass().getResource("/edu/pb/dcls/styles.css").toExternalForm()); registration.setScene(scene);
         Runnable submit = () -> {
-            try {
-                auth.register(name.getText(), email.getText(), phone.getText(), password.getText().toCharArray());
+            if (create.isDisabled()) return;
+            String fullName = name.getText(), address = email.getText(), phoneNumber = phone.getText();
+            char[] secret = password.getText().toCharArray();
+            create.setDisable(true); create.setText("Creating account…");
+            runIo(() -> auth.register(fullName, address, phoneNumber, secret), created -> {
                 registration.close();
-                loginNotice = "Account created. An administrator must approve it and set your role before you can sign in.";
+                loginNotice = created.role() == Role.ADMIN
+                        ? "Administrator account created. Sign in to manage the database."
+                        : "Account created. An administrator must approve it and set your role before you can sign in.";
                 showLogin();
-            } catch (AppException exception) { error.setText(exception.getMessage()); }
+            }, exception -> {
+                error.setText(readable(exception));
+                create.setDisable(false); create.setText("Create account");
+            });
         };
         create.setOnAction(event -> submit.run()); password.setOnAction(event -> submit.run());
         back.setOnAction(event -> registration.close());
@@ -380,21 +400,32 @@ public final class DclsApp extends Application {
         TextField name = new TextField(currentUser.name()); TextField email = new TextField(currentUser.email()); TextField phone = new TextField(currentUser.phone());
         VBox form = new VBox(10, labeled("Full name", name), labeled("Email", email), labeled("Phone", phone),
                 new Label("Role: " + currentUser.role().label()));
-        Optional<ButtonType> result = confirmDialog("My profile", form, "Save profile");
-        if (result.isPresent() && result.get().getButtonData() == ButtonType.OK.getButtonData()) {
-            if (name.getText().isBlank() || !email.getText().matches("^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$")) { alert(Alert.AlertType.WARNING, "Profile not saved", "Enter a name and valid email address."); return; }
-            currentUser.updateProfile(name.getText().trim(), email.getText().trim(), phone.getText().trim()); repository.saveUser(currentUser); showPage(activePage);
-        }
+        confirmForm("My profile", form, "Save profile", complete -> {
+            if (name.getText().isBlank() || !email.getText().matches("^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$")) {
+                complete.accept(new AppException("Enter a name and valid email address.")); return;
+            }
+            User updated = new User(currentUser.id(), name.getText().trim(), email.getText().trim(), phone.getText().trim(),
+                    currentUser.passwordHash(), currentUser.passwordSalt(), currentUser.role(), currentUser.active(), currentUser.pending());
+            runAsync(() -> repository.saveUser(updated), () -> {
+                currentUser = updated;
+                complete.accept(null);
+                showPage(activePage);
+            }, complete);
+        });
     }
 
     private void passwordDialog() {
         PasswordField current = new PasswordField(), next = new PasswordField(), confirm = new PasswordField();
         VBox form = new VBox(10, labeled("Current password", current), labeled("New password", next), labeled("Confirm new password", confirm));
-        Optional<ButtonType> result = confirmDialog("Change password", form, "Update password");
-        if (result.isPresent() && result.get().getButtonData() == ButtonType.OK.getButtonData()) {
-            if (!next.getText().equals(confirm.getText())) { alert(Alert.AlertType.WARNING, "Password not changed", "The new passwords do not match."); return; }
-            runAction(() -> auth.changePassword(currentUser, current.getText().toCharArray(), next.getText().toCharArray()), "Password updated.");
-        }
+        confirmForm("Change password", form, "Update password", complete -> {
+            if (!next.getText().equals(confirm.getText())) { complete.accept(new AppException("The new passwords do not match.")); return; }
+            char[] currentPassword = current.getText().toCharArray();
+            char[] newPassword = next.getText().toCharArray();
+            runAsync(() -> auth.changePassword(currentUser, currentPassword, newPassword), () -> {
+                complete.accept(null);
+                toast("Password updated.");
+            }, complete);
+        });
     }
 
     void drawTracking() {
@@ -668,25 +699,34 @@ public final class DclsApp extends Application {
 
     void startTracking() {
         if (trackingTimer != null) trackingTimer.stop();
+        int generation = ++trackingGeneration;
         trackingTimer = new Timeline(new KeyFrame(Duration.seconds(1), event -> {
-            for (Shipment shipment : visibleShipments()) if (shipment.status() == OrderStatus.IN_TRANSIT) {
-                try { tracking.advance(shipment); } catch (RuntimeException exception) { stopTracking(); showError(exception.getMessage()); break; }
-            }
-            drawTracking();
-            if (activePage.equals("dashboard")) showPage("dashboard");
+            if (trackingTickRunning) return;
+            trackingTickRunning = true;
+            runAsync(() -> {
+                for (Shipment shipment : visibleShipments()) if (shipment.status() == OrderStatus.IN_TRANSIT) tracking.advance(shipment);
+            }, () -> {
+                trackingTickRunning = false;
+                if (generation == trackingGeneration && "tracking".equals(activePage)) drawTracking();
+            }, exception -> {
+                trackingTickRunning = false;
+                if (generation == trackingGeneration) { stopTracking(); showError(readable(exception)); }
+            });
         }));
         trackingTimer.setCycleCount(Timeline.INDEFINITE); trackingTimer.play();
     }
 
-    void stopTracking() { if (trackingTimer != null) { trackingTimer.stop(); trackingTimer = null; } }
+    void stopTracking() {
+        trackingGeneration++;
+        trackingTickRunning = false;
+        if (trackingTimer != null) { trackingTimer.stop(); trackingTimer = null; }
+    }
 
     ComboBox<User> driverCombo() {
         ComboBox<User> combo = new ComboBox<>(FXCollections.observableArrayList(repository.users().stream().filter(u -> u.role() == Role.DRIVER && u.active()).toList()));
         combo.setConverter(new StringConverter<>() { public String toString(User user) { return user == null ? "" : user.name() + " · " + user.email(); } public User fromString(String value) { return null; } });
         combo.setMaxWidth(Double.MAX_VALUE); return combo;
     }
-
-    private void registerRouteInOrder(Shipment shipment, RoutePlan route) { shipment.setAssignments(shipment.driverId(), shipment.vehicleId(), route.id()); repository.saveShipment(shipment); }
 
     ComboBox<Vehicle> vehicleCombo() {
         ComboBox<Vehicle> combo = new ComboBox<>(FXCollections.observableArrayList(repository.vehicles()));
@@ -730,7 +770,7 @@ public final class DclsApp extends Application {
     /** Form dialog that stays open and keeps the user's input when {@code submit} throws,
      *  showing the message inline instead of closing and firing a separate alert.
      *  {@code submit} validates, persists, and navigates; Enter triggers it. */
-    void confirmForm(String title, Node content, String action, Runnable submit) {
+    void confirmForm(String title, Node content, String action, Consumer<Consumer<Throwable>> submit) {
         Dialog<ButtonType> dialog = new Dialog<>(); initDialog(dialog, title);
         ButtonType actionType = new ButtonType(action, ButtonType.OK.getButtonData());
         dialog.getDialogPane().getButtonTypes().addAll(actionType, ButtonType.CANCEL);
@@ -740,13 +780,29 @@ public final class DclsApp extends Application {
         dialog.getDialogPane().setContent(wrap); dialog.getDialogPane().setPrefWidth(480);
         Button ok = (Button) dialog.getDialogPane().lookupButton(actionType); ok.setDefaultButton(true);
         ok.addEventFilter(ActionEvent.ACTION, event -> {
-            try { submit.run(); }
-            catch (RuntimeException exception) {
-                error.setText(readable(exception)); error.setManaged(true); error.setVisible(true);
-                event.consume();
-            }
+            event.consume();
+            ok.setDisable(true);
+            error.setText("Saving…"); error.setManaged(true); error.setVisible(true);
+            try {
+                submit.accept(result -> {
+                    if (!Platform.isFxApplicationThread()) {
+                        Platform.runLater(() -> finishForm(dialog, actionType, ok, error, result));
+                    } else finishForm(dialog, actionType, ok, error, result);
+                });
+            } catch (RuntimeException exception) { finishForm(dialog, actionType, ok, error, exception); }
         });
         dialog.showAndWait();
+    }
+
+    private void finishForm(Dialog<ButtonType> dialog, ButtonType actionType, Button ok, Label error, Throwable failure) {
+        if (failure == null) {
+            dialog.setResult(actionType);
+            dialog.close();
+            return;
+        }
+        error.setText(readable(failure));
+        error.setManaged(true); error.setVisible(true);
+        ok.setDisable(false);
     }
 
     boolean confirm(String title, String message) {
@@ -756,8 +812,40 @@ public final class DclsApp extends Application {
     }
 
     void runAction(Runnable action, String success) {
-        try { action.run(); if (success != null) toast(success); }
-        catch (RuntimeException exception) { showError(readable(exception)); }
+        runAction(action, success, () -> { });
+    }
+
+    void runAction(Runnable action, String success, Runnable afterSuccess) {
+        if (dataModeLabel != null) dataModeLabel.setText("Saving…");
+        runAsync(action, () -> {
+            if (success != null) toast(success);
+            afterSuccess.run();
+        }, exception -> {
+            if (dataModeLabel != null) dataModeLabel.setText(repository.persistent() ? "MySQL connected" : "Demo data");
+            showError(readable(exception));
+        });
+    }
+
+    void runAsync(Runnable action, Runnable onSuccess, Consumer<Throwable> onFailure) {
+        runIo(() -> {
+            action.run();
+            return null;
+        }, ignored -> onSuccess.run(), onFailure);
+    }
+
+    private <T> void runIo(Supplier<T> action, Consumer<T> onSuccess, Consumer<Throwable> onFailure) {
+        ioExecutor.execute(() -> {
+            try {
+                T result = action.get();
+                Platform.runLater(() -> onSuccess.accept(result));
+            } catch (RuntimeException exception) {
+                if (repository instanceof CachedRepository cached) {
+                    try { cached.refresh(); }
+                    catch (RuntimeException refreshException) { exception.addSuppressed(refreshException); }
+                }
+                Platform.runLater(() -> onFailure.accept(exception));
+            }
+        });
     }
 
     String readable(Throwable error) {
@@ -792,7 +880,11 @@ public final class DclsApp extends Application {
     int integer(String text) { try { return Integer.parseInt(text.trim()); } catch (Exception exception) { throw new AppException("Enter a whole number."); } }
     double number(String text) { try { double value = Double.parseDouble(text.trim()); if (value < 0) throw new NumberFormatException(); return value; } catch (Exception exception) { throw new AppException("Enter a number zero or greater."); } }
 
-    @Override public void stop() { stopTracking(); if (repository != null) repository.close(); }
+    @Override public void stop() {
+        stopTracking();
+        if (repository != null) repository.close();
+        ioExecutor.shutdown();
+    }
 
     static final class ListViewWithRemove extends VBox {
         ListViewWithRemove(ObservableList<Stop> items) {

@@ -94,7 +94,12 @@ final class FleetView {
         edit.setDisable(!app.access.canManageFleet(app.currentUser.role())); status.setDisable(!app.access.canManageFleet(app.currentUser.role())); remove.setDisable(app.currentUser.role() != Role.ADMIN);
         edit.setOnAction(event -> { if (table.getSelectionModel().getSelectedItem() != null) vehicleDialog(table.getSelectionModel().getSelectedItem()); });
         status.setOnAction(event -> { if (table.getSelectionModel().getSelectedItem() != null) vehicleStatusDialog(table.getSelectionModel().getSelectedItem()); });
-        remove.setOnAction(event -> { Vehicle selected = table.getSelectionModel().getSelectedItem(); if (selected != null && app.confirm("Delete vehicle?", "This action is available only for vehicles without shipment history.")) { try { app.repository.deleteVehicle(selected.id()); refresh.run(); } catch (RuntimeException ex) { app.alert(Alert.AlertType.WARNING, "Vehicle is in use", "This vehicle is linked to an order. Set it to Unavailable instead."); } } });
+        remove.setOnAction(event -> {
+            Vehicle selected = table.getSelectionModel().getSelectedItem();
+            if (selected != null && app.confirm("Delete vehicle?", "Delete " + selected.plate() + "? Vehicles linked to orders or service records cannot be removed.")) {
+                app.runAction(() -> app.fleet.deleteVehicle(selected.id()), "Vehicle deleted.", refresh);
+            }
+        });
         Label reminders = new Label(app.fleet.maintenanceDue().size() + " service reminder(s) based on current mileage"); reminders.getStyleClass().add("muted");
         actions.getChildren().addAll(edit, status, remove, new Region(), reminders);
         VBox inventory = panel(new Label("Fleet inventory")); ((Label)inventory.getChildren().get(0)).getStyleClass().add("section-title");
@@ -125,7 +130,11 @@ final class FleetView {
         table.getColumns().add(textCol("Service", MaintenanceRecord::description, 300));
         table.getColumns().add(textCol("Cost", m -> String.format("$%.2f", m.cost()), 110));
         table.setItems(FXCollections.observableArrayList(app.repository.maintenanceRecords())); table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY);
-        content.getChildren().addAll(tools, table); VBox.setVgrow(table, ALWAYS); return content;
+        Button edit = button("Edit", "secondary-button"), remove = button("Delete", "danger-button");
+        boolean canManage = app.access.canManageFleet(app.currentUser.role()); edit.setDisable(!canManage); remove.setDisable(!canManage);
+        edit.setOnAction(event -> { MaintenanceRecord selected = table.getSelectionModel().getSelectedItem(); if (selected != null) maintenanceDialog(selected); });
+        remove.setOnAction(event -> { MaintenanceRecord selected = table.getSelectionModel().getSelectedItem(); if (selected != null && app.confirm("Delete service record?", "Delete this maintenance record? The vehicle's current odometer will be kept.")) app.runAction(() -> app.fleet.deleteMaintenance(selected.id()), "Maintenance record deleted.", () -> app.showPage("fleet")); });
+        content.getChildren().addAll(tools, table, new HBox(8, edit, remove)); VBox.setVgrow(table, ALWAYS); return content;
     }
 
     private Node fuelTab() {
@@ -138,7 +147,11 @@ final class FleetView {
         table.getColumns().add(textCol("Amount", f -> String.format("%.1f L", f.litres()), 110));
         table.getColumns().add(textCol("Cost", f -> String.format("$%.2f", f.cost()), 110));
         table.setItems(FXCollections.observableArrayList(app.repository.fuelRecords())); table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY);
-        content.getChildren().addAll(add, table); VBox.setVgrow(table, ALWAYS); return content;
+        Button edit = button("Edit", "secondary-button"), remove = button("Delete", "danger-button");
+        boolean canManage = app.access.canManageFleet(app.currentUser.role()); edit.setDisable(!canManage); remove.setDisable(!canManage);
+        edit.setOnAction(event -> { FuelRecord selected = table.getSelectionModel().getSelectedItem(); if (selected != null) fuelDialog(selected); });
+        remove.setOnAction(event -> { FuelRecord selected = table.getSelectionModel().getSelectedItem(); if (selected != null && app.confirm("Delete fuel record?", "Delete this refuel record? The vehicle's current odometer will be kept.")) app.runAction(() -> app.fleet.deleteFuel(selected.id()), "Fuel record deleted.", () -> app.showPage("fleet")); });
+        content.getChildren().addAll(add, table, new HBox(8, edit, remove)); VBox.setVgrow(table, ALWAYS); return content;
     }
 
     private void vehicleDialog(Vehicle existing) {
@@ -154,34 +167,66 @@ final class FleetView {
         GridPane form = formGrid(); addField(form, 0, "Plate number", plate); addField(form, 1, "Model", model); addField(form, 2, "Vehicle type", type);
         addField(form, 3, "Capacity (kg)", capacity); addField(form, 4, "Mileage (km)", mileage); addField(form, 5, "Next service (km)", nextService);
         addField(form, 6, "Status", status); addField(form, 7, "Assigned driver", driver);
-        app.confirmForm(existing == null ? "Add vehicle" : "Edit vehicle", form, existing == null ? "Add vehicle" : "Save changes", () -> {
-            Vehicle vehicle = existing == null ? new Vehicle(AppServices.id(), plate.getText(), model.getText(), type.getText(), app.number(capacity.getText()), app.number(mileage.getText()), status.getValue(),
-                    driver.getValue() == null ? null : driver.getValue().id(), app.number(nextService.getText())) : existing;
-            if (existing != null) vehicle.update(plate.getText(), model.getText(), type.getText(), app.number(capacity.getText()), app.number(mileage.getText()), status.getValue(),
-                    driver.getValue() == null ? null : driver.getValue().id(), app.number(nextService.getText()));
-            app.fleet.save(vehicle); app.showPage("fleet");
+        app.confirmForm(existing == null ? "Add vehicle" : "Edit vehicle", form, existing == null ? "Add vehicle" : "Save changes", complete -> {
+            try {
+                Vehicle vehicle = new Vehicle(existing == null ? AppServices.id() : existing.id(), plate.getText().trim(), model.getText().trim(), type.getText().trim(),
+                        app.number(capacity.getText()), app.number(mileage.getText()), status.getValue(),
+                        driver.getValue() == null ? null : driver.getValue().id(), app.number(nextService.getText()));
+                app.runAsync(() -> app.fleet.save(vehicle), () -> { complete.accept(null); app.showPage("fleet"); }, complete);
+            } catch (RuntimeException exception) { complete.accept(exception); }
         });
     }
 
     private void vehicleStatusDialog(Vehicle vehicle) {
         ComboBox<VehicleStatus> status = new ComboBox<>(FXCollections.observableArrayList(VehicleStatus.values())); status.setValue(vehicle.status());
         Optional<ButtonType> result = app.confirmDialog("Change status · " + vehicle.plate(), status, "Save status");
-        if (result.isPresent() && result.get().getButtonData() == ButtonType.OK.getButtonData()) { app.runAction(() -> app.fleet.setStatus(vehicle, status.getValue()), "Vehicle status updated."); app.showPage("fleet"); }
+        if (result.isPresent() && result.get().getButtonData() == ButtonType.OK.getButtonData()) app.runAction(() -> app.fleet.setStatus(vehicle, status.getValue()), "Vehicle status updated.", () -> app.showPage("fleet"));
     }
 
-    private void maintenanceDialog() {
-        ComboBox<Vehicle> vehicle = app.vehicleCombo(); DatePicker date = new DatePicker(LocalDate.now());
-        TextField mileage = new TextField("0"), details = new TextField(), cost = new TextField("0");
+    private void maintenanceDialog() { maintenanceDialog(null); }
+
+    private void maintenanceDialog(MaintenanceRecord existing) {
+        ComboBox<Vehicle> vehicle = app.vehicleCombo();
+        if (existing != null) app.repository.vehicle(existing.vehicleId()).ifPresent(vehicle::setValue);
+        vehicle.setDisable(existing != null);
+        DatePicker date = new DatePicker(existing == null ? LocalDate.now() : existing.date());
+        TextField mileage = new TextField(existing == null ? "0" : String.valueOf(existing.mileageKm()));
+        TextField details = new TextField(existing == null ? "" : existing.description());
+        TextField cost = new TextField(existing == null ? "0" : String.valueOf(existing.cost()));
         VBox form = new VBox(10, labeled("Vehicle", vehicle), labeled("Date", date), labeled("Mileage (km)", mileage), labeled("Service details", details), labeled("Cost ($)", cost));
-        app.confirmForm("Record maintenance", form, "Save record", () ->
-            { app.fleet.logMaintenance(vehicle.getValue(), date.getValue(), app.number(mileage.getText()), details.getText(), app.number(cost.getText())); app.showPage("fleet"); });
+        app.confirmForm(existing == null ? "Record maintenance" : "Edit maintenance record", form, "Save record", complete -> {
+            try {
+                Vehicle selectedVehicle = vehicle.getValue();
+                LocalDate selectedDate = date.getValue(); double selectedMileage = app.number(mileage.getText());
+                String selectedDetails = details.getText(); double selectedCost = app.number(cost.getText());
+                app.runAsync(() -> {
+                    if (existing == null) app.fleet.logMaintenance(selectedVehicle, selectedDate, selectedMileage, selectedDetails, selectedCost);
+                    else app.fleet.updateMaintenance(existing, selectedDate, selectedMileage, selectedDetails, selectedCost);
+                }, () -> { complete.accept(null); app.showPage("fleet"); }, complete);
+            } catch (RuntimeException exception) { complete.accept(exception); }
+        });
     }
 
-    private void fuelDialog() {
-        ComboBox<Vehicle> vehicle = app.vehicleCombo(); DatePicker date = new DatePicker(LocalDate.now());
-        TextField mileage = new TextField("0"), litres = new TextField(), cost = new TextField();
+    private void fuelDialog() { fuelDialog(null); }
+
+    private void fuelDialog(FuelRecord existing) {
+        ComboBox<Vehicle> vehicle = app.vehicleCombo();
+        if (existing != null) app.repository.vehicle(existing.vehicleId()).ifPresent(vehicle::setValue);
+        vehicle.setDisable(existing != null);
+        DatePicker date = new DatePicker(existing == null ? LocalDate.now() : existing.date());
+        TextField mileage = new TextField(existing == null ? "0" : String.valueOf(existing.mileageKm()));
+        TextField litres = new TextField(existing == null ? "" : String.valueOf(existing.litres()));
+        TextField cost = new TextField(existing == null ? "" : String.valueOf(existing.cost()));
         VBox form = new VBox(10, labeled("Vehicle", vehicle), labeled("Date", date), labeled("Mileage (km)", mileage), labeled("Litres", litres), labeled("Cost ($)", cost));
-        app.confirmForm("Record refuel", form, "Save record", () ->
-            { app.fleet.logFuel(vehicle.getValue(), date.getValue(), app.number(mileage.getText()), app.number(litres.getText()), app.number(cost.getText())); app.showPage("fleet"); });
+        app.confirmForm(existing == null ? "Record refuel" : "Edit fuel record", form, "Save record", complete -> {
+            try {
+                Vehicle selectedVehicle = vehicle.getValue(); LocalDate selectedDate = date.getValue();
+                double selectedMileage = app.number(mileage.getText()), selectedLitres = app.number(litres.getText()), selectedCost = app.number(cost.getText());
+                app.runAsync(() -> {
+                    if (existing == null) app.fleet.logFuel(selectedVehicle, selectedDate, selectedMileage, selectedLitres, selectedCost);
+                    else app.fleet.updateFuel(existing, selectedDate, selectedMileage, selectedLitres, selectedCost);
+                }, () -> { complete.accept(null); app.showPage("fleet"); }, complete);
+            } catch (RuntimeException exception) { complete.accept(exception); }
+        });
     }
 }
