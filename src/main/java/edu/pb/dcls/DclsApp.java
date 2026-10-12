@@ -79,6 +79,7 @@ public final class DclsApp extends Application {
     private OrderService orders;
     private RouteService routeService;
     private TrackingService tracking;
+    private AutoRouteService autoRoutes;
     private User currentUser;
     private BorderPane shell;
     private VBox nav;
@@ -109,6 +110,7 @@ public final class DclsApp extends Application {
         orders = new OrderService(repository);
         routeService = new RouteService(repository);
         tracking = new TrackingService(repository);
+        autoRoutes = new AutoRouteService(repository, routeService, tracking);
         stage.setTitle("DCLS — Delivery Logistics Simulator");
         stage.setMinWidth(900);
         stage.setMinHeight(560);
@@ -554,7 +556,7 @@ public final class DclsApp extends Application {
     }
 
     private VBox routesPage() {
-        VBox page = pageHeader("Route planning", "Build a multi-stop route from local map points and estimate travel time.");
+        VBox page = pageHeader("Route planning", "Brunei-district stops, fastest route @ 35 km/h. Marking an order In-Transit auto-builds one route per vehicle.");
         HBox builder = new HBox(12);
         VBox controls = panel(new Label("Create a route"));
         ((Label) controls.getChildren().get(0)).getStyleClass().add("section-title");
@@ -611,16 +613,18 @@ public final class DclsApp extends Application {
     }
 
     private VBox trackingPage() {
-        VBox page = pageHeader("Real-time tracking", "Live positions are simulated along assigned routes. No GPS data is used.");
+        VBox page = pageHeader("Real-time tracking", "Simulated driver's-phone GPS per vehicle @ 35 km/h · Brunei Darussalam.");
         trackingCanvas = mapCanvas(470, 350);
-        VBox map = panel(new Label("Fleet map  ·  Brunei-Muara")); ((Label) map.getChildren().get(0)).getStyleClass().add("section-title"); map.getChildren().add(trackingCanvas);
+        VBox map = panel(new Label("Fleet map  ·  Brunei Darussalam")); ((Label) map.getChildren().get(0)).getStyleClass().add("section-title"); map.getChildren().add(trackingCanvas);
         VBox active = panel(new Label("Active deliveries")); ((Label) active.getChildren().get(0)).getStyleClass().add("section-title");
         trackingEta = new Label("Select a delivery to view its latest estimate."); trackingEta.getStyleClass().add("muted"); trackingEta.setWrapText(true);
         TableView<Shipment> table = new TableView<>(); table.setPlaceholder(new Label("No active deliveries."));
-        table.getColumns().add(textCol("Order", Shipment::id, 100));
-        table.getColumns().add(textCol("Driver", s -> driverName(s.driverId()), 130));
-        table.getColumns().add(textCol("Destination", Shipment::address, 180));
-        table.getColumns().add(textCol("Status", s -> s.status().label(), 100));
+        table.getColumns().add(textCol("Order", Shipment::id, 90));
+        table.getColumns().add(textCol("Vehicle", s -> vehiclePlate(s.vehicleId()), 90));
+        table.getColumns().add(textCol("Driver", s -> driverName(s.driverId()), 110));
+        table.getColumns().add(textCol("GPS", s -> s.vehicleId() == null ? "—" : tracking.gpsStatus(s.vehicleId()), 110));
+        table.getColumns().add(textCol("Destination", Shipment::address, 150));
+        table.getColumns().add(textCol("Status", s -> s.status().label(), 80));
         List<Shipment> activeShipments = visibleShipments().stream().filter(s -> s.status() == OrderStatus.IN_TRANSIT).toList();
         table.setItems(FXCollections.observableArrayList(activeShipments)); table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY); table.setPrefHeight(300);
         table.getSelectionModel().selectedItemProperty().addListener((o, old, selected) -> showEta(selected));
@@ -784,6 +788,14 @@ public final class DclsApp extends Application {
         OrderStatus finalNext = next;
         int finalRating = ratingValue;
         runAction(() -> { if (finalRating > 0) shipment.setCustomerSatisfaction(finalRating); orders.transition(shipment, finalNext, currentUser); }, "Order moved to " + finalNext.label() + ".");
+        if (finalNext == OrderStatus.IN_TRANSIT && shipment.status() == OrderStatus.IN_TRANSIT && shipment.vehicleId() != null) {
+            try {
+                RoutePlan auto = autoRoutes.buildForVehicle(shipment.vehicleId());
+                toast("Auto-route: " + auto.name() + " · " + String.format("%.1f km", auto.distanceKm()) + " · about " + auto.estimatedMinutes() + " min @ 35 km/h.");
+            } catch (RuntimeException exception) {
+                alert(Alert.AlertType.WARNING, "Auto-route not created", readable(exception));
+            }
+        }
         refresh.run();
         if (activePage.equals("dashboard")) showPage("dashboard");
     }
@@ -862,7 +874,7 @@ public final class DclsApp extends Application {
         g.strokeLine(w * .03, h * .82, w * .94, h * .14); g.strokeLine(w * .08, h * .28, w * .9, h * .77);
         g.strokeLine(w * .36, h * .98, w * .56, h * .02); g.strokeLine(w * .04, h * .52, w * .95, h * .48);
         g.setFill(javafx.scene.paint.Color.web("#657487")); g.setFont(javafx.scene.text.Font.font("Segoe UI", 11));
-        g.fillText("Brunei-Muara  ·  simulated route map", 14, 20);
+        g.fillText("Brunei Darussalam  ·  simulated phone GPS @ 35 km/h", 14, 20);
         return g;
     }
 
@@ -874,11 +886,11 @@ public final class DclsApp extends Application {
         if (stops == null || stops.isEmpty()) return;
         g.setStroke(javafx.scene.paint.Color.web("#176df6")); g.setLineWidth(4);
         for (int i = 1; i < stops.size(); i++) {
-            Stop a = stops.get(i - 1), b = stops.get(i);
-            g.strokeLine(a.x() * width, a.y() * height, b.x() * width, b.y() * height);
+            double[] a = project(stops.get(i - 1), width, height), b = project(stops.get(i), width, height);
+            g.strokeLine(a[0], a[1], b[0], b[1]);
         }
         for (int i = 0; i < stops.size(); i++) {
-            Stop stop = stops.get(i); double x = stop.x() * width, y = stop.y() * height;
+            Stop stop = stops.get(i); double[] p = project(stop, width, height); double x = p[0], y = p[1];
             g.setFill(i == 0 ? javafx.scene.paint.Color.web("#17613f") : javafx.scene.paint.Color.web("#ffffff"));
             g.fillOval(x - 7, y - 7, 14, 14); g.setStroke(javafx.scene.paint.Color.web(i == 0 ? "#17613f" : "#176df6")); g.setLineWidth(3); g.strokeOval(x - 7, y - 7, 14, 14);
             g.setFill(javafx.scene.paint.Color.web("#172033")); g.fillText(stop.name(), x + 9, y - 8);
@@ -886,8 +898,21 @@ public final class DclsApp extends Application {
         if (moving != null) drawVehicleMarker(g, width, height, moving.x(), moving.y(), "Vehicle");
     }
 
+    /** Project lon/lat (Stop.x/y) onto the canvas; covers Brunei-Muara to Tutong with padding. */
+    private double[] project(Stop stop, double width, double height) {
+        return project(stop.x(), stop.y(), width, height);
+    }
+
+    private double[] project(double lon, double lat, double width, double height) {
+        double minLon = 114.60, maxLon = 115.05, minLat = 4.75, maxLat = 5.02;
+        double pad = 36;
+        double x = pad + (lon - minLon) / (maxLon - minLon) * (width - pad * 2);
+        double y = pad + (maxLat - lat) / (maxLat - minLat) * (height - pad * 2);
+        return new double[] {Math.min(Math.max(x, 10), width - 10), Math.min(Math.max(y, 22), height - 10)};
+    }
+
     private void drawVehicleMarker(GraphicsContext g, double width, double height, double x, double y, String label) {
-        double px = x * width, py = y * height;
+        double[] p = project(x, y, width, height); double px = p[0], py = p[1];
         g.setFill(javafx.scene.paint.Color.web("#1457c5")); g.fillOval(px - 9, py - 9, 18, 18);
         g.setStroke(javafx.scene.paint.Color.WHITE); g.setLineWidth(2); g.strokeOval(px - 9, py - 9, 18, 18);
         g.setFill(javafx.scene.paint.Color.web("#172033")); g.fillText(label, px + 12, py + 4);

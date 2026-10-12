@@ -76,6 +76,7 @@ CREATE TABLE IF NOT EXISTS routes (
     CONSTRAINT fk_route_driver FOREIGN KEY (driver_id) REFERENCES users(id)
 );
 
+-- Stop/track coordinates are WGS84 degrees: x_coord = longitude, y_coord = latitude (Brunei Darussalam).
 CREATE TABLE IF NOT EXISTS route_stops (
     id VARCHAR(36) PRIMARY KEY,
     route_id VARCHAR(36) NOT NULL,
