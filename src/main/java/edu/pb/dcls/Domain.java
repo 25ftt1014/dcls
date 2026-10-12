@@ -50,10 +50,11 @@ public final class Domain {
         private String passwordSalt;
         private Role role;
         private boolean active;
+        private boolean pending;
 
-        public User(String id, String name, String email, String phone, String passwordHash, String passwordSalt, Role role, boolean active) {
+        public User(String id, String name, String email, String phone, String passwordHash, String passwordSalt, Role role, boolean active, boolean pending) {
             this.id = id; this.name = name; this.email = email; this.phone = phone;
-            this.passwordHash = passwordHash; this.passwordSalt = passwordSalt; this.role = role; this.active = active;
+            this.passwordHash = passwordHash; this.passwordSalt = passwordSalt; this.role = role; this.active = active; this.pending = pending;
         }
         public String id() { return id; }
         public String name() { return name; }
@@ -63,10 +64,12 @@ public final class Domain {
         public String passwordSalt() { return passwordSalt; }
         public Role role() { return role; }
         public boolean active() { return active; }
+        public boolean pending() { return pending; }
         public void updateProfile(String name, String email, String phone) { this.name = name; this.email = email; this.phone = phone; }
         public void setPassword(String hash, String salt) { passwordHash = hash; passwordSalt = salt; }
         public void setRole(Role role) { this.role = role; }
         public void setActive(boolean active) { this.active = active; }
+        public void setPending(boolean pending) { this.pending = pending; }
     }
 
     public static final class Vehicle {

@@ -67,7 +67,7 @@ public final class MockRepository implements Repository {
 
     private void addUser(String id, String name, String email, String phone, Role role, String password) {
         Security.Credentials credentials = Security.credentials(password.toCharArray());
-        users.put(id, new User(id, name, email, phone, credentials.hash(), credentials.salt(), role, true));
+        users.put(id, new User(id, name, email, phone, credentials.hash(), credentials.salt(), role, true, false));
     }
 
     @Override public List<User> users() { return new ArrayList<>(users.values()); }

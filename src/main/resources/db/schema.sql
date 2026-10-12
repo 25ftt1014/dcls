@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS users (
     password_salt VARCHAR(64) NOT NULL,
     role_code VARCHAR(24) NOT NULL,
     active BOOLEAN NOT NULL DEFAULT TRUE,
+    pending BOOLEAN NOT NULL DEFAULT FALSE,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT fk_user_role FOREIGN KEY (role_code) REFERENCES roles(role_code)
 );

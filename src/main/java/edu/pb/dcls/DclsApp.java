@@ -76,6 +76,7 @@ public final class DclsApp extends Application {
     final ObservableList<String> routeStopsDraft = FXCollections.observableArrayList();
     private Timeline signInRipple;
     private Runnable pendingSignIn;
+    private String loginNotice;
 
     @Override public void start(Stage stage) {
         this.stage = stage;
@@ -180,6 +181,14 @@ public final class DclsApp extends Application {
         register.setOnAction(event -> registerDialog());
         forgot.setOnAction(event -> alert(Alert.AlertType.INFORMATION, "Password reset", "For this local demo, ask an administrator to reset your account password."));
         card.getChildren().addAll(formTitle, hint, new Region(), labeled("EMAIL", email), labeled("PASSWORD", password), loginOptions, error, demoInfo, submit, register);
+        if (loginNotice != null && !loginNotice.isBlank()) {
+            Label notice = new Label(loginNotice);
+            notice.setWrapText(true);
+            notice.setMaxWidth(Double.MAX_VALUE);
+            notice.getStyleClass().add("notice");
+            card.getChildren().add(card.getChildren().indexOf(submit), notice);
+            loginNotice = null;
+        }
         frame.getChildren().addAll(introduction, card);
         page.setCenter(frame);
         Scene scene = new Scene(page);
@@ -193,7 +202,7 @@ public final class DclsApp extends Application {
         TextField phone = new TextField(); phone.setPromptText("Phone number");
         PasswordField password = new PasswordField(); password.setPromptText("At least 8 characters");
         Label heading = new Label("Create your account"); heading.setStyle("-fx-font-size:20px;-fx-font-weight:700;-fx-text-fill:#172033;");
-        Label description = new Label("Join Trackify to manage your deliveries."); description.getStyleClass().add("muted");
+        Label description = new Label("Create an account, then wait for an administrator to approve it and set your role."); description.setWrapText(true); description.getStyleClass().add("muted");
         Label error = new Label(); error.setWrapText(true); error.setStyle("-fx-text-fill:#9b2c24;");
         Button create = button("Create account", "primary-button"); create.setMaxWidth(Double.MAX_VALUE);
         Button back = new Button("Already have an account? Sign in"); back.getStyleClass().add("link-button"); back.setMaxWidth(Double.MAX_VALUE);
@@ -214,8 +223,10 @@ public final class DclsApp extends Application {
         Scene scene = new Scene(page, 900, 560); scene.getStylesheets().add(getClass().getResource("/edu/pb/dcls/styles.css").toExternalForm()); registration.setScene(scene);
         Runnable submit = () -> {
             try {
-                currentUser = auth.register(name.getText(), email.getText(), phone.getText(), password.getText().toCharArray());
-                registration.close(); showShell("dashboard");
+                auth.register(name.getText(), email.getText(), phone.getText(), password.getText().toCharArray());
+                registration.close();
+                loginNotice = "Account created. An administrator must approve it and set your role before you can sign in.";
+                showLogin();
             } catch (AppException exception) { error.setText(exception.getMessage()); }
         };
         create.setOnAction(event -> submit.run()); password.setOnAction(event -> submit.run());

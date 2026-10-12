@@ -45,7 +45,7 @@ final class AppServices {
             if (repository.userByEmail(email.trim()).isPresent()) throw new AppException("An account with that email already exists.");
             Security.Credentials credentials = Security.credentials(password);
             User user = new User(id(), name.trim(), email.trim(), phone == null ? "" : phone.trim(),
-                    credentials.hash(), credentials.salt(), Role.DRIVER, true);
+                    credentials.hash(), credentials.salt(), Role.DRIVER, false, true);
             repository.saveUser(user);
             return user;
         }

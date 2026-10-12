@@ -91,10 +91,30 @@ class AppServicesTest {
         }
 
         @Test
-        void registerCreatesDriverAccount() {
-            User user = auth.register("New Person", "new@dcls.local", "+673 000", "password1".toCharArray());
+        void registerCreatesPendingAccount() {
+            User user = auth.register("New Person", "new@dcls.local", "+673 000",
+                    "password1".toCharArray());
             assertEquals(Role.DRIVER, user.role());
+            assertFalse(user.active(), "a self-registered account must not be able to sign in yet");
+            assertTrue(user.pending(), "a self-registered account must await administrator approval");
             assertTrue(repo.userByEmail("new@dcls.local").isPresent());
+        }
+
+        @Test
+        void registeredUserCannotSignInUntilApproved() {
+            auth.register("New Person", "new@dcls.local", "+673 000", "password1".toCharArray());
+            assertThrows(AppException.class, () -> auth.login("new@dcls.local", "password1".toCharArray()));
+
+            User stored = repo.userByEmail("new@dcls.local").orElseThrow();
+            stored.setRole(Role.MANAGER);
+            stored.setActive(true);
+            stored.setPending(false);
+            repo.saveUser(stored);
+
+            User signedIn = auth.login("new@dcls.local", "password1".toCharArray());
+            assertEquals("New Person", signedIn.name());
+            assertEquals(Role.MANAGER, signedIn.role());
+            assertFalse(signedIn.pending());
         }
 
         @Test

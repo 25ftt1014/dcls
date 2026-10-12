@@ -123,6 +123,28 @@
 .settings-button > .arrow-button { -fx-padding: 0; -fx-background-color: transparent; }
 .settings-button > .arrow-button > .arrow { -fx-padding: 0; -fx-shape: ""; }
 
+.filter-toggle {
+    -fx-background-color: transparent;
+    -fx-border-color: -line;
+    -fx-border-radius: 9;
+    -fx-background-radius: 9;
+    -fx-padding: 9 14;
+    -fx-cursor: hand;
+    -fx-font-weight: 600;
+    -fx-text-fill: -ink-soft;
+    -fx-alignment: center;
+}
+.filter-toggle:hover { -fx-background-color: -accent-soft; -fx-border-color: -accent; -fx-text-fill: -accent-hover; }
+.filter-toggle:selected { -fx-background-color: -accent-soft; -fx-border-color: -accent; -fx-text-fill: -accent-hover; }
+
+.notice {
+    -fx-background-color: -accent-soft;
+    -fx-background-radius: 8;
+    -fx-padding: 10 12;
+    -fx-font-size: 12px;
+    -fx-text-fill: #1b47aa;
+}
+
 /* ---- dashboard bits ------------------------------------------ */
 .activity-summary { -fx-text-fill: -accent; -fx-font-size: 11px; -fx-font-weight: 700; }
 .delivery-line {
