@@ -21,6 +21,8 @@ Sign in with:
 
 The sign-in screen opens with the Admin demo credentials filled in. The local demo data resets when the app closes.
 
+Map data © OpenStreetMap contributors (bundled zoom-11 country + zoom-13 Bandar-metro/Tutong/Muara renders and a 90-pair road network, all used offline; vehicle movement is simulated).
+
 ## Demo flow
 
 1. Sign in as Admin and review the dashboard totals.

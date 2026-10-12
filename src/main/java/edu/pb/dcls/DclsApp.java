@@ -44,11 +44,13 @@ import javafx.scene.layout.StackPane;
 import javafx.scene.layout.VBox;
 import javafx.scene.image.Image;
 import javafx.scene.image.ImageView;
+import javafx.stage.FileChooser;
 import javafx.stage.Modality;
 import javafx.stage.Stage;
 import javafx.util.Duration;
 import javafx.util.StringConverter;
 
+import java.io.File;
 import java.io.InputStream;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -60,7 +62,10 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.function.BiConsumer;
+import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 import static edu.pb.dcls.AppServices.*;
@@ -91,9 +96,20 @@ public final class DclsApp extends Application {
     private String fleetRecordsView = "vehicles";
     private Timeline trackingTimer;
     private Canvas trackingCanvas;
+    private TileLevel baseLevel = new TileLevel(null, 11, 1675, 995, 4, 3);
+    private TileLevel metroLevel = new TileLevel(null, 13, 6709, 3982, 5, 4);
+    private TileLevel tutongLevel = new TileLevel(null, 13, 6704, 3985, 3, 2);
+    private TileLevel muaraLevel = new TileLevel(null, 13, 6712, 3981, 4, 3);
     private Label trackingEta;
     private String routeNameInput = "";
-    private final ObservableList<String> routeStopsDraft = FXCollections.observableArrayList();
+    private final ObservableList<Stop> routeStopsDraft = FXCollections.observableArrayList();
+    private int customPinCount = 0;
+    private List<Stop> previewStops = List.of();
+    private List<double[]> trackingFrame = List.of();
+    private final Map<String, RoutePlan> trackingRoutes = new LinkedHashMap<>();
+    private final Map<String, List<TrackingPoint>> trackingTrails = new LinkedHashMap<>();
+    private MapController trackingMaps;
+    private VBox trackingLegend;
     private Timeline signInRipple;
     private Runnable pendingSignIn;
 
@@ -108,6 +124,10 @@ public final class DclsApp extends Application {
         }
         auth = new AuthService(repository);
         access = new AccessService();
+        baseLevel = loadLevel("/edu/pb/dcls/brunei-map.png", 11, 1675, 995, 4, 3);
+        metroLevel = loadLevel("/edu/pb/dcls/brunei-map-z13.png", 13, 6709, 3982, 5, 4);
+        tutongLevel = loadLevel("/edu/pb/dcls/brunei-map-z13-tutong.png", 13, 6704, 3985, 3, 2);
+        muaraLevel = loadLevel("/edu/pb/dcls/brunei-map-z13-muara.png", 13, 6712, 3981, 4, 3);
         fleet = new FleetService(repository);
         orders = new OrderService(repository);
         routeService = new RouteService(repository);
@@ -120,6 +140,13 @@ public final class DclsApp extends Application {
         stage.setHeight(560);
         showLogin();
         stage.show();
+    }
+
+    private TileLevel loadLevel(String resource, int z, int x0, int y0, int cols, int rows) {
+        try (InputStream in = getClass().getResourceAsStream(resource)) {
+            if (in != null) return new TileLevel(new Image(in), z, x0, y0, cols, rows);
+        } catch (Exception ignored) { }
+        return new TileLevel(null, z, x0, y0, cols, rows);
     }
 
     private Repository configuredRepository() {
@@ -355,10 +382,18 @@ public final class DclsApp extends Application {
                 metric("Pending orders", String.valueOf(pending), ""),
                 metric("Completed today", String.valueOf(completed), ""));
         for (Node node : metrics.getChildren()) HBox.setHgrow(node, ALWAYS);
-        VBox mapPanel = panel(new Label("Operations map")); ((Label) mapPanel.getChildren().get(0)).getStyleClass().add("section-title");
-        Canvas map = mapCanvas(430, 210);
-        if (!repository.routes().isEmpty()) drawRoute(map, repository.routes().getFirst().stops(), null); else drawDashboardRoads(map);
-        mapPanel.getChildren().add(map);
+        VBox mapPanel = panel(new Label("Operations map — scroll to zoom, drag to pan")); ((Label) mapPanel.getChildren().get(0)).getStyleClass().add("section-title");
+        MapController opsMap = new MapController(430, 210);
+        if (!repository.routes().isEmpty()) {
+            List<Stop> firstStops = repository.routes().getFirst().stops();
+            opsMap.content = () -> firstStops.stream().map(s -> ll(s.x(), s.y())).toList();
+            opsMap.painter = (g, v) -> drawRouteOn(g, opsMap.canvas.getWidth(), opsMap.canvas.getHeight(), firstStops, null, "#176df6", v);
+        } else {
+            opsMap.content = this::dashboardPoints;
+            opsMap.painter = (g, v) -> paintDashboardMarkers(g, opsMap.canvas.getWidth(), opsMap.canvas.getHeight(), v);
+        }
+        opsMap.redraw();
+        mapPanel.getChildren().addAll(opsMap.canvas, opsMap.zoomBar);
         VBox activity = panel(new Label("Active deliveries")); ((Label) activity.getChildren().get(0)).getStyleClass().add("section-title");
         HBox summary = new HBox(8, new Label("+4 vs yesterday"), new Region(), new Label(String.valueOf(active)));
         summary.getStyleClass().add("activity-summary"); HBox.setHgrow(summary.getChildren().get(1), ALWAYS); activity.getChildren().add(summary);
@@ -372,17 +407,28 @@ public final class DclsApp extends Application {
         return page;
     }
 
-    private void drawDashboardRoads(Canvas canvas) {
-        GraphicsContext g = prepareMap(canvas); double w=canvas.getWidth(), h=canvas.getHeight();
-        g.setStroke(javafx.scene.paint.Color.web("#d6e0e8")); g.setLineWidth(17);
-        g.beginPath(); g.moveTo(w*.04,h*.25); g.bezierCurveTo(w*.30,h*.02,w*.50,h*.58,w*.70,h*.25); g.bezierCurveTo(w*.82,h*.12,w*.91,h*.32,w*.98,h*.50); g.stroke();
-        g.setStroke(javafx.scene.paint.Color.WHITE); g.setLineWidth(6);
-        g.beginPath(); g.moveTo(w*.05,h*.62); g.bezierCurveTo(w*.32,h*.37,w*.50,h*.76,w*.75,h*.46); g.bezierCurveTo(w*.88,h*.34,w*.92,h*.54,w*.98,h*.70); g.stroke();
-        g.setStroke(javafx.scene.paint.Color.web("#dce9dc")); g.setLineWidth(18);
-        g.beginPath(); g.moveTo(w*.02,h*.78); g.bezierCurveTo(w*.25,h*.52,w*.55,h*.95,w*.75,h*.68); g.bezierCurveTo(w*.83,h*.58,w*.92,h*.75,w*.98,h*.89); g.stroke();
-        g.setStroke(javafx.scene.paint.Color.web("#176df6")); g.setLineWidth(3);
-        g.beginPath(); g.moveTo(w*.08,h*.82); g.bezierCurveTo(w*.28,h*.71,w*.37,h*.48,w*.55,h*.40); g.bezierCurveTo(w*.73,h*.32,w*.81,h*.24,w*.94,h*.16); g.stroke();
-        for(double[] p:new double[][]{{.08,.82},{.55,.40},{.94,.16}}){g.setFill(javafx.scene.paint.Color.web("#176df6"));g.fillOval(p[0]*w-6,p[1]*h-6,12,12);g.setStroke(javafx.scene.paint.Color.WHITE);g.setLineWidth(2);g.strokeOval(p[0]*w-6,p[1]*h-6,12,12);}
+    private List<double[]> dashboardPoints() {
+        Stop depot = BruneiPlaces.DEPOT;
+        List<double[]> frame = new ArrayList<>(List.of(ll(depot.x(), depot.y())));
+        for (Vehicle vehicle : repository.vehicles()) {
+            TrackingPoint last = tracking.latestForVehicle(vehicle.id());
+            if (last != null) frame.add(ll(last.x(), last.y()));
+        }
+        return frame;
+    }
+
+    private void paintDashboardMarkers(GraphicsContext g, double w, double h, ViewBounds view) {
+        Stop depot = BruneiPlaces.DEPOT;
+        double[] d = project(depot, w, h, view);
+        g.setFill(javafx.scene.paint.Color.web("#17613f")); g.fillOval(d[0] - 7, d[1] - 7, 14, 14);
+        g.setStroke(javafx.scene.paint.Color.WHITE); g.setLineWidth(2.5); g.strokeOval(d[0] - 7, d[1] - 7, 14, 14);
+        mapLabel(g, depot.name(), d[0] + 10, d[1] - 6);
+        for (Vehicle vehicle : repository.vehicles()) {
+            TrackingPoint last = tracking.latestForVehicle(vehicle.id());
+            if (last == null) continue;
+            drawVehicleMarker(g, w, h, last.x(), last.y(), vehiclePlate(last.vehicleId()), vehicleColor(last.vehicleId()),
+                    tracking.gps().isFixLost(last.vehicleId()), view);
+        }
     }
 
     private Canvas activityChart() {
@@ -558,7 +604,7 @@ public final class DclsApp extends Application {
     }
 
     private VBox routesPage() {
-        VBox page = pageHeader("Route planning", "Brunei-district stops, fastest route @ 35 km/h. Marking an order In-Transit auto-builds one route per vehicle.");
+        VBox page = pageHeader("Route planning", "District stops or map clicks, fastest route @ 35 km/h. Marking an order In-Transit auto-builds one route per vehicle.");
         HBox builder = new HBox(12);
         VBox controls = panel(new Label("Create a route"));
         ((Label) controls.getChildren().get(0)).getStyleClass().add("section-title");
@@ -566,25 +612,56 @@ public final class DclsApp extends Application {
         ComboBox<String> place = new ComboBox<>(FXCollections.observableArrayList(routeService.placeNames())); place.setPromptText("Choose stop"); place.setMaxWidth(Double.MAX_VALUE);
         Button addStop = button("Add stop", "secondary-button");
         ListViewWithRemove draft = new ListViewWithRemove(routeStopsDraft);
-        addStop.setOnAction(event -> { if (place.getValue() != null && !routeStopsDraft.contains(place.getValue())) routeStopsDraft.add(place.getValue()); });
-        if (routeStopsDraft.isEmpty()) routeStopsDraft.add("DCLS Depot");
+        addStop.setOnAction(event -> {
+            if (place.getValue() == null) return;
+            Stop stop = routeService.place(place.getValue());
+            if (stop != null && routeStopsDraft.stream().noneMatch(s -> s.name().equals(stop.name()))) routeStopsDraft.add(stop);
+        });
+        if (routeStopsDraft.isEmpty()) routeStopsDraft.add(BruneiPlaces.DEPOT);
         ComboBox<User> driver = driverCombo(); driver.setPromptText("Assign driver (optional)");
         Button optimize = button("Optimize route", "secondary-button");
         Button saveAssign = button("Save & assign", "primary-button");
+        Button clickToggle = button("Map clicks: add stops ON", "secondary-button");
         Label routeResult = new Label("Add at least one delivery stop after the depot."); routeResult.getStyleClass().add("muted"); routeResult.setWrapText(true);
-        Canvas preview = mapCanvas(430, 330);
+        VBox etaBreakdown = new VBox(2);
+        final Runnable[] optimizeRouteRef = new Runnable[1];
         final RoutePlan[] planned = {null};
         final boolean[] saved = {false};
+        MapController previewMap = new MapController(430, 330);
+        previewMap.content = () -> previewStops.stream().map(s -> ll(s.x(), s.y())).toList();
+        previewMap.painter = (g, v) -> {
+            if (!previewStops.isEmpty()) drawRouteOn(g, previewMap.canvas.getWidth(), previewMap.canvas.getHeight(), previewStops, null, "#176df6", v);
+        };
+        previewMap.clickAction = lonLat -> {
+            Stop pin = new Stop("custom-" + AppServices.id(), "Custom pin " + (++customPinCount), lonLat[0], lonLat[1]);
+            routeStopsDraft.add(pin);
+            if (optimizeRouteRef[0] != null) optimizeRouteRef[0].run();
+        };
         Runnable optimizeRoute = () -> {
             try {
-                List<String> orderedNames = new ArrayList<>(routeStopsDraft);
-                RoutePlan plan = routeService.optimize(name.getText(), orderedNames, null);
+                RoutePlan plan = routeService.optimizeStops(name.getText(), new ArrayList<>(routeStopsDraft), null);
                 planned[0] = plan; saved[0] = false;
+                previewStops = plan.stops();
                 routeResult.setText(String.format("%s  ·  %.1f km  ·  about %d minutes", plan.name(), plan.distanceKm(), plan.estimatedMinutes()));
-                drawRoute(preview, plan.stops(), null);
+                showEtaBreakdown(etaBreakdown, plan);
+                previewMap.redraw();
             } catch (AppException exception) { alert(Alert.AlertType.WARNING, "Route not created", exception.getMessage()); }
         };
+        optimizeRouteRef[0] = optimizeRoute;
         optimize.setOnAction(event -> optimizeRoute.run());
+        clickToggle.setOnAction(event -> {
+            if (previewMap.clickAction != null) {
+                previewMap.clickAction = null;
+                clickToggle.setText("Map clicks: add stops OFF");
+            } else {
+                previewMap.clickAction = lonLat -> {
+                    Stop pin = new Stop("custom-" + AppServices.id(), "Custom pin " + (++customPinCount), lonLat[0], lonLat[1]);
+                    routeStopsDraft.add(pin);
+                    optimizeRoute.run();
+                };
+                clickToggle.setText("Map clicks: add stops ON");
+            }
+        });
         saveAssign.setOnAction(event -> {
             if (planned[0] == null) { optimizeRoute.run(); return; }
             if (driver.getValue() == null) { alert(Alert.AlertType.INFORMATION, "Choose a driver", "Select a driver before saving and assigning this route."); return; }
@@ -596,9 +673,9 @@ public final class DclsApp extends Application {
             alert(Alert.AlertType.INFORMATION, "Route assigned", "Route " + planned[0].name() + " has been saved and assigned to " + driver.getValue().name() + ".");
             showPage("routes");
         });
-        controls.getChildren().addAll(new Label("Pickup location"), place, new Label("Delivery stops"), draft, addStop, driver, optimize, saveAssign, routeResult);
+        controls.getChildren().addAll(new Label("Pickup location"), place, new Label("Delivery stops"), draft, addStop, driver, optimize, saveAssign, clickToggle, routeResult, etaBreakdown);
         controls.setPrefWidth(260); controls.setMinWidth(250); VBox.setVgrow(draft, ALWAYS);
-        VBox mapPanel = panel(new Label("Route preview")); ((Label) mapPanel.getChildren().get(0)).getStyleClass().add("section-title"); mapPanel.getChildren().add(preview);
+        VBox mapPanel = panel(new Label("Route preview — scroll to zoom, drag to pan, click to add a stop")); ((Label) mapPanel.getChildren().get(0)).getStyleClass().add("section-title"); mapPanel.getChildren().addAll(previewMap.canvas, previewMap.zoomBar, legendBox());
         builder.getChildren().addAll(controls, mapPanel); HBox.setHgrow(mapPanel, ALWAYS);
         VBox history = panel(new Label("Route history")); ((Label) history.getChildren().get(0)).getStyleClass().add("section-title");
         TableView<RoutePlan> table = new TableView<>(); table.setPlaceholder(new Label("No routes have been planned yet."));
@@ -609,15 +686,55 @@ public final class DclsApp extends Application {
         table.getColumns().add(textCol("Driver", r -> driverName(r.driverId()), 140));
         table.getColumns().add(textCol("Created", r -> r.createdAt().format(DATE_TIME), 130));
         table.setItems(FXCollections.observableArrayList(repository.routes())); table.setPrefHeight(180); table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY);
-        table.getSelectionModel().selectedItemProperty().addListener((o, old, selected) -> { if (selected != null) drawRoute(preview, selected.stops(), null); });
-        repository.routes().stream().max(Comparator.comparing(RoutePlan::createdAt)).ifPresent(route -> drawRoute(preview, route.stops(), null));
+        table.getSelectionModel().selectedItemProperty().addListener((o, old, selected) -> {
+            if (selected != null) {
+                previewStops = selected.stops();
+                showEtaBreakdown(etaBreakdown, selected);
+                previewMap.redraw();
+            }
+        });
+        repository.routes().stream().max(Comparator.comparing(RoutePlan::createdAt)).ifPresent(route -> {
+            previewStops = route.stops();
+            showEtaBreakdown(etaBreakdown, route);
+        });
+        previewMap.redraw();
         history.getChildren().add(table); page.getChildren().addAll(builder, history); return page;
+    }
+
+    /** Per-stop cumulative arrival times for the currently previewed route. */
+    private void showEtaBreakdown(VBox box, RoutePlan plan) {
+        box.getChildren().clear();
+        List<Double> cum = routeService.cumulativeMinutes(plan.stops());
+        for (int i = 0; i < plan.stops().size(); i++) {
+            Label line = new Label((i + 1) + ". " + plan.stops().get(i).name() + " — about " + Math.round(cum.get(i)) + " min from start");
+            line.getStyleClass().add("muted");
+            line.setWrapText(true);
+            box.getChildren().add(line);
+        }
+    }
+
+    /** Static symbol legend shared by the map panels. */
+    private VBox legendBox() {
+        VBox legend = new VBox(3,
+                legendSwatch("#17613f", "Depot / route start"),
+                legendSwatch("#176df6", "District stop · blue route"),
+                legendSwatch("#7c3aed", "Custom map pin (click-added)"),
+                legendSwatch("#8a94a6", "STALE — simulated GPS fix lost"));
+        Label title = new Label("Legend"); title.getStyleClass().add("eyebrow");
+        VBox box = new VBox(4, title, legend);
+        box.setPadding(new Insets(4, 0, 0, 0));
+        return box;
     }
 
     private VBox trackingPage() {
         VBox page = pageHeader("Real-time tracking", "Simulated driver's-phone GPS per vehicle @ 35 km/h · Brunei Darussalam.");
-        trackingCanvas = mapCanvas(470, 350);
-        VBox map = panel(new Label("Fleet map  ·  Brunei Darussalam")); ((Label) map.getChildren().get(0)).getStyleClass().add("section-title"); map.getChildren().add(trackingCanvas);
+        trackingMaps = new MapController(470, 350);
+        trackingMaps.content = () -> trackingFrame;
+        trackingMaps.painter = (g, v) -> paintTracking(g, trackingMaps.canvas.getWidth(), trackingMaps.canvas.getHeight(), v);
+        trackingCanvas = trackingMaps.canvas;
+        VBox map = panel(new Label("Fleet map  ·  Brunei Darussalam — scroll to zoom, drag to pan")); ((Label) map.getChildren().get(0)).getStyleClass().add("section-title");
+        trackingLegend = new VBox(3);
+        map.getChildren().addAll(trackingCanvas, trackingMaps.zoomBar, legendBox(), trackingLegend);
         VBox active = panel(new Label("Active deliveries")); ((Label) active.getChildren().get(0)).getStyleClass().add("section-title");
         trackingEta = new Label("Select a delivery to view its latest estimate."); trackingEta.getStyleClass().add("muted"); trackingEta.setWrapText(true);
         TableView<Shipment> table = new TableView<>(); table.setPlaceholder(new Label("No active deliveries."));
@@ -645,7 +762,10 @@ public final class DclsApp extends Application {
             drawTracking();
             showEta(selected);
         });
-        active.getChildren().addAll(table, gpsToggle, trackingEta);
+        Button gpxExport = button("Export GPX track", "secondary-button");
+        gpxExport.setMaxWidth(Double.MAX_VALUE);
+        gpxExport.setOnAction(event -> exportGpx(table.getSelectionModel().getSelectedItem()));
+        active.getChildren().addAll(table, gpsToggle, gpxExport, trackingEta);
         HBox content = new HBox(12, map, active); HBox.setHgrow(map, ALWAYS); active.setPrefWidth(230); active.setMinWidth(220);
         page.getChildren().add(content);
         drawTracking();
@@ -840,46 +960,75 @@ public final class DclsApp extends Application {
     }
 
     private void drawTracking() {
-        if (trackingCanvas == null) return;
-        GraphicsContext g = prepareMap(trackingCanvas);
-        double w = trackingCanvas.getWidth(), h = trackingCanvas.getHeight();
+        if (trackingMaps == null) return;
         List<Shipment> active = visibleShipments().stream().filter(s -> s.status() == OrderStatus.IN_TRANSIT).toList();
         Map<String, List<Shipment>> byVehicle = active.stream()
                 .filter(s -> s.vehicleId() != null)
                 .collect(Collectors.groupingBy(Shipment::vehicleId, LinkedHashMap::new, Collectors.toList()));
+        List<double[]> frame = new ArrayList<>();
+        trackingRoutes.clear();
+        trackingTrails.clear();
         for (Map.Entry<String, List<Shipment>> entry : byVehicle.entrySet()) {
-            String vehicleId = entry.getKey();
-            String color = vehicleColor(vehicleId);
             entry.getValue().stream().map(Shipment::routeId).filter(java.util.Objects::nonNull).findFirst()
                     .flatMap(routeId -> repository.routes().stream().filter(r -> r.id().equals(routeId)).findFirst())
-                    .ifPresent(route -> drawRouteOn(g, w, h, route.stops(), null, color));
+                    .ifPresent(route -> {
+                        trackingRoutes.put(entry.getKey(), route);
+                        for (Stop stop : route.stops()) frame.add(ll(stop.x(), stop.y()));
+                    });
             List<TrackingPoint> trail = repository.trackingHistory().stream()
-                    .filter(p -> vehicleId.equals(p.vehicleId()))
+                    .filter(p -> entry.getKey().equals(p.vehicleId()))
                     .sorted(Comparator.comparing(TrackingPoint::recordedAt))
                     .toList();
             List<TrackingPoint> recent = trail.subList(Math.max(0, trail.size() - 40), trail.size());
+            trackingTrails.put(entry.getKey(), recent);
+            for (TrackingPoint p : recent) frame.add(ll(p.x(), p.y()));
+        }
+        trackingFrame = frame;
+        trackingMaps.redraw();
+        updateTrackingLegend(byVehicle);
+    }
+
+    private void paintTracking(GraphicsContext g, double w, double h, ViewBounds view) {
+        for (String vehicleId : trackingTrails.keySet()) {
+            String color = vehicleColor(vehicleId);
+            RoutePlan route = trackingRoutes.get(vehicleId);
+            if (route != null) drawRouteOn(g, w, h, route.stops(), null, color, view);
+            List<TrackingPoint> recent = trackingTrails.getOrDefault(vehicleId, List.of());
             g.setStroke(javafx.scene.paint.Color.web(color));
             g.setLineWidth(2.5);
             for (int i = 1; i < recent.size(); i++) {
-                double[] a = project(recent.get(i - 1).x(), recent.get(i - 1).y(), w, h);
-                double[] b = project(recent.get(i).x(), recent.get(i).y(), w, h);
+                double[] a = project(recent.get(i - 1).x(), recent.get(i - 1).y(), w, h, view);
+                double[] b = project(recent.get(i).x(), recent.get(i).y(), w, h, view);
                 g.strokeLine(a[0], a[1], b[0], b[1]);
             }
-            TrackingPoint latest = recent.isEmpty() ? null : recent.get(recent.size() - 1);
-            if (latest == null) {
-                latest = tracking.latestForVehicle(vehicleId);
-            }
+            TrackingPoint latest = recent.isEmpty() ? tracking.latestForVehicle(vehicleId) : recent.get(recent.size() - 1);
             if (latest != null) {
                 boolean stale = tracking.gps().isFixLost(vehicleId);
-                drawVehicleMarker(g, w, h, latest.x(), latest.y(), vehiclePlate(vehicleId), stale ? "#8a94a6" : color, stale);
-            } else {
-                entry.getValue().stream().map(Shipment::routeId).filter(java.util.Objects::nonNull).findFirst()
-                        .flatMap(routeId -> repository.routes().stream().filter(r -> r.id().equals(routeId)).findFirst())
-                        .ifPresent(route -> {
-                            Stop depot = route.stops().get(0);
-                            drawVehicleMarker(g, w, h, depot.x(), depot.y(), vehiclePlate(vehicleId), color, false);
-                        });
+                drawVehicleMarker(g, w, h, latest.x(), latest.y(), vehiclePlate(vehicleId), stale ? "#8a94a6" : color, stale, view);
+            } else if (route != null) {
+                Stop depot = route.stops().get(0);
+                drawVehicleMarker(g, w, h, depot.x(), depot.y(), vehiclePlate(vehicleId), color, false, view);
             }
+        }
+    }
+
+    /** Live per-vehicle legend chips under the fleet map. */
+    private void updateTrackingLegend(Map<String, List<Shipment>> byVehicle) {
+        if (trackingLegend == null) return;
+        trackingLegend.getChildren().clear();
+        if (byVehicle.isEmpty()) {
+            Label none = new Label("No vehicles on the road.");
+            none.getStyleClass().add("muted");
+            trackingLegend.getChildren().add(none);
+            return;
+        }
+        Label title = new Label("On the road"); title.getStyleClass().add("eyebrow");
+        trackingLegend.getChildren().add(title);
+        for (Map.Entry<String, List<Shipment>> entry : byVehicle.entrySet()) {
+            String vehicleId = entry.getKey();
+            boolean stale = tracking.gps().isFixLost(vehicleId);
+            trackingLegend.getChildren().add(legendSwatch(stale ? "#8a94a6" : vehicleColor(vehicleId),
+                    vehiclePlate(vehicleId) + " · " + entry.getValue().size() + " order(s)" + (stale ? " · STALE" : "")));
         }
     }
 
@@ -887,6 +1036,96 @@ public final class DclsApp extends Application {
     private String vehicleColor(String vehicleId) {
         String[] palette = {"#1457c5", "#c2410c", "#15803d", "#7c3aed", "#be123c", "#0e7490", "#a16207"};
         return palette[Math.abs(vehicleId.hashCode()) % palette.length];
+    }
+
+    /** Interactive map: auto-fit content with sticky manual zoom/pan (scroll, drag, buttons). */
+    private final class MapController {
+        final Canvas canvas;
+        final HBox zoomBar;
+        Supplier<List<double[]>> content = List::of;
+        BiConsumer<GraphicsContext, ViewBounds> painter = (g, v) -> { };
+        Consumer<double[]> clickAction;
+        ViewBounds manual;
+        ViewBounds lastAuto = FULL_MAP;
+        private double pressX, pressY;
+        private boolean dragging;
+
+        MapController(double width, double height) {
+            canvas = mapCanvas(width, height);
+            Button in = button("+", "secondary-button"), out = button("−", "secondary-button"), reset = button("Reset view", "secondary-button");
+            in.setOnAction(event -> zoomAt(1.4, width / 2, height / 2));
+            out.setOnAction(event -> zoomAt(1 / 1.4, width / 2, height / 2));
+            reset.setOnAction(event -> { manual = null; redraw(); });
+            zoomBar = new HBox(6, in, out, reset);
+            canvas.setOnScroll(event -> { zoomAt(event.getDeltaY() > 0 ? 1.25 : 0.8, event.getX(), event.getY()); event.consume(); });
+            canvas.setOnMousePressed(event -> { pressX = event.getX(); pressY = event.getY(); dragging = false; });
+            canvas.setOnMouseDragged(event -> {
+                if (Math.abs(event.getX() - pressX) + Math.abs(event.getY() - pressY) > 4) dragging = true;
+                if (dragging) { panBy(pressX - event.getX(), pressY - event.getY()); pressX = event.getX(); pressY = event.getY(); }
+            });
+            canvas.setOnMouseReleased(event -> {
+                if (!dragging && clickAction != null) clickAction.accept(unproject(event.getX(), event.getY()));
+                dragging = false;
+            });
+        }
+
+        ViewBounds currentView() { return manual != null ? manual : lastAuto; }
+
+        void redraw() {
+            ViewBounds auto = fitBounds(content.get(), canvas.getWidth() / canvas.getHeight());
+            lastAuto = auto;
+            ViewBounds view = manual != null ? manual : auto;
+            GraphicsContext g = prepareMap(canvas, view);
+            painter.accept(g, view);
+        }
+
+        void zoomAt(double factor, double px, double py) {
+            ViewBounds base = currentView();
+            double w = canvas.getWidth(), h = canvas.getHeight(), pad = 14;
+            double[] cursor = unproject(px, py);
+            double lonSpan = Math.min(Math.max((base.lonMax() - base.lonMin()) / factor, 0.03), MAP_LON_MAX - MAP_LON_MIN);
+            double latSpan = Math.min(Math.max((base.latMax() - base.latMin()) / factor, 0.022), MAP_LAT_MAX - MAP_LAT_MIN);
+            double lonMin = cursor[0] - (cursor[0] - base.lonMin()) / factor;
+            double latTop = mercator(cursor[1]) + (mercator(base.latMax()) - mercator(cursor[1])) / factor;
+            double latBottom = mercator(cursor[1]) - (mercator(cursor[1]) - mercator(base.latMin())) / factor;
+            manual = clamp(new ViewBounds(lonMin, lonMin + lonSpan, mercToLat(latBottom), mercToLat(latTop)));
+            redraw();
+        }
+
+        void panBy(double dxPx, double dyPx) {
+            ViewBounds base = currentView();
+            double w = canvas.getWidth(), h = canvas.getHeight(), pad = 14;
+            double lonSpan = base.lonMax() - base.lonMin();
+            double mercSpan = mercator(base.latMax()) - mercator(base.latMin());
+            double dLon = dxPx / (w - pad * 2) * lonSpan;
+            double dMerc = dyPx / (h - pad * 2) * mercSpan;
+            double mercTop = mercator(base.latMax()) - dMerc, mercBottom = mercator(base.latMin()) - dMerc;
+            manual = clamp(new ViewBounds(base.lonMin() + dLon, base.lonMax() + dLon, mercToLat(mercBottom), mercToLat(mercTop)));
+            redraw();
+        }
+
+        double[] unproject(double px, double py) {
+            ViewBounds view = currentView();
+            double w = canvas.getWidth(), h = canvas.getHeight(), pad = 14;
+            double lon = view.lonMin() + (px - pad) / (w - pad * 2) * (view.lonMax() - view.lonMin());
+            double mercTop = mercator(view.latMax()), mercBottom = mercator(view.latMin());
+            double lat = mercToLat(mercTop - (py - pad) / (h - pad * 2) * (mercTop - mercBottom));
+            return new double[] {
+                Math.min(Math.max(lon, MAP_LON_MIN), MAP_LON_MAX),
+                Math.min(Math.max(lat, MAP_LAT_MIN), MAP_LAT_MAX)};
+        }
+
+        private ViewBounds clamp(ViewBounds view) {
+            double lonSpan = Math.min(view.lonMax() - view.lonMin(), MAP_LON_MAX - MAP_LON_MIN);
+            double latSpan = Math.min(view.latMax() - view.latMin(), MAP_LAT_MAX - MAP_LAT_MIN);
+            double lonMin = Math.min(Math.max(view.lonMin(), MAP_LON_MIN), MAP_LON_MAX - lonSpan);
+            double latMin = Math.min(Math.max(view.latMin(), MAP_LAT_MIN), MAP_LAT_MAX - latSpan);
+            return new ViewBounds(lonMin, lonMin + lonSpan, latMin, latMin + latSpan);
+        }
+    }
+
+    private static double mercToLat(double merc) {
+        return Math.toDegrees(Math.atan(Math.sinh(merc)));
     }
 
     private void showEta(Shipment shipment) {
@@ -898,6 +1137,60 @@ public final class DclsApp extends Application {
         String gps = shipment.vehicleId() == null ? "—" : tracking.gpsStatus(shipment.vehicleId());
         trackingEta.setText(vehiclePlate(shipment.vehicleId()) + " · " + gps + " · " + ordersOnVehicle + " order(s) aboard"
                 + "  ·  ETA about " + point.etaMinutes() + " min  ·  updated " + point.recordedAt().format(DATE_TIME));
+    }
+
+    /** Export simulated phone-GPS fixes as a GPX 1.1 track: the selected delivery's vehicle,
+     *  or every active vehicle when nothing is selected. Opens in real tracker apps. */
+    private void exportGpx(Shipment selected) {
+        Map<String, List<TrackingPoint>> trails = new LinkedHashMap<>();
+        if (selected != null && selected.vehicleId() != null) {
+            List<TrackingPoint> trail = repository.trackingHistory().stream()
+                    .filter(p -> selected.vehicleId().equals(p.vehicleId()))
+                    .sorted(Comparator.comparing(TrackingPoint::recordedAt)).toList();
+            if (!trail.isEmpty()) trails.put(selected.vehicleId(), trail);
+        } else {
+            for (Shipment s : visibleShipments()) {
+                if (s.status() != OrderStatus.IN_TRANSIT || s.vehicleId() == null || trails.containsKey(s.vehicleId())) continue;
+                List<TrackingPoint> trail = repository.trackingHistory().stream()
+                        .filter(p -> s.vehicleId().equals(p.vehicleId()))
+                        .sorted(Comparator.comparing(TrackingPoint::recordedAt)).toList();
+                if (!trail.isEmpty()) trails.put(s.vehicleId(), trail);
+            }
+        }
+        if (trails.isEmpty()) {
+            alert(Alert.AlertType.INFORMATION, "Nothing to export", "No simulated GPS fixes recorded yet. Open Live tracking and let a delivery move first.");
+            return;
+        }
+        FileChooser chooser = new FileChooser();
+        chooser.setTitle("Export GPX track");
+        chooser.setInitialFileName("dcls-track.gpx");
+        chooser.getExtensionFilters().add(new FileChooser.ExtensionFilter("GPX files", "*.gpx"));
+        File file = chooser.showSaveDialog(stage);
+        if (file == null) return;
+        try {
+            StringBuilder gpx = new StringBuilder("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                    + "<gpx version=\"1.1\" creator=\"DCLS\" xmlns=\"http://www.topografix.com/GPX/1/1\">\n");
+            for (Map.Entry<String, List<TrackingPoint>> entry : trails.entrySet()) {
+                gpx.append("  <trk><name>").append(gpxEscape(vehiclePlate(entry.getKey()))).append("</name>")
+                   .append("<desc>Simulated driver phone GPS @ 35 km/h · Brunei Darussalam</desc><trkseg>\n");
+                for (TrackingPoint p : entry.getValue()) {
+                    String time = p.recordedAt().atZone(java.time.ZoneId.systemDefault()).format(DateTimeFormatter.ISO_OFFSET_DATE_TIME);
+                    gpx.append("    <trkpt lat=\"").append(p.y()).append("\" lon=\"").append(p.x()).append("\">")
+                       .append("<time>").append(time).append("</time></trkpt>\n");
+                }
+                gpx.append("  </trkseg></trk>\n");
+            }
+            gpx.append("</gpx>\n");
+            java.nio.file.Files.writeString(file.toPath(), gpx.toString(), java.nio.charset.StandardCharsets.UTF_8);
+            toast("GPX exported: " + file.getName() + " (" + trails.size() + " vehicle(s)).");
+        } catch (Exception exception) {
+            showError("Could not write the GPX file: " + readable(exception));
+        }
+    }
+
+    private String gpxEscape(String text) {
+        if (text == null) return "";
+        return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
     }
 
     private void startTracking() {
@@ -918,68 +1211,194 @@ public final class DclsApp extends Application {
         Canvas canvas = new Canvas(width, height); canvas.getStyleClass().add("map-canvas"); prepareMap(canvas); return canvas;
     }
 
-    private GraphicsContext prepareMap(Canvas canvas) {
+    private GraphicsContext prepareMap(Canvas canvas) { return prepareMap(canvas, FULL_MAP); }
+
+    private GraphicsContext prepareMap(Canvas canvas, ViewBounds view) {
         GraphicsContext g = canvas.getGraphicsContext2D();
         double w = canvas.getWidth(), h = canvas.getHeight();
-        g.setFill(javafx.scene.paint.Color.web("#eef3f6")); g.fillRect(0, 0, w, h);
-        g.setFill(javafx.scene.paint.Color.web("#e3eee3")); g.fillOval(w * .70, h * .08, w * .25, h * .2); g.fillOval(w * .02, h * .66, w * .18, h * .22);
-        g.setStroke(javafx.scene.paint.Color.web("#d7e1e5")); g.setLineWidth(18);
-        g.strokeLine(w * .03, h * .82, w * .94, h * .14); g.strokeLine(w * .08, h * .28, w * .9, h * .77);
-        g.strokeLine(w * .36, h * .98, w * .56, h * .02); g.strokeLine(w * .04, h * .52, w * .95, h * .48);
-        g.setStroke(javafx.scene.paint.Color.web("#ffffff")); g.setLineWidth(2.5);
-        g.strokeLine(w * .03, h * .82, w * .94, h * .14); g.strokeLine(w * .08, h * .28, w * .9, h * .77);
-        g.strokeLine(w * .36, h * .98, w * .56, h * .02); g.strokeLine(w * .04, h * .52, w * .95, h * .48);
+        TileLevel level = levelFor(view);
+        if (level.image() != null) {
+            // NOTE: Canvas drawImage with an explicit source rect renders blank on this
+            // JavaFX version, so zoom by drawing the whole grid through a dest transform.
+            double sx = level.lonToPixel(view.lonMin()), ex = level.lonToPixel(view.lonMax());
+            double sy = level.latToPixel(view.latMax()), ey = level.latToPixel(view.latMin());
+            double xScale = w / (ex - sx), yScale = h / (ey - sy);
+            g.save();
+            g.beginPath(); g.rect(0, 0, w, h); g.clip();
+            g.drawImage(level.image(), -sx * xScale, -sy * yScale,
+                    level.image().getWidth() * xScale, level.image().getHeight() * yScale);
+            g.restore();
+        } else {
+            g.setFill(javafx.scene.paint.Color.web("#eef3f6")); g.fillRect(0, 0, w, h);
+            g.setFill(javafx.scene.paint.Color.web("#e3eee3")); g.fillOval(w * .70, h * .08, w * .25, h * .2); g.fillOval(w * .02, h * .66, w * .18, h * .22);
+            g.setStroke(javafx.scene.paint.Color.web("#d7e1e5")); g.setLineWidth(18);
+            g.strokeLine(w * .03, h * .82, w * .94, h * .14); g.strokeLine(w * .08, h * .28, w * .9, h * .77);
+            g.strokeLine(w * .36, h * .98, w * .56, h * .02); g.strokeLine(w * .04, h * .52, w * .95, h * .48);
+            g.setStroke(javafx.scene.paint.Color.web("#ffffff")); g.setLineWidth(2.5);
+            g.strokeLine(w * .03, h * .82, w * .94, h * .14); g.strokeLine(w * .08, h * .28, w * .9, h * .77);
+            g.strokeLine(w * .36, h * .98, w * .56, h * .02); g.strokeLine(w * .04, h * .52, w * .95, h * .48);
+        }
         g.setFill(javafx.scene.paint.Color.web("#657487")); g.setFont(javafx.scene.text.Font.font("Segoe UI", 11));
         g.fillText("Brunei Darussalam  ·  simulated phone GPS @ 35 km/h", 14, 20);
+        g.setFont(javafx.scene.text.Font.font("Segoe UI", 9));
+        g.fillText("© OpenStreetMap contributors", w - 178, h - 8);
+        drawScaleBar(g, w, h, view);
         return g;
     }
 
-    private void drawRoute(Canvas canvas, List<Stop> stops, TrackingPoint moving) {
-        GraphicsContext g = prepareMap(canvas); drawRouteOn(g, canvas.getWidth(), canvas.getHeight(), stops, moving);
+    /** Scale bar from the live view span (111.32 km per lon-degree, adjusted for latitude). */
+    private void drawScaleBar(GraphicsContext g, double w, double h, ViewBounds view) {
+        double latMid = (view.latMin() + view.latMax()) / 2;
+        double metersPerPixel = (view.lonMax() - view.lonMin()) * 111320 * Math.cos(Math.toRadians(latMid)) / w;
+        int[] steps = {50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000};
+        int choice = steps[0];
+        for (int step : steps) if (step / metersPerPixel <= 130) choice = step;
+        double bar = choice / metersPerPixel;
+        double x = 14, y = h - 14;
+        g.setStroke(javafx.scene.paint.Color.WHITE); g.setLineWidth(5);
+        g.strokeLine(x, y, x + bar, y);
+        g.setStroke(javafx.scene.paint.Color.web("#172033")); g.setLineWidth(2.5);
+        g.strokeLine(x, y, x + bar, y);
+        g.setFill(javafx.scene.paint.Color.web("#172033"));
+        g.setFont(javafx.scene.text.Font.font("Segoe UI", 9));
+        g.fillText(choice >= 1000 ? (choice / 1000) + " km" : choice + " m", x + bar + 6, y + 3);
     }
 
-    private void drawRouteOn(GraphicsContext g, double width, double height, List<Stop> stops, TrackingPoint moving) {
-        drawRouteOn(g, width, height, stops, moving, "#176df6");
+    /** Legend chip: colored dot + label. */
+    private HBox legendSwatch(String color, String label) {
+        Label dot = new Label("●"); dot.setStyle("-fx-text-fill: " + color + "; -fx-font-size: 13px;");
+        Label text = new Label(label); text.getStyleClass().add("muted");
+        HBox row = new HBox(6, dot, text); row.setAlignment(Pos.CENTER_LEFT);
+        return row;
     }
 
-    private void drawRouteOn(GraphicsContext g, double width, double height, List<Stop> stops, TrackingPoint moving, String color) {
+    private void drawRouteOn(GraphicsContext g, double width, double height, List<Stop> stops, TrackingPoint moving, ViewBounds view) {
+        drawRouteOn(g, width, height, stops, moving, "#176df6", view);
+    }
+
+    private void drawRouteOn(GraphicsContext g, double width, double height, List<Stop> stops, TrackingPoint moving, String color, ViewBounds view) {
         if (stops == null || stops.isEmpty()) return;
-        g.setStroke(javafx.scene.paint.Color.web(color)); g.setLineWidth(4);
-        for (int i = 1; i < stops.size(); i++) {
-            double[] a = project(stops.get(i - 1), width, height), b = project(stops.get(i), width, height);
-            g.strokeLine(a[0], a[1], b[0], b[1]);
-        }
+        g.setStroke(javafx.scene.paint.Color.web("#ffffff", 0.85)); g.setLineWidth(6);
+        strokeRoadPath(g, width, height, stops, view);
+        g.setStroke(javafx.scene.paint.Color.web(color)); g.setLineWidth(3.5);
+        strokeRoadPath(g, width, height, stops, view);
         for (int i = 0; i < stops.size(); i++) {
-            Stop stop = stops.get(i); double[] p = project(stop, width, height); double x = p[0], y = p[1];
-            g.setFill(i == 0 ? javafx.scene.paint.Color.web("#17613f") : javafx.scene.paint.Color.web("#ffffff"));
-            g.fillOval(x - 7, y - 7, 14, 14); g.setStroke(javafx.scene.paint.Color.web(i == 0 ? "#17613f" : "#176df6")); g.setLineWidth(3); g.strokeOval(x - 7, y - 7, 14, 14);
-            g.setFill(javafx.scene.paint.Color.web("#172033")); g.fillText(stop.name(), x + 9, y - 8);
+            Stop stop = stops.get(i); double[] p = project(stop, width, height, view); double x = p[0], y = p[1];
+            if (stop.id().startsWith("custom-")) {
+                g.setFill(javafx.scene.paint.Color.web("#ffffff"));
+                g.fillPolygon(new double[] {x, x + 8, x, x - 8}, new double[] {y - 9, y, y + 9, y}, 4);
+                g.setStroke(javafx.scene.paint.Color.web("#7c3aed")); g.setLineWidth(3);
+                g.strokePolygon(new double[] {x, x + 8, x, x - 8}, new double[] {y - 9, y, y + 9, y}, 4);
+            } else {
+                g.setFill(i == 0 ? javafx.scene.paint.Color.web("#17613f") : javafx.scene.paint.Color.web("#ffffff"));
+                g.fillOval(x - 7, y - 7, 14, 14); g.setStroke(javafx.scene.paint.Color.web(i == 0 ? "#17613f" : "#176df6")); g.setLineWidth(3); g.strokeOval(x - 7, y - 7, 14, 14);
+            }
+            mapLabel(g, stop.name(), x + 9, y - 8);
         }
-        if (moving != null) drawVehicleMarker(g, width, height, moving.x(), moving.y(), "Vehicle");
+        if (moving != null) drawVehicleMarker(g, width, height, moving.x(), moving.y(), "Vehicle", "#1457c5", false, view);
     }
 
-    /** Project lon/lat (Stop.x/y) onto the canvas; covers Brunei-Muara to Tutong with padding. */
-    private double[] project(Stop stop, double width, double height) {
-        return project(stop.x(), stop.y(), width, height);
+    /** Stroke every leg along its real road polyline (straight fallback when unknown). */
+    private void strokeRoadPath(GraphicsContext g, double width, double height, List<Stop> stops, ViewBounds view) {
+        for (int i = 1; i < stops.size(); i++) {
+            List<double[]> path = RouteService.legPath(stops.get(i - 1), stops.get(i));
+            for (int j = 1; j < path.size(); j++) {
+                double[] a = project(path.get(j - 1)[0], path.get(j - 1)[1], width, height, view);
+                double[] b = project(path.get(j)[0], path.get(j)[1], width, height, view);
+                g.strokeLine(a[0], a[1], b[0], b[1]);
+            }
+        }
     }
 
-    private double[] project(double lon, double lat, double width, double height) {
-        double minLon = 114.60, maxLon = 115.05, minLat = 4.75, maxLat = 5.02;
-        double pad = 36;
-        double x = pad + (lon - minLon) / (maxLon - minLon) * (width - pad * 2);
-        double y = pad + (maxLat - lat) / (maxLat - minLat) * (height - pad * 2);
+    /** Geo viewport into the bundled Brunei render (Web-Mercator tiles z11 x1675-1678 y995-997). */
+    private record ViewBounds(double lonMin, double lonMax, double latMin, double latMax) { }
+    private static final double MAP_LON_MIN = 114.43359375, MAP_LON_MAX = 115.13671875;
+    private static final double MAP_LAT_MIN = 4.56547355071028, MAP_LAT_MAX = 5.09094417503339;
+    private static final ViewBounds FULL_MAP = new ViewBounds(MAP_LON_MIN, MAP_LON_MAX, MAP_LAT_MIN, MAP_LAT_MAX);
+    /** One bundled offline tile grid; the detail grid covers Bandar metro at higher resolution. */
+    private record TileLevel(Image image, int z, int x0, int y0, int cols, int rows) {
+        double lonMin() { return x0 / Math.pow(2, z) * 360 - 180; }
+        double lonMax() { return (x0 + cols) / Math.pow(2, z) * 360 - 180; }
+        double latAt(int y) { return Math.toDegrees(Math.atan(Math.sinh(Math.PI * (1 - 2.0 * y / Math.pow(2, z))))); }
+        double latMax() { return latAt(y0); }
+        double latMin() { return latAt(y0 + rows); }
+        double lonToPixel(double lon) { return ((lon + 180) / 360 * Math.pow(2, z) - x0) * 256; }
+        double latToPixel(double lat) {
+            double rad = Math.toRadians(lat);
+            return ((1 - Math.log(Math.tan(rad) + 1 / Math.cos(rad)) / Math.PI) / 2 * Math.pow(2, z) - y0) * 256;
+        }
+        boolean contains(ViewBounds view) {
+            return view.lonMin() >= lonMin() && view.lonMax() <= lonMax()
+                    && view.latMin() >= latMin() && view.latMax() <= latMax();
+        }
+    }
+
+    /** Pick the sharpest bundled grid covering the view; street-level zooms use z13, wide views z11. */
+    private TileLevel levelFor(ViewBounds view) {
+        if (view.lonMax() - view.lonMin() < 0.24) {
+            for (TileLevel level : List.of(metroLevel, tutongLevel, muaraLevel)) {
+                if (level.image() != null && level.contains(view)) return level;
+            }
+        }
+        return baseLevel;
+    }
+
+    private static double[] ll(double lon, double lat) { return new double[] {lon, lat}; }
+
+    /** Zoom-to-content: bounds enclosing the given lon/lat points plus margin, matched to
+     *  the canvas aspect, never tighter than a ~12 km window (tile detail limit). */
+    private static ViewBounds fitBounds(List<double[]> points, double aspect) {
+        if (points == null || points.isEmpty()) return FULL_MAP;
+        double lonMin = 180, lonMax = -180, latMin = 90, latMax = -90;
+        for (double[] p : points) {
+            lonMin = Math.min(lonMin, p[0]); lonMax = Math.max(lonMax, p[0]);
+            latMin = Math.min(latMin, p[1]); latMax = Math.max(latMax, p[1]);
+        }
+        double lonPad = Math.max((lonMax - lonMin) * 0.20, 0.07);
+        double latPad = Math.max((latMax - latMin) * 0.20, 0.05);
+        lonMin -= lonPad; lonMax += lonPad; latMin -= latPad; latMax += latPad;
+        double lonSpan = Math.max(lonMax - lonMin, 0.14), latSpan = Math.max(latMax - latMin, 0.10);
+        if (lonSpan / latSpan < aspect) lonSpan = latSpan * aspect;
+        else latSpan = lonSpan / aspect;
+        double lonMid = (lonMin + lonMax) / 2, latMid = (latMin + latMax) / 2;
+        lonMin = lonMid - lonSpan / 2; lonMax = lonMid + lonSpan / 2;
+        latMin = latMid - latSpan / 2; latMax = latMid + latSpan / 2;
+        if (lonMax - lonMin >= MAP_LON_MAX - MAP_LON_MIN || latMax - latMin >= MAP_LAT_MAX - MAP_LAT_MIN) return FULL_MAP;
+        if (lonMin < MAP_LON_MIN) { lonMax += MAP_LON_MIN - lonMin; lonMin = MAP_LON_MIN; }
+        if (lonMax > MAP_LON_MAX) { lonMin -= lonMax - MAP_LON_MAX; lonMax = MAP_LON_MAX; }
+        if (latMin < MAP_LAT_MIN) { latMax += MAP_LAT_MIN - latMin; latMin = MAP_LAT_MIN; }
+        if (latMax > MAP_LAT_MAX) { latMin -= latMax - MAP_LAT_MAX; latMax = MAP_LAT_MAX; }
+        return new ViewBounds(lonMin, lonMax, latMin, latMax);
+    }
+
+    private static double mercator(double lat) {
+        double rad = Math.toRadians(lat);
+        return Math.log(Math.tan(rad) + 1 / Math.cos(rad));
+    }
+
+    private double[] project(Stop stop, double width, double height, ViewBounds view) {
+        return project(stop.x(), stop.y(), width, height, view);
+    }
+
+    private double[] project(double lon, double lat, double width, double height, ViewBounds view) {
+        double pad = 14;
+        double x = pad + (lon - view.lonMin()) / (view.lonMax() - view.lonMin()) * (width - pad * 2);
+        double top = mercator(view.latMax()), bottom = mercator(view.latMin());
+        double y = pad + (top - mercator(Math.min(Math.max(lat, view.latMin()), view.latMax()))) / (top - bottom) * (height - pad * 2);
         return new double[] {Math.min(Math.max(x, 10), width - 10), Math.min(Math.max(y, 22), height - 10)};
     }
 
-    private void drawVehicleMarker(GraphicsContext g, double width, double height, double x, double y, String label) {
-        drawVehicleMarker(g, width, height, x, y, label, "#1457c5", false);
+    private void mapLabel(GraphicsContext g, String text, double x, double y) {
+        g.setStroke(javafx.scene.paint.Color.WHITE); g.setLineWidth(3);
+        g.strokeText(text, x, y);
+        g.setFill(javafx.scene.paint.Color.web("#172033")); g.fillText(text, x, y);
     }
 
-    private void drawVehicleMarker(GraphicsContext g, double width, double height, double x, double y, String label, String color, boolean stale) {
-        double[] p = project(x, y, width, height); double px = p[0], py = p[1];
+    private void drawVehicleMarker(GraphicsContext g, double width, double height, double x, double y, String label, String color, boolean stale, ViewBounds view) {
+        double[] p = project(x, y, width, height, view); double px = p[0], py = p[1];
         g.setFill(javafx.scene.paint.Color.web(color)); g.fillOval(px - 9, py - 9, 18, 18);
         g.setStroke(javafx.scene.paint.Color.WHITE); g.setLineWidth(2); g.strokeOval(px - 9, py - 9, 18, 18);
-        g.setFill(javafx.scene.paint.Color.web("#172033")); g.fillText(label + (stale ? " · STALE" : ""), px + 12, py + 4);
+        mapLabel(g, label + (stale ? " · STALE" : ""), px + 12, py + 4);
     }
 
     private void registerRouteInOrder(Shipment shipment, RoutePlan route) { shipment.setAssignments(shipment.driverId(), shipment.vehicleId(), route.id()); repository.saveShipment(shipment); }
@@ -1087,10 +1506,22 @@ public final class DclsApp extends Application {
     @Override public void stop() { stopTracking(); if (repository != null) repository.close(); }
 
     private static final class ListViewWithRemove extends VBox {
-        ListViewWithRemove(ObservableList<String> items) {
-            javafx.scene.control.ListView<String> list = new javafx.scene.control.ListView<>(items); list.setPrefHeight(120);
+        ListViewWithRemove(ObservableList<Stop> items) {
+            javafx.scene.control.ListView<Stop> list = new javafx.scene.control.ListView<>(items); list.setPrefHeight(120);
+            list.setCellFactory(view -> new javafx.scene.control.ListCell<>() {
+                @Override protected void updateItem(Stop stop, boolean empty) {
+                    super.updateItem(stop, empty);
+                    if (empty || stop == null) { setText(null); return; }
+                    setText(stop.id().startsWith("custom-")
+                            ? stop.name() + String.format("  ·  %.4f, %.4f", stop.x(), stop.y())
+                            : stop.name());
+                }
+            });
             Button remove = new Button("Remove selected stop"); remove.getStyleClass().add("secondary-button");
-            remove.setOnAction(event -> { String selected = list.getSelectionModel().getSelectedItem(); if (selected != null && !selected.equals("DCLS Depot")) items.remove(selected); });
+            remove.setOnAction(event -> {
+                Stop selected = list.getSelectionModel().getSelectedItem();
+                if (selected != null && !"DCLS Depot".equals(selected.name())) items.remove(selected);
+            });
             getChildren().addAll(list, remove); setSpacing(6);
         }
     }
