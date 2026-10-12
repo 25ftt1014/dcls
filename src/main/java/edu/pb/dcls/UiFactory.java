@@ -69,7 +69,7 @@ final class UiFactory {
 
     static VBox pageHeader(String title, String subtitle) {
         VBox page = new VBox(14);
-        page.setPadding(new Insets(15, 20, 22, 58));
+        page.setPadding(new Insets(15, 24, 22, 28));
         page.getStyleClass().add("workspace");
         // Render the (previously discarded) descriptive subtitle so each screen
         // has a clear heading hierarchy, not just a bare toolbar.

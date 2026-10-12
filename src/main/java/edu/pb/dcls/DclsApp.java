@@ -25,7 +25,6 @@ import javafx.scene.control.MenuItem;
 import javafx.scene.control.PasswordField;
 import javafx.scene.control.ScrollPane;
 import javafx.scene.control.TextField;
-import javafx.scene.control.Tooltip;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Region;
@@ -241,34 +240,52 @@ public final class DclsApp extends Application {
     }
 
     private VBox buildNav() {
-        VBox sidebar = new VBox(7);
-        sidebar.setPrefWidth(72); sidebar.setMinWidth(72); sidebar.setPadding(new Insets(15, 8, 8, 8));
+        VBox sidebar = new VBox(4);
+        sidebar.setPrefWidth(204); sidebar.setMinWidth(204); sidebar.setPadding(new Insets(16, 12, 12, 12));
         sidebar.getStyleClass().add("sidebar");
+
+        // Brand: logo + wordmark
+        HBox brand = new HBox(10); brand.setAlignment(Pos.CENTER_LEFT); brand.setPadding(new Insets(2, 4, 14, 6));
         InputStream logo = getClass().getResourceAsStream("/edu/pb/dcls/Logo.svg");
         if (logo != null) {
             ImageView mark = new ImageView(new Image(logo));
-            mark.setFitWidth(36); mark.setFitHeight(36); mark.setPreserveRatio(true);
-            VBox markWrap = new VBox(mark); markWrap.setAlignment(Pos.CENTER); markWrap.setPadding(new Insets(0, 0, 17, 0));
-            sidebar.getChildren().add(markWrap);
+            mark.setFitWidth(30); mark.setFitHeight(30); mark.setPreserveRatio(true);
+            brand.getChildren().add(mark);
         }
-        addNav(sidebar, "dashboard", "▦", "Dashboard");
-        addNav(sidebar, "users", "♙", "Users and roles");
-        addNav(sidebar, "fleet", "▤", "Fleet");
-        addNav(sidebar, "orders", "▣", "Orders and shipments");
-        addNav(sidebar, "routes", "⌁", "Route planning");
-        addNav(sidebar, "tracking", "◉", "Live tracking");
+        Label wordmark = new Label("Trackify"); wordmark.getStyleClass().add("brand-word");
+        brand.getChildren().add(wordmark);
+        sidebar.getChildren().add(brand);
+
+        Label menuHeader = new Label("MENU"); menuHeader.getStyleClass().add("nav-section");
+        sidebar.getChildren().add(menuHeader);
+
+        addNav(sidebar, "dashboard", "📊", "Dashboard");
+        addNav(sidebar, "users", "👥", "Users & roles");
+        addNav(sidebar, "fleet", "🚚", "Fleet");
+        addNav(sidebar, "orders", "📦", "Orders");
+        addNav(sidebar, "routes", "🧭", "Route planning");
+        addNav(sidebar, "tracking", "📍", "Live tracking");
+
         Region spacer = new Region(); VBox.setVgrow(spacer, ALWAYS); sidebar.getChildren().add(spacer);
-        MenuButton settings = new MenuButton("Setting  ›"); settings.setMaxWidth(Double.MAX_VALUE); settings.setAccessibleText("Settings and profile"); settings.getStyleClass().add("settings-button");
+
+        // Signed-in user identity
+        Label who = new Label(currentUser.name()); who.getStyleClass().add("nav-user-name");
+        Label role = new Label(currentUser.role().label()); role.getStyleClass().add("nav-user-role");
+        VBox identity = new VBox(1, who, role); identity.setPadding(new Insets(0, 0, 8, 8));
+        sidebar.getChildren().add(identity);
+
+        MenuButton settings = new MenuButton("Settings"); settings.setMaxWidth(Double.MAX_VALUE); settings.setAccessibleText("Settings and profile"); settings.getStyleClass().add("settings-button");
         settings.getItems().addAll(menu("My profile", this::profileDialog), menu("Change password", this::passwordDialog), menu("Sign out", () -> { stopTracking(); currentUser = null; showLogin(); }));
         sidebar.getChildren().add(settings);
         return sidebar;
     }
 
-    private void addNav(VBox sidebar, String page, String glyph, String accessibleName) {
+    private void addNav(VBox sidebar, String page, String icon, String label) {
         if (!access.canOpen(currentUser.role(), page)) return;
-        Button button = new Button(glyph);
-        button.setMinSize(44, 42); button.setMaxWidth(Double.MAX_VALUE); button.setTooltip(new Tooltip(accessibleName));
-        button.setAccessibleText(accessibleName); button.setFocusTraversable(true); button.getStyleClass().add("nav-button");
+        Label glyph = new Label(icon); glyph.getStyleClass().add("nav-icon");
+        Button button = new Button(label, glyph);
+        button.setGraphicTextGap(12); button.setMaxWidth(Double.MAX_VALUE); button.setAlignment(Pos.CENTER_LEFT);
+        button.setAccessibleText(label); button.setFocusTraversable(true); button.getStyleClass().add("nav-button");
         if (activePage.equals(page)) button.getStyleClass().add("active");
         button.setOnAction(event -> { stopTracking(); showPage(page); });
         sidebar.getChildren().add(button);

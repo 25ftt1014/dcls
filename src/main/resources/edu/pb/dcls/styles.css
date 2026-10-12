@@ -102,23 +102,30 @@
 .nav-button {
     -fx-background-color: transparent;
     -fx-text-fill: -ink-soft;
-    -fx-alignment: center;
-    -fx-padding: 8 10;
+    -fx-alignment: center-left;
+    -fx-padding: 9 12;
     -fx-background-radius: 10;
-    -fx-font-size: 17px;
+    -fx-font-size: 13.5px;
+    -fx-font-weight: 600;
     -fx-cursor: hand;
 }
 .nav-button:hover { -fx-background-color: -accent-soft; -fx-text-fill: -accent; }
 .nav-button.active { -fx-background-color: -accent; -fx-text-fill: #ffffff; -fx-font-weight: 700; }
+.nav-icon { -fx-font-size: 15px; }
+.brand-word { -fx-font-size: 17px; -fx-font-weight: 800; -fx-text-fill: -ink; }
+.nav-section { -fx-font-size: 10px; -fx-font-weight: 700; -fx-text-fill: #9aa6ba; -fx-padding: 4 8 2 10; }
+.nav-user-name { -fx-font-size: 12.5px; -fx-font-weight: 700; -fx-text-fill: -ink; }
+.nav-user-role { -fx-font-size: 11px; -fx-text-fill: -ink-soft; }
 
 .settings-button {
     -fx-background-color: #eef1f6;
     -fx-text-fill: #273349;
-    -fx-font-size: 10px;
+    -fx-font-size: 12px;
     -fx-font-weight: 700;
-    -fx-background-radius: 9;
-    -fx-padding: 8 4;
+    -fx-background-radius: 10;
+    -fx-padding: 9 12;
     -fx-cursor: hand;
+    -fx-alignment: center-left;
 }
 .settings-button:hover { -fx-background-color: -accent-soft; }
 .settings-button > .arrow-button { -fx-padding: 0; -fx-background-color: transparent; }

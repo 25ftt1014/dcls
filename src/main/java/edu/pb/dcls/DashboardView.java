@@ -39,7 +39,7 @@ final class DashboardView {
         long active = shipmentRows.stream().filter(s -> s.status() == OrderStatus.ASSIGNED || s.status() == OrderStatus.IN_TRANSIT).count();
         long pending = shipmentRows.stream().filter(s -> s.status() == OrderStatus.PENDING).count();
         long completed = shipmentRows.stream().filter(s -> s.status() == OrderStatus.DELIVERED).count();
-        VBox page = pageHeader("", ""); page.setSpacing(18); page.setPadding(new Insets(18, 20, 20, 58));
+        VBox page = pageHeader("", ""); page.setSpacing(18); page.setPadding(new Insets(18, 24, 20, 28));
         HBox metrics = new HBox(18,
                 metric("Vehicles", String.valueOf(vehicleRows.size()), ""),
                 metric("Active deliveries", String.valueOf(active), ""),
