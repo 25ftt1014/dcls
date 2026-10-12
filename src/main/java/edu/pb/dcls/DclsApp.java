@@ -249,7 +249,7 @@ public final class DclsApp extends Application {
     private static final String IC_TRACKING = "M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z";
 
     private VBox buildNav() {
-        VBox sidebar = new VBox(4);
+        VBox sidebar = new VBox(9);
         sidebar.setPrefWidth(204); sidebar.setMinWidth(204); sidebar.setPadding(new Insets(16, 12, 12, 12));
         sidebar.getStyleClass().add("sidebar");
 
