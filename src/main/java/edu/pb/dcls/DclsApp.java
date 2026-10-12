@@ -55,8 +55,10 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -626,9 +628,24 @@ public final class DclsApp extends Application {
         table.getColumns().add(textCol("Destination", Shipment::address, 150));
         table.getColumns().add(textCol("Status", s -> s.status().label(), 80));
         List<Shipment> activeShipments = visibleShipments().stream().filter(s -> s.status() == OrderStatus.IN_TRANSIT).toList();
-        table.setItems(FXCollections.observableArrayList(activeShipments)); table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY); table.setPrefHeight(300);
+        table.setItems(FXCollections.observableArrayList(activeShipments)); table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY); table.setPrefHeight(280);
         table.getSelectionModel().selectedItemProperty().addListener((o, old, selected) -> showEta(selected));
-        active.getChildren().addAll(table, trackingEta);
+        Button gpsToggle = button("Simulate GPS fix lost / restore", "secondary-button");
+        gpsToggle.setMaxWidth(Double.MAX_VALUE);
+        gpsToggle.setOnAction(event -> {
+            Shipment selected = table.getSelectionModel().getSelectedItem();
+            if (selected == null || selected.vehicleId() == null) {
+                alert(Alert.AlertType.INFORMATION, "No vehicle selected", "Select a delivery first, then toggle its simulated phone-GPS fix.");
+                return;
+            }
+            boolean lost = !tracking.gps().isFixLost(selected.vehicleId());
+            tracking.gps().setFixLost(selected.vehicleId(), lost);
+            toast(vehiclePlate(selected.vehicleId()) + ": simulated GPS fix " + (lost ? "LOST — marker frozen." : "restored."));
+            table.refresh();
+            drawTracking();
+            showEta(selected);
+        });
+        active.getChildren().addAll(table, gpsToggle, trackingEta);
         HBox content = new HBox(12, map, active); HBox.setHgrow(map, ALWAYS); active.setPrefWidth(230); active.setMinWidth(220);
         page.getChildren().add(content);
         drawTracking();
@@ -825,23 +842,62 @@ public final class DclsApp extends Application {
     private void drawTracking() {
         if (trackingCanvas == null) return;
         GraphicsContext g = prepareMap(trackingCanvas);
-        List<RoutePlan> activeRoutes = visibleShipments().stream().filter(s -> s.status() == OrderStatus.IN_TRANSIT && s.routeId() != null)
-                .map(s -> repository.routes().stream().filter(r -> r.id().equals(s.routeId())).findFirst().orElse(null)).filter(java.util.Objects::nonNull).toList();
-        if (!activeRoutes.isEmpty()) drawRouteOn(g, trackingCanvas.getWidth(), trackingCanvas.getHeight(), activeRoutes.get(0).stops(), null);
+        double w = trackingCanvas.getWidth(), h = trackingCanvas.getHeight();
         List<Shipment> active = visibleShipments().stream().filter(s -> s.status() == OrderStatus.IN_TRANSIT).toList();
-        for (Shipment shipment : active) {
-            TrackingPoint point = tracking.latestFor(shipment.id());
-            if (point == null && !activeRoutes.isEmpty()) {
-                Stop depot = activeRoutes.get(0).stops().get(0); point = new TrackingPoint("current", shipment.vehicleId(), shipment.id(), depot.x(), depot.y(), activeRoutes.get(0).estimatedMinutes(), LocalDateTime.now());
+        Map<String, List<Shipment>> byVehicle = active.stream()
+                .filter(s -> s.vehicleId() != null)
+                .collect(Collectors.groupingBy(Shipment::vehicleId, LinkedHashMap::new, Collectors.toList()));
+        for (Map.Entry<String, List<Shipment>> entry : byVehicle.entrySet()) {
+            String vehicleId = entry.getKey();
+            String color = vehicleColor(vehicleId);
+            entry.getValue().stream().map(Shipment::routeId).filter(java.util.Objects::nonNull).findFirst()
+                    .flatMap(routeId -> repository.routes().stream().filter(r -> r.id().equals(routeId)).findFirst())
+                    .ifPresent(route -> drawRouteOn(g, w, h, route.stops(), null, color));
+            List<TrackingPoint> trail = repository.trackingHistory().stream()
+                    .filter(p -> vehicleId.equals(p.vehicleId()))
+                    .sorted(Comparator.comparing(TrackingPoint::recordedAt))
+                    .toList();
+            List<TrackingPoint> recent = trail.subList(Math.max(0, trail.size() - 40), trail.size());
+            g.setStroke(javafx.scene.paint.Color.web(color));
+            g.setLineWidth(2.5);
+            for (int i = 1; i < recent.size(); i++) {
+                double[] a = project(recent.get(i - 1).x(), recent.get(i - 1).y(), w, h);
+                double[] b = project(recent.get(i).x(), recent.get(i).y(), w, h);
+                g.strokeLine(a[0], a[1], b[0], b[1]);
             }
-            if (point != null) drawVehicleMarker(g, trackingCanvas.getWidth(), trackingCanvas.getHeight(), point.x(), point.y(), vehiclePlate(shipment.vehicleId()));
+            TrackingPoint latest = recent.isEmpty() ? null : recent.get(recent.size() - 1);
+            if (latest == null) {
+                latest = tracking.latestForVehicle(vehicleId);
+            }
+            if (latest != null) {
+                boolean stale = tracking.gps().isFixLost(vehicleId);
+                drawVehicleMarker(g, w, h, latest.x(), latest.y(), vehiclePlate(vehicleId), stale ? "#8a94a6" : color, stale);
+            } else {
+                entry.getValue().stream().map(Shipment::routeId).filter(java.util.Objects::nonNull).findFirst()
+                        .flatMap(routeId -> repository.routes().stream().filter(r -> r.id().equals(routeId)).findFirst())
+                        .ifPresent(route -> {
+                            Stop depot = route.stops().get(0);
+                            drawVehicleMarker(g, w, h, depot.x(), depot.y(), vehiclePlate(vehicleId), color, false);
+                        });
+            }
         }
+    }
+
+    /** Stable distinct color per vehicle so trails and markers stay distinguishable. */
+    private String vehicleColor(String vehicleId) {
+        String[] palette = {"#1457c5", "#c2410c", "#15803d", "#7c3aed", "#be123c", "#0e7490", "#a16207"};
+        return palette[Math.abs(vehicleId.hashCode()) % palette.length];
     }
 
     private void showEta(Shipment shipment) {
         if (shipment == null || trackingEta == null) return;
         TrackingPoint point = tracking.latestFor(shipment.id());
-        trackingEta.setText(point == null ? "" : "ETA about " + point.etaMinutes() + " minutes  ·  last updated " + point.recordedAt().format(DATE_TIME));
+        if (point == null) { trackingEta.setText("No simulated fix yet for " + vehiclePlate(shipment.vehicleId()) + "."); return; }
+        long ordersOnVehicle = shipment.vehicleId() == null ? 0 : visibleShipments().stream()
+                .filter(s -> shipment.vehicleId().equals(s.vehicleId()) && s.status() == OrderStatus.IN_TRANSIT).count();
+        String gps = shipment.vehicleId() == null ? "—" : tracking.gpsStatus(shipment.vehicleId());
+        trackingEta.setText(vehiclePlate(shipment.vehicleId()) + " · " + gps + " · " + ordersOnVehicle + " order(s) aboard"
+                + "  ·  ETA about " + point.etaMinutes() + " min  ·  updated " + point.recordedAt().format(DATE_TIME));
     }
 
     private void startTracking() {
@@ -883,8 +939,12 @@ public final class DclsApp extends Application {
     }
 
     private void drawRouteOn(GraphicsContext g, double width, double height, List<Stop> stops, TrackingPoint moving) {
+        drawRouteOn(g, width, height, stops, moving, "#176df6");
+    }
+
+    private void drawRouteOn(GraphicsContext g, double width, double height, List<Stop> stops, TrackingPoint moving, String color) {
         if (stops == null || stops.isEmpty()) return;
-        g.setStroke(javafx.scene.paint.Color.web("#176df6")); g.setLineWidth(4);
+        g.setStroke(javafx.scene.paint.Color.web(color)); g.setLineWidth(4);
         for (int i = 1; i < stops.size(); i++) {
             double[] a = project(stops.get(i - 1), width, height), b = project(stops.get(i), width, height);
             g.strokeLine(a[0], a[1], b[0], b[1]);
@@ -912,10 +972,14 @@ public final class DclsApp extends Application {
     }
 
     private void drawVehicleMarker(GraphicsContext g, double width, double height, double x, double y, String label) {
+        drawVehicleMarker(g, width, height, x, y, label, "#1457c5", false);
+    }
+
+    private void drawVehicleMarker(GraphicsContext g, double width, double height, double x, double y, String label, String color, boolean stale) {
         double[] p = project(x, y, width, height); double px = p[0], py = p[1];
-        g.setFill(javafx.scene.paint.Color.web("#1457c5")); g.fillOval(px - 9, py - 9, 18, 18);
+        g.setFill(javafx.scene.paint.Color.web(color)); g.fillOval(px - 9, py - 9, 18, 18);
         g.setStroke(javafx.scene.paint.Color.WHITE); g.setLineWidth(2); g.strokeOval(px - 9, py - 9, 18, 18);
-        g.setFill(javafx.scene.paint.Color.web("#172033")); g.fillText(label, px + 12, py + 4);
+        g.setFill(javafx.scene.paint.Color.web("#172033")); g.fillText(label + (stale ? " · STALE" : ""), px + 12, py + 4);
     }
 
     private void registerRouteInOrder(Shipment shipment, RoutePlan route) { shipment.setAssignments(shipment.driverId(), shipment.vehicleId(), route.id()); repository.saveShipment(shipment); }
