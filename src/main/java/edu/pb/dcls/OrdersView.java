@@ -38,6 +38,7 @@ import static edu.pb.dcls.UiFactory.formGrid;
 import static edu.pb.dcls.UiFactory.labeled;
 import static edu.pb.dcls.UiFactory.pageHeader;
 import static edu.pb.dcls.UiFactory.panel;
+import static edu.pb.dcls.UiFactory.statusCol;
 import static edu.pb.dcls.UiFactory.textCol;
 import static javafx.scene.layout.Priority.ALWAYS;
 
@@ -103,7 +104,7 @@ final class OrdersView {
         TableView<Shipment> table = new TableView<>(); table.setPlaceholder(new Label("No orders match this search."));
         table.getColumns().add(textCol("Order", Shipment::id, 115));
         table.getColumns().add(textCol("Customer", Shipment::customerName, 190));
-        table.getColumns().add(textCol("Status", s -> s.status().label(), 110));
+        table.getColumns().add(statusCol("Status", s -> s.status().label(), 110));
         table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY);
         return table;
     }

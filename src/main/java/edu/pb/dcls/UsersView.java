@@ -22,6 +22,7 @@ import static edu.pb.dcls.Domain.User;
 import static edu.pb.dcls.UiFactory.button;
 import static edu.pb.dcls.UiFactory.labeled;
 import static edu.pb.dcls.UiFactory.pageHeader;
+import static edu.pb.dcls.UiFactory.statusCol;
 import static edu.pb.dcls.UiFactory.textCol;
 import static javafx.scene.layout.Priority.ALWAYS;
 
@@ -42,7 +43,7 @@ final class UsersView {
         table.getColumns().add(textCol("Email", User::email, 210));
         table.getColumns().add(textCol("Phone", User::phone, 130));
         table.getColumns().add(textCol("Role", u -> u.role().label(), 110));
-        table.getColumns().add(textCol("Status", u -> u.active() ? "Active" : "Inactive", 100));
+        table.getColumns().add(statusCol("Status", u -> u.active() ? "Active" : "Inactive", 100));
         Runnable refresh = () -> { String q = search.getText().toLowerCase(Locale.ROOT).trim(); table.setItems(FXCollections.observableArrayList(app.repository.users().stream().filter(u -> (u.name()+" "+u.email()+" "+u.phone()).toLowerCase(Locale.ROOT).contains(q)).toList())); };
         search.textProperty().addListener((o, old, value) -> refresh.run()); refresh.run(); table.setPrefHeight(390); table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY);
         HBox actions = new HBox(8); Button edit = button("Edit account", "secondary-button"), toggle = button("Activate / deactivate", "secondary-button");

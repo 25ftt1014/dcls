@@ -51,7 +51,7 @@ final class DashboardView {
         if (!app.repository.routes().isEmpty()) drawRoute(map, app.repository.routes().getFirst().stops(), null); else drawDashboardRoads(map);
         mapPanel.getChildren().add(map);
         VBox activity = panel(new Label("Active deliveries")); ((Label) activity.getChildren().get(0)).getStyleClass().add("section-title");
-        HBox summary = new HBox(8, new Label("+4 vs yesterday"), new Region(), new Label(String.valueOf(active)));
+        HBox summary = new HBox(8, new Label("Currently active"), new Region(), new Label(String.valueOf(active)));
         summary.getStyleClass().add("activity-summary"); HBox.setHgrow(summary.getChildren().get(1), ALWAYS); activity.getChildren().add(summary);
         activity.getChildren().add(activityChart());
         List<Shipment> latest = shipmentRows.stream().filter(s -> s.status() == OrderStatus.ASSIGNED || s.status() == OrderStatus.IN_TRANSIT)

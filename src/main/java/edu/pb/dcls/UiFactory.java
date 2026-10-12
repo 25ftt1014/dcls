@@ -7,6 +7,7 @@ import javafx.scene.Node;
 import javafx.scene.control.Button;
 import javafx.scene.control.ChoiceBox;
 import javafx.scene.control.Label;
+import javafx.scene.control.TableCell;
 import javafx.scene.control.TableColumn;
 import javafx.scene.layout.ColumnConstraints;
 import javafx.scene.layout.GridPane;
@@ -70,7 +71,45 @@ final class UiFactory {
         VBox page = new VBox(14);
         page.setPadding(new Insets(15, 20, 22, 58));
         page.getStyleClass().add("workspace");
+        // Render the (previously discarded) descriptive subtitle so each screen
+        // has a clear heading hierarchy, not just a bare toolbar.
+        if (subtitle != null && !subtitle.isBlank()) {
+            Label caption = new Label(subtitle);
+            caption.getStyleClass().add("page-subtitle");
+            caption.setWrapText(true);
+            page.getChildren().add(caption);
+        }
         return page;
+    }
+
+    /** Maps a human status label to a pill style class, so colour is consistent everywhere. */
+    static String pillClassFor(String label) {
+        if (label == null) return "status-info";
+        return switch (label) {
+            case "Available", "Delivered", "Active" -> "status-good";
+            case "In Delivery", "In Transit", "Assigned" -> "status-info";
+            case "Under Maintenance", "Pending" -> "status-warn";
+            case "Unavailable", "Cancelled", "Inactive" -> "status-bad";
+            default -> "status-info";
+        };
+    }
+
+    /** A table column that renders its value as a coloured status pill instead of plain text. */
+    static <T> TableColumn<T, String> statusCol(String heading, Function<T, String> value, double width) {
+        TableColumn<T, String> column = new TableColumn<>(heading);
+        column.setPrefWidth(width);
+        column.setCellValueFactory(cell -> new SimpleStringProperty(Optional.ofNullable(value.apply(cell.getValue())).orElse("—")));
+        column.setCellFactory(col -> new TableCell<>() {
+            @Override protected void updateItem(String item, boolean empty) {
+                super.updateItem(item, empty);
+                if (empty || item == null) { setGraphic(null); setText(null); return; }
+                Label pill = new Label(item);
+                pill.getStyleClass().addAll("status-pill", pillClassFor(item));
+                setGraphic(pill);
+                setText(null);
+            }
+        });
+        return column;
     }
 
     static Node detailField(String title, String value) {

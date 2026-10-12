@@ -276,11 +276,12 @@ public final class DclsApp extends Application {
 
     private Node buildTopbar() {
         HBox bar = new HBox(10); bar.setAlignment(Pos.CENTER_LEFT); bar.setPadding(new Insets(9, 24, 9, 24)); bar.getStyleClass().add("topbar");
-        Label back = new Label("‹"); back.setStyle("-fx-font-size: 21px; -fx-text-fill: #172033;");
         Label title = new Label(activePage.equals("dashboard") ? "Dashboard" : pageLabel(activePage)); title.setStyle("-fx-font-size: 16px; -fx-font-weight: 700;");
-        dataModeLabel = new Label("");
+        // Status chip on the right: shows the data mode, and briefly flashes action feedback (toasts).
+        dataModeLabel = new Label(repository.persistent() ? "MySQL connected" : "Demo data");
+        dataModeLabel.getStyleClass().add("mode-chip");
         Region spacer = new Region(); HBox.setHgrow(spacer, ALWAYS);
-        bar.getChildren().addAll(back, title, spacer);
+        bar.getChildren().addAll(title, spacer, dataModeLabel);
         return bar;
     }
 
@@ -415,7 +416,18 @@ public final class DclsApp extends Application {
     }
 
     void showError(String message) { alert(Alert.AlertType.ERROR, "Action could not be completed", message); }
-    void toast(String message) { if (dataModeLabel != null) { dataModeLabel.setText(message); dataModeLabel.setStyle("-fx-text-fill: #17613f; -fx-font-size: 12px;"); javafx.animation.PauseTransition pause = new javafx.animation.PauseTransition(Duration.seconds(3)); pause.setOnFinished(event -> { if (dataModeLabel != null) dataModeLabel.setText(repository.persistent() ? "MySQL connected" : "Demo data"); }); pause.play(); } }
+    void toast(String message) {
+        if (dataModeLabel == null) return;
+        dataModeLabel.setText(message);
+        if (!dataModeLabel.getStyleClass().contains("mode-chip-success")) dataModeLabel.getStyleClass().add("mode-chip-success");
+        javafx.animation.PauseTransition pause = new javafx.animation.PauseTransition(Duration.seconds(3));
+        pause.setOnFinished(event -> {
+            if (dataModeLabel == null) return;
+            dataModeLabel.getStyleClass().remove("mode-chip-success");
+            dataModeLabel.setText(repository.persistent() ? "MySQL connected" : "Demo data");
+        });
+        pause.play();
+    }
     void alert(Alert.AlertType type, String title, String message) { Alert alert = new Alert(type, message, ButtonType.OK); alert.initOwner(stage); alert.setTitle(title); alert.setHeaderText(null); alert.showAndWait(); }
     private void showStartupError(String message) { Alert alert = new Alert(Alert.AlertType.ERROR, message, ButtonType.OK); alert.setTitle("DCLS could not start"); alert.setHeaderText("Check the MySQL configuration"); alert.showAndWait(); }
 

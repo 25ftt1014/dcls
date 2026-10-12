@@ -50,6 +50,7 @@
 
 /* ---- typography ---------------------------------------------- */
 .page-title { -fx-font-size: 24px; -fx-font-weight: 800; -fx-text-fill: -ink; }
+.page-subtitle { -fx-text-fill: -ink-soft; -fx-font-size: 13px; }
 .section-title { -fx-font-size: 15px; -fx-font-weight: 700; -fx-text-fill: -ink; }
 .muted { -fx-text-fill: -ink-soft; }
 .eyebrow { -fx-text-fill: -ink-soft; -fx-font-size: 11px; -fx-font-weight: 700; }
@@ -180,6 +181,13 @@
 .status-info { -fx-background-color: -accent-soft; -fx-text-fill: #1b47aa; }
 .status-warn { -fx-background-color: #fff3da; -fx-text-fill: #8a5a00; }
 .status-bad { -fx-background-color: #fdecea; -fx-text-fill: #a6281d; }
+
+/* topbar data-mode chip (also flashes action feedback) */
+.mode-chip { -fx-background-color: -accent-soft; -fx-text-fill: #1b47aa; -fx-font-size: 11px; -fx-font-weight: 700; -fx-padding: 4 11; -fx-background-radius: 20; }
+.mode-chip-success { -fx-background-color: #e6f6ee; -fx-text-fill: #12724a; }
+
+/* keep status-pill cells left-aligned and padded like text cells */
+.table-cell { -fx-alignment: center-left; -fx-padding: 0 12 0 12; }
 
 /* ---- map & misc ---------------------------------------------- */
 .map-canvas { -fx-border-color: -line; -fx-border-radius: 10; -fx-background-radius: 10; }

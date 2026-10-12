@@ -38,6 +38,7 @@ import static edu.pb.dcls.UiFactory.formGrid;
 import static edu.pb.dcls.UiFactory.labeled;
 import static edu.pb.dcls.UiFactory.pageHeader;
 import static edu.pb.dcls.UiFactory.panel;
+import static edu.pb.dcls.UiFactory.statusCol;
 import static edu.pb.dcls.UiFactory.textCol;
 import static javafx.scene.layout.Priority.ALWAYS;
 
@@ -105,7 +106,7 @@ final class FleetView {
         table.getColumns().add(textCol("Plate", Vehicle::plate, 110));
         table.getColumns().add(textCol("Vehicle", Vehicle::model, 180));
         table.getColumns().add(textCol("Driver", v -> app.driverName(v.driverId()), 150));
-        table.getColumns().add(textCol("Status", v -> v.status().label(), 140));
+        table.getColumns().add(statusCol("Status", v -> v.status().label(), 140));
         table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY);
         return table;
     }
