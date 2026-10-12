@@ -29,19 +29,44 @@ final class TrackingView {
 
     VBox page() {
         VBox page = pageHeader("Real-time tracking", "Live positions are simulated along assigned routes. No GPS data is used.");
-        app.trackingCanvas = mapCanvas(470, 350);
-        VBox map = panel(new Label("Fleet map  ·  Brunei-Muara")); ((Label) map.getChildren().get(0)).getStyleClass().add("section-title"); map.getChildren().add(app.trackingCanvas);
+        app.trackingMaps = app.new MapController(470, 350);
+        app.trackingMaps.content = () -> app.trackingFrame;
+        app.trackingMaps.painter = (g, v) -> app.paintTracking(g, app.trackingMaps.canvas.getWidth(), app.trackingMaps.canvas.getHeight(), v);
+        app.trackingCanvas = app.trackingMaps.canvas;
+        VBox map = panel(new Label("Fleet map  ·  Brunei Darussalam — scroll to zoom, drag to pan")); ((Label) map.getChildren().get(0)).getStyleClass().add("section-title");
+        app.trackingLegend = new VBox(3);
+        map.getChildren().addAll(app.trackingCanvas, app.trackingMaps.zoomBar, app.legendBox(), app.trackingLegend);
         VBox active = panel(new Label("Active deliveries")); ((Label) active.getChildren().get(0)).getStyleClass().add("section-title");
         app.trackingEta = new Label("Select a delivery to view its latest estimate."); app.trackingEta.getStyleClass().add("muted"); app.trackingEta.setWrapText(true);
         TableView<Shipment> table = new TableView<>(); table.setPlaceholder(new Label("No active deliveries."));
-        table.getColumns().add(textCol("Order", Shipment::id, 100));
-        table.getColumns().add(textCol("Driver", s -> app.driverName(s.driverId()), 130));
-        table.getColumns().add(textCol("Destination", Shipment::address, 180));
-        table.getColumns().add(statusCol("Status", s -> s.status().label(), 100));
+        table.getColumns().add(textCol("Order", Shipment::id, 90));
+        table.getColumns().add(textCol("Vehicle", s -> app.vehiclePlate(s.vehicleId()), 90));
+        table.getColumns().add(textCol("Driver", s -> app.driverName(s.driverId()), 110));
+        table.getColumns().add(textCol("GPS", s -> s.vehicleId() == null ? "—" : app.tracking.gpsStatus(s.vehicleId()), 110));
+        table.getColumns().add(textCol("Destination", Shipment::address, 150));
+        table.getColumns().add(textCol("Status", s -> s.status().label(), 80));
         List<Shipment> activeShipments = app.visibleShipments().stream().filter(s -> s.status() == OrderStatus.IN_TRANSIT).toList();
-        table.setItems(FXCollections.observableArrayList(activeShipments)); table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY); table.setPrefHeight(300);
+        table.setItems(FXCollections.observableArrayList(activeShipments)); table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY); table.setPrefHeight(240);
         table.getSelectionModel().selectedItemProperty().addListener((o, old, selected) -> app.showEta(selected));
-        active.getChildren().addAll(table, app.trackingEta);
+        javafx.scene.control.Button gpsToggle = new javafx.scene.control.Button("Simulate GPS fix lost / restore");
+        gpsToggle.setMaxWidth(Double.MAX_VALUE);
+        gpsToggle.setOnAction(event -> {
+            Shipment selected = table.getSelectionModel().getSelectedItem();
+            if (selected == null || selected.vehicleId() == null) {
+                app.alert(javafx.scene.control.Alert.AlertType.INFORMATION, "No vehicle selected", "Select a delivery first, then toggle its simulated phone-GPS fix.");
+                return;
+            }
+            boolean lost = !app.tracking.gps().isFixLost(selected.vehicleId());
+            app.tracking.gps().setFixLost(selected.vehicleId(), lost);
+            app.toast(app.vehiclePlate(selected.vehicleId()) + ": simulated GPS fix " + (lost ? "LOST — marker frozen." : "restored."));
+            table.refresh();
+            app.drawTracking();
+            app.showEta(selected);
+        });
+        javafx.scene.control.Button gpxExport = new javafx.scene.control.Button("Export GPX track");
+        gpxExport.setMaxWidth(Double.MAX_VALUE);
+        gpxExport.setOnAction(event -> app.exportGpx(table.getSelectionModel().getSelectedItem()));
+        active.getChildren().addAll(table, gpsToggle, gpxExport, app.trackingEta);
         HBox content = new HBox(12, map, active); HBox.setHgrow(map, ALWAYS); active.setPrefWidth(230); active.setMinWidth(220);
         page.getChildren().add(content);
         app.drawTracking();
