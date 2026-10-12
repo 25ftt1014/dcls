@@ -9,3 +9,12 @@ config/application.properties
 
 # graft's local graph cache — regenerable, not committed (run `graft build`).
 /graft/
+
+# Build artifacts and dependency JARs must never be committed — Maven resolves
+# dependencies from ~/.m2 and builds into target/. (A built distribution was
+# mistakenly committed into /dcls/; this keeps it out.)
+*.jar
+/dcls/
+
+# macOS Finder cruft
+.DS_Store
