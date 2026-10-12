@@ -51,16 +51,45 @@ The demo does not need MySQL. To use the JDBC repository for development or the 
 
 1. Install and start MySQL Server.
 2. Run `src\main\resources\db\schema.sql` in a MySQL client. The script creates the `dcls` database and its tables.
-3. Set the connection variables in the PowerShell session, then start the app:
+3. Give the app its own database user instead of `root`, so a leaked password cannot reach the rest of the server. Run this once as an administrative account, choosing your own password:
+
+```sql
+CREATE USER 'dcls_app'@'localhost' IDENTIFIED BY 'choose-a-strong-password';
+GRANT SELECT, INSERT, UPDATE, DELETE ON dcls.* TO 'dcls_app'@'localhost';
+FLUSH PRIVILEGES;
+```
+
+4. Set the connection variables in the PowerShell session, then start the app:
 
 ```powershell
 $env:DCLS_DB_URL = 'jdbc:mysql://localhost:3306/dcls'
-$env:DCLS_DB_USER = 'your_mysql_user'
-$env:DCLS_DB_PASSWORD = 'your_mysql_password'
+$env:DCLS_DB_USER = 'dcls_app'
+$env:DCLS_DB_PASSWORD = 'choose-a-strong-password'
 mvn javafx:run
 ```
 
-When `DCLS_DB_URL` is absent, the app uses the in-memory demo repository. When the database has no users, it seeds the same demo accounts and sample data. Keep real database credentials out of source control. Import the schema before starting the JDBC mode.
+When `DCLS_DB_URL` is absent, the app uses the in-memory demo repository. When the database has no users, it seeds the same demo accounts and sample data. Keep real database credentials out of source control. Import the schema before starting the JDBC mode, and remember that `schema.sql` needs an administrative account — the app itself only ever reads and writes rows, so it never needs permission to create or alter tables.
+
+### Setting up on a new machine
+
+Every developer runs their own local MySQL server. Nothing is shared over the network, so there is no port to open and no credentials to distribute — each person picks their own password and gets an identical seeded database.
+
+`mysql.exe` is usually not on `PATH`. Use MySQL Workbench (**File → Open SQL Script**, pick `src\main\resources\db\schema.sql`, then run), or the full path:
+
+```powershell
+$mysql = "C:\Program Files\MySQL\MySQL Server 8.0\bin\mysql.exe"
+Get-Content src\main\resources\db\schema.sql -Raw | & $mysql -u root -p
+```
+
+`schema.sql` is safe to re-run: every statement is `CREATE ... IF NOT EXISTS` or `INSERT IGNORE`, so it never duplicates or overwrites existing rows. On a machine that already has an older copy of `dcls`, drop it first if you need the foreign-key rules re-applied — `CREATE TABLE IF NOT EXISTS` skips tables that already exist, so edits to the schema are not picked up otherwise:
+
+```powershell
+& $mysql -u root -p -e "DROP DATABASE IF EXISTS dcls;"
+```
+
+Then create your own `dcls_app` user as shown in step 3 above, set the three variables, and run `mvn javafx:run`.
+
+Because each developer has a separate copy, two people editing data at the same time will not see each other's changes. That is intentional — it avoids conflicting rows with no way to merge them. Share data by exporting and importing rather than by pointing two machines at one server.
 
 ## Source layout
 

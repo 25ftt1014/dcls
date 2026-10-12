@@ -55,6 +55,9 @@ public final class JdbcRepository implements Repository {
     }
 
     private AppServices.AppException friendly(SQLException exception) {
+        if (exception.getErrorCode() == 1451) {
+            return new AppServices.AppException("This record is still linked to other data such as orders, routes or history. Remove those links first, then try again.", exception);
+        }
         return new AppServices.AppException("MySQL request failed. Check the database connection and configuration, then try again.", exception);
     }
 
@@ -178,7 +181,7 @@ public final class JdbcRepository implements Repository {
                 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE customer_name=VALUES(customer_name),
                 customer_contact=VALUES(customer_contact), delivery_address=VALUES(delivery_address), package_description=VALUES(package_description),
                 quantity=VALUES(quantity), weight_kg=VALUES(weight_kg), priority=VALUES(priority), status=VALUES(status), driver_id=VALUES(driver_id),
-                vehicle_id=VALUES(vehicle_id), route_id=VALUES(route_id), delivered_at=VALUES(delivered_at),
+                vehicle_id=VALUES(vehicle_id), route_id=VALUES(route_id), created_at=VALUES(created_at), delivered_at=VALUES(delivered_at),
                 delivery_minutes=VALUES(delivery_minutes), customer_satisfaction=VALUES(customer_satisfaction)
                 """)) {
             statement.setString(1, shipment.id()); statement.setString(2, shipment.customerName()); statement.setString(3, shipment.customerContact());
@@ -222,7 +225,8 @@ public final class JdbcRepository implements Repository {
             try (PreparedStatement statement = connection.prepareStatement("""
                     INSERT INTO routes(id, route_name, driver_id, distance_km, estimated_minutes, completed, created_at)
                     VALUES(?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE route_name=VALUES(route_name), driver_id=VALUES(driver_id),
-                    distance_km=VALUES(distance_km), estimated_minutes=VALUES(estimated_minutes), completed=VALUES(completed)
+                    distance_km=VALUES(distance_km), estimated_minutes=VALUES(estimated_minutes), completed=VALUES(completed),
+                    created_at=VALUES(created_at)
                     """)) {
                 statement.setString(1, route.id()); statement.setString(2, route.name()); statement.setString(3, route.driverId());
                 statement.setDouble(4, route.distanceKm()); statement.setInt(5, route.estimatedMinutes()); statement.setBoolean(6, route.completed());
@@ -281,10 +285,21 @@ public final class JdbcRepository implements Repository {
             return result;
         });
     }
+    // ponytail: prunes on every write, a PK-ordered scan per tracking tick; throttle to a counter if the tick rate ever matters.
+    private void pruneTrackingHistory(Connection connection) throws SQLException {
+        // Derived table required: MySQL forbids a DELETE whose subquery reads the same table.
+        try (PreparedStatement statement = connection.prepareStatement(
+                "DELETE FROM tracking_history WHERE id NOT IN (SELECT id FROM (SELECT id FROM tracking_history ORDER BY id DESC LIMIT 500) keep)")) {
+            statement.executeUpdate();
+        }
+    }
+
     @Override public void saveTrackingPoint(TrackingPoint point) { write(connection -> {
         try (PreparedStatement statement = connection.prepareStatement("INSERT INTO tracking_history(vehicle_id,shipment_id,x_coord,y_coord,eta_minutes,recorded_at) VALUES(?,?,?,?,?,?)")) {
             statement.setString(1, point.vehicleId()); statement.setString(2, point.shipmentId()); statement.setDouble(3, point.x()); statement.setDouble(4, point.y()); statement.setInt(5, point.etaMinutes()); statement.setTimestamp(6, Timestamp.valueOf(point.recordedAt())); statement.executeUpdate();
-        } return null;
+        }
+        pruneTrackingHistory(connection);
+        return null;
     }); }
 
     private void transaction(SqlWork<Void> work) {
