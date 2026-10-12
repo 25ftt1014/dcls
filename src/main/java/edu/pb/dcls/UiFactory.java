@@ -9,6 +9,8 @@ import javafx.scene.control.ChoiceBox;
 import javafx.scene.control.Label;
 import javafx.scene.control.TableCell;
 import javafx.scene.control.TableColumn;
+import javafx.scene.control.TableRow;
+import javafx.scene.control.TableView;
 import javafx.scene.layout.ColumnConstraints;
 import javafx.scene.layout.GridPane;
 import javafx.scene.layout.HBox;
@@ -17,6 +19,7 @@ import javafx.scene.layout.VBox;
 import javafx.util.StringConverter;
 
 import java.util.Optional;
+import java.util.function.Consumer;
 import java.util.function.Function;
 
 /**
@@ -148,6 +151,15 @@ final class UiFactory {
         ColumnConstraints left = new ColumnConstraints(145), right = new ColumnConstraints(280);
         grid.getColumnConstraints().addAll(left, right);
         return grid;
+    }
+
+    /** Opens {@code action} for a row when it is double-clicked (a common, expected table affordance). */
+    static <T> void onRowDoubleClick(TableView<T> table, Consumer<T> action) {
+        table.setRowFactory(tv -> {
+            TableRow<T> row = new TableRow<>();
+            row.setOnMouseClicked(event -> { if (event.getClickCount() == 2 && !row.isEmpty()) action.accept(row.getItem()); });
+            return row;
+        });
     }
 
     static void addField(GridPane grid, int row, String label, Node field) {

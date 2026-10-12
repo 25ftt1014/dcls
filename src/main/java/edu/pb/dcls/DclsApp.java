@@ -7,6 +7,7 @@ import javafx.application.Application;
 import javafx.application.Platform;
 import javafx.collections.FXCollections;
 import javafx.collections.ObservableList;
+import javafx.event.ActionEvent;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Node;
@@ -426,16 +427,49 @@ public final class DclsApp extends Application {
         press.playFromStart();
         signInRipple.playFromStart();
     }
+    /** Shared dialog setup: owner, modality, title, and — importantly — our stylesheet on the
+     *  DialogPane itself (the old code added it to a not-yet-created scene, so dialogs fell back
+     *  to default Java styling). */
+    private void initDialog(Dialog<?> dialog, String title) {
+        dialog.initOwner(stage); dialog.initModality(Modality.WINDOW_MODAL); dialog.setTitle(title);
+        dialog.getDialogPane().getStyleClass().add("app-dialog");
+        dialog.getDialogPane().getStylesheets().add(getClass().getResource("/edu/pb/dcls/styles.css").toExternalForm());
+    }
+
     Optional<ButtonType> confirmDialog(String title, Node content, String action) {
-        Dialog<ButtonType> dialog = new Dialog<>(); dialog.initOwner(stage); dialog.initModality(Modality.WINDOW_MODAL); dialog.setTitle(title);
-        dialog.getDialogPane().getButtonTypes().addAll(new ButtonType(action, ButtonType.OK.getButtonData()), ButtonType.CANCEL);
+        Dialog<ButtonType> dialog = new Dialog<>(); initDialog(dialog, title);
+        ButtonType actionType = new ButtonType(action, ButtonType.OK.getButtonData());
+        dialog.getDialogPane().getButtonTypes().addAll(actionType, ButtonType.CANCEL);
         dialog.getDialogPane().setContent(content); dialog.getDialogPane().setPrefWidth(480);
-        Scene scene = dialog.getDialogPane().getScene(); if (scene != null) scene.getStylesheets().add(getClass().getResource("/edu/pb/dcls/styles.css").toExternalForm());
+        ((Button) dialog.getDialogPane().lookupButton(actionType)).setDefaultButton(true);
         return dialog.showAndWait();
+    }
+
+    /** Form dialog that stays open and keeps the user's input when {@code submit} throws,
+     *  showing the message inline instead of closing and firing a separate alert.
+     *  {@code submit} validates, persists, and navigates; Enter triggers it. */
+    void confirmForm(String title, Node content, String action, Runnable submit) {
+        Dialog<ButtonType> dialog = new Dialog<>(); initDialog(dialog, title);
+        ButtonType actionType = new ButtonType(action, ButtonType.OK.getButtonData());
+        dialog.getDialogPane().getButtonTypes().addAll(actionType, ButtonType.CANCEL);
+        Label error = new Label(); error.getStyleClass().add("form-error"); error.setWrapText(true);
+        error.setManaged(false); error.setVisible(false);
+        VBox wrap = new VBox(12, error, content);
+        dialog.getDialogPane().setContent(wrap); dialog.getDialogPane().setPrefWidth(480);
+        Button ok = (Button) dialog.getDialogPane().lookupButton(actionType); ok.setDefaultButton(true);
+        ok.addEventFilter(ActionEvent.ACTION, event -> {
+            try { submit.run(); }
+            catch (RuntimeException exception) {
+                error.setText(readable(exception)); error.setManaged(true); error.setVisible(true);
+                event.consume();
+            }
+        });
+        dialog.showAndWait();
     }
 
     boolean confirm(String title, String message) {
         Alert alert = new Alert(Alert.AlertType.CONFIRMATION, message, ButtonType.YES, ButtonType.NO); alert.initOwner(stage); alert.setTitle(title); alert.setHeaderText(null);
+        alert.getDialogPane().getStylesheets().add(getClass().getResource("/edu/pb/dcls/styles.css").toExternalForm());
         return alert.showAndWait().filter(ButtonType.YES::equals).isPresent();
     }
 
@@ -463,7 +497,7 @@ public final class DclsApp extends Application {
         });
         pause.play();
     }
-    void alert(Alert.AlertType type, String title, String message) { Alert alert = new Alert(type, message, ButtonType.OK); alert.initOwner(stage); alert.setTitle(title); alert.setHeaderText(null); alert.showAndWait(); }
+    void alert(Alert.AlertType type, String title, String message) { Alert alert = new Alert(type, message, ButtonType.OK); alert.initOwner(stage); alert.setTitle(title); alert.setHeaderText(null); alert.getDialogPane().getStylesheets().add(getClass().getResource("/edu/pb/dcls/styles.css").toExternalForm()); alert.showAndWait(); }
     private void showStartupError(String message) { Alert alert = new Alert(Alert.AlertType.ERROR, message, ButtonType.OK); alert.setTitle("DCLS could not start"); alert.setHeaderText("Check the MySQL configuration"); alert.showAndWait(); }
 
     String driverName(String id) { return id == null ? "Unassigned" : repository.users().stream().filter(u -> u.id().equals(id)).map(User::name).findFirst().orElse("Unknown driver"); }

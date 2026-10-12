@@ -36,6 +36,7 @@ import static edu.pb.dcls.UiFactory.addField;
 import static edu.pb.dcls.UiFactory.button;
 import static edu.pb.dcls.UiFactory.formGrid;
 import static edu.pb.dcls.UiFactory.labeled;
+import static edu.pb.dcls.UiFactory.onRowDoubleClick;
 import static edu.pb.dcls.UiFactory.pageHeader;
 import static edu.pb.dcls.UiFactory.panel;
 import static edu.pb.dcls.UiFactory.statusCol;
@@ -78,6 +79,7 @@ final class FleetView {
         allStatuses.setOnAction(event -> { filter.setValue(null); filters.setText("Filter"); });
         tools.getChildren().addAll(search, gap, filters, records, add);
         TableView<Vehicle> table = vehicleTable();
+        onRowDoubleClick(table, v -> { if (app.access.canManageFleet(app.currentUser.role())) vehicleDialog(v); });
         Runnable refresh = () -> {
             String q = search.getText() == null ? "" : search.getText().toLowerCase(Locale.ROOT).trim();
             VehicleStatus status = filter.getValue();
@@ -152,16 +154,13 @@ final class FleetView {
         GridPane form = formGrid(); addField(form, 0, "Plate number", plate); addField(form, 1, "Model", model); addField(form, 2, "Vehicle type", type);
         addField(form, 3, "Capacity (kg)", capacity); addField(form, 4, "Mileage (km)", mileage); addField(form, 5, "Next service (km)", nextService);
         addField(form, 6, "Status", status); addField(form, 7, "Assigned driver", driver);
-        Optional<ButtonType> result = app.confirmDialog(existing == null ? "Add vehicle" : "Edit vehicle", form, existing == null ? "Add vehicle" : "Save changes");
-        if (result.isPresent() && result.get().getButtonData() == ButtonType.OK.getButtonData()) {
-            try {
-                Vehicle vehicle = existing == null ? new Vehicle(AppServices.id(), plate.getText(), model.getText(), type.getText(), app.number(capacity.getText()), app.number(mileage.getText()), status.getValue(),
-                        driver.getValue() == null ? null : driver.getValue().id(), app.number(nextService.getText())) : existing;
-                if (existing != null) vehicle.update(plate.getText(), model.getText(), type.getText(), app.number(capacity.getText()), app.number(mileage.getText()), status.getValue(),
-                        driver.getValue() == null ? null : driver.getValue().id(), app.number(nextService.getText()));
-                app.fleet.save(vehicle); app.showPage("fleet");
-            } catch (RuntimeException exception) { app.alert(Alert.AlertType.WARNING, "Vehicle not saved", app.readable(exception)); }
-        }
+        app.confirmForm(existing == null ? "Add vehicle" : "Edit vehicle", form, existing == null ? "Add vehicle" : "Save changes", () -> {
+            Vehicle vehicle = existing == null ? new Vehicle(AppServices.id(), plate.getText(), model.getText(), type.getText(), app.number(capacity.getText()), app.number(mileage.getText()), status.getValue(),
+                    driver.getValue() == null ? null : driver.getValue().id(), app.number(nextService.getText())) : existing;
+            if (existing != null) vehicle.update(plate.getText(), model.getText(), type.getText(), app.number(capacity.getText()), app.number(mileage.getText()), status.getValue(),
+                    driver.getValue() == null ? null : driver.getValue().id(), app.number(nextService.getText()));
+            app.fleet.save(vehicle); app.showPage("fleet");
+        });
     }
 
     private void vehicleStatusDialog(Vehicle vehicle) {
@@ -174,21 +173,15 @@ final class FleetView {
         ComboBox<Vehicle> vehicle = app.vehicleCombo(); DatePicker date = new DatePicker(LocalDate.now());
         TextField mileage = new TextField("0"), details = new TextField(), cost = new TextField("0");
         VBox form = new VBox(10, labeled("Vehicle", vehicle), labeled("Date", date), labeled("Mileage (km)", mileage), labeled("Service details", details), labeled("Cost ($)", cost));
-        Optional<ButtonType> result = app.confirmDialog("Record maintenance", form, "Save record");
-        if (result.isPresent() && result.get().getButtonData() == ButtonType.OK.getButtonData()) {
-            try { app.fleet.logMaintenance(vehicle.getValue(), date.getValue(), app.number(mileage.getText()), details.getText(), app.number(cost.getText())); app.showPage("fleet"); }
-            catch (RuntimeException ex) { app.alert(Alert.AlertType.WARNING, "Service record not saved", app.readable(ex)); }
-        }
+        app.confirmForm("Record maintenance", form, "Save record", () ->
+            { app.fleet.logMaintenance(vehicle.getValue(), date.getValue(), app.number(mileage.getText()), details.getText(), app.number(cost.getText())); app.showPage("fleet"); });
     }
 
     private void fuelDialog() {
         ComboBox<Vehicle> vehicle = app.vehicleCombo(); DatePicker date = new DatePicker(LocalDate.now());
         TextField mileage = new TextField("0"), litres = new TextField(), cost = new TextField();
         VBox form = new VBox(10, labeled("Vehicle", vehicle), labeled("Date", date), labeled("Mileage (km)", mileage), labeled("Litres", litres), labeled("Cost ($)", cost));
-        Optional<ButtonType> result = app.confirmDialog("Record refuel", form, "Save record");
-        if (result.isPresent() && result.get().getButtonData() == ButtonType.OK.getButtonData()) {
-            try { app.fleet.logFuel(vehicle.getValue(), date.getValue(), app.number(mileage.getText()), app.number(litres.getText()), app.number(cost.getText())); app.showPage("fleet"); }
-            catch (RuntimeException ex) { app.alert(Alert.AlertType.WARNING, "Fuel record not saved", app.readable(ex)); }
-        }
+        app.confirmForm("Record refuel", form, "Save record", () ->
+            { app.fleet.logFuel(vehicle.getValue(), date.getValue(), app.number(mileage.getText()), app.number(litres.getText()), app.number(cost.getText())); app.showPage("fleet"); });
     }
 }
