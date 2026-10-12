@@ -58,6 +58,9 @@ public final class JdbcRepository implements Repository {
         if (exception.getErrorCode() == 1451) {
             return new AppServices.AppException("This record is still linked to other data such as orders, routes or history. Remove those links first, then try again.", exception);
         }
+        if (exception.getErrorCode() == 1054) {
+            return new AppServices.AppException("The database is missing a column this app needs. Re-run schema.sql as an administrative account, then restart the app.", exception);
+        }
         return new AppServices.AppException("MySQL request failed. Check the database connection and configuration, then try again.", exception);
     }
 
@@ -67,7 +70,7 @@ public final class JdbcRepository implements Repository {
             try (PreparedStatement statement = connection.prepareStatement("SELECT * FROM users ORDER BY full_name"); ResultSet rows = statement.executeQuery()) {
                 while (rows.next()) result.add(new User(rows.getString("id"), rows.getString("full_name"), rows.getString("email"),
                         rows.getString("phone"), rows.getString("password_hash"), rows.getString("password_salt"),
-                        Role.valueOf(rows.getString("role_code")), rows.getBoolean("active")));
+                        Role.valueOf(rows.getString("role_code")), rows.getBoolean("active"), rows.getBoolean("pending")));
             }
             return result;
         });
@@ -81,7 +84,7 @@ public final class JdbcRepository implements Repository {
                     if (!rows.next()) return Optional.empty();
                     return Optional.of(new User(rows.getString("id"), rows.getString("full_name"), rows.getString("email"),
                             rows.getString("phone"), rows.getString("password_hash"), rows.getString("password_salt"),
-                            Role.valueOf(rows.getString("role_code")), rows.getBoolean("active")));
+                            Role.valueOf(rows.getString("role_code")), rows.getBoolean("active"), rows.getBoolean("pending")));
                 }
             }
         });
@@ -90,14 +93,15 @@ public final class JdbcRepository implements Repository {
     @Override public void saveUser(User user) {
         write(connection -> {
             try (PreparedStatement statement = connection.prepareStatement("""
-                    INSERT INTO users(id, full_name, email, phone, password_hash, password_salt, role_code, active)
-                    VALUES(?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE full_name=VALUES(full_name), email=VALUES(email),
+                    INSERT INTO users(id, full_name, email, phone, password_hash, password_salt, role_code, active, pending)
+                    VALUES(?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE full_name=VALUES(full_name), email=VALUES(email),
                     phone=VALUES(phone), password_hash=VALUES(password_hash), password_salt=VALUES(password_salt),
-                    role_code=VALUES(role_code), active=VALUES(active)
+                    role_code=VALUES(role_code), active=VALUES(active), pending=VALUES(pending)
                     """)) {
                 statement.setString(1, user.id()); statement.setString(2, user.name()); statement.setString(3, user.email());
                 statement.setString(4, user.phone()); statement.setString(5, user.passwordHash()); statement.setString(6, user.passwordSalt());
-                statement.setString(7, user.role().name()); statement.setBoolean(8, user.active()); statement.executeUpdate();
+                statement.setString(7, user.role().name()); statement.setBoolean(8, user.active());
+                statement.setBoolean(9, user.pending()); statement.executeUpdate();
             }
             return null;
         });
