@@ -39,10 +39,10 @@ public final class MockRepository implements Repository {
                 VehicleStatus.AVAILABLE, null, 25000));
 
         List<Stop> routeStops = List.of(
-                new Stop("s-depot", "DCLS Depot", .08, .76),
-                new Stop("s-kiulap", "Kiulap", .40, .52),
-                new Stop("s-gadong", "Gadong Central", .67, .35),
-                new Stop("s-berakas", "Berakas", .88, .18));
+                new Stop("s-depot", "DCLS Depot", 114.9400, 4.8900),
+                new Stop("s-kiulap", "Kiulap", 114.9160, 4.9020),
+                new Stop("s-gadong", "Gadong Central", 114.9280, 4.9080),
+                new Stop("s-berakas", "Berakas", 114.9500, 4.9400));
         RoutePlan route = new RoutePlan("r-1001", "North District Run", "u-driver-01", routeStops, 18.6, 42, false, LocalDateTime.now().minusMinutes(24));
         routes.put(route.id(), route);
 
@@ -62,7 +62,7 @@ public final class MockRepository implements Repository {
         maintenance.add(new MaintenanceRecord("m-02", "v-1934", LocalDate.now().minusDays(22), 23000, "Tyre replacement", 310));
         fuel.add(new FuelRecord("f-01", "v-1934", LocalDate.now().minusDays(1), 24420, 52, 39.50));
         fuel.add(new FuelRecord("f-02", "v-3310", LocalDate.now().minusDays(2), 31780, 66, 49.80));
-        tracking.add(new TrackingPoint("t-01", "v-1934", "DCLS-2401", .42, .51, 18, now.minusMinutes(5)));
+        tracking.add(new TrackingPoint("t-01", "v-1934", "DCLS-2401", 114.9180, 4.9010, 18, now.minusMinutes(5)));
     }
 
     private void addUser(String id, String name, String email, String phone, Role role, String password) {
