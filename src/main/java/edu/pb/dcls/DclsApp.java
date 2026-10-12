@@ -29,6 +29,7 @@ import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Region;
 import javafx.scene.layout.VBox;
+import javafx.scene.shape.SVGPath;
 import javafx.scene.image.Image;
 import javafx.scene.image.ImageView;
 import javafx.stage.Modality;
@@ -239,6 +240,14 @@ public final class DclsApp extends Application {
         if (page.equals("tracking")) startTracking();
     }
 
+    // Monochrome icon silhouettes (Material Symbols, 24px viewBox) used in the nav rail.
+    private static final String IC_DASHBOARD = "M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z";
+    private static final String IC_USERS = "M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z";
+    private static final String IC_FLEET = "M20 8h-3V4H3c-1.1 0-2 .9-2 2v11h2c0 1.66 1.34 3 3 3s3-1.34 3-3h6c0 1.66 1.34 3 3 3s3-1.34 3-3h2v-5l-3-4zM6 18.5c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5zm13.5-9l1.96 2.5H17V9.5h2.5zm-1.5 9c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5z";
+    private static final String IC_ORDERS = "M20 2H4c-1.1 0-2 .9-2 2v3.01c0 .72.43 1.34 1 1.69V20c0 1.1 1.1 2 2 2h14c.9 0 2-.9 2-2V8.7c.57-.35 1-.97 1-1.69V4c0-1.1-.9-2-2-2zm-5 12H9v-2h6v2zm5-7H4V4h16v3z";
+    private static final String IC_ROUTES = "M20.5 3l-.16.03L15 5.1 9 3 3.36 4.9c-.21.07-.36.25-.36.48V20.5c0 .28.22.5.5.5l.16-.03L9 18.9l6 2.1 5.64-1.9c.21-.07.36-.25.36-.48V3.5c0-.28-.22-.5-.5-.5zM15 19l-6-2.11V5l6 2.11V19z";
+    private static final String IC_TRACKING = "M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z";
+
     private VBox buildNav() {
         VBox sidebar = new VBox(4);
         sidebar.setPrefWidth(204); sidebar.setMinWidth(204); sidebar.setPadding(new Insets(16, 12, 12, 12));
@@ -259,12 +268,12 @@ public final class DclsApp extends Application {
         Label menuHeader = new Label("MENU"); menuHeader.getStyleClass().add("nav-section");
         sidebar.getChildren().add(menuHeader);
 
-        addNav(sidebar, "dashboard", "📊", "Dashboard");
-        addNav(sidebar, "users", "👥", "Users & roles");
-        addNav(sidebar, "fleet", "🚚", "Fleet");
-        addNav(sidebar, "orders", "📦", "Orders");
-        addNav(sidebar, "routes", "🧭", "Route planning");
-        addNav(sidebar, "tracking", "📍", "Live tracking");
+        addNav(sidebar, "dashboard", IC_DASHBOARD, "Dashboard");
+        addNav(sidebar, "users", IC_USERS, "Users & roles");
+        addNav(sidebar, "fleet", IC_FLEET, "Fleet");
+        addNav(sidebar, "orders", IC_ORDERS, "Orders");
+        addNav(sidebar, "routes", IC_ROUTES, "Route planning");
+        addNav(sidebar, "tracking", IC_TRACKING, "Live tracking");
 
         Region spacer = new Region(); VBox.setVgrow(spacer, ALWAYS); sidebar.getChildren().add(spacer);
 
@@ -280,15 +289,24 @@ public final class DclsApp extends Application {
         return sidebar;
     }
 
-    private void addNav(VBox sidebar, String page, String icon, String label) {
+    private void addNav(VBox sidebar, String page, String svgIcon, String label) {
         if (!access.canOpen(currentUser.role(), page)) return;
-        Label glyph = new Label(icon); glyph.getStyleClass().add("nav-icon");
-        Button button = new Button(label, glyph);
+        Button button = new Button(label, navIcon(svgIcon));
         button.setGraphicTextGap(12); button.setMaxWidth(Double.MAX_VALUE); button.setAlignment(Pos.CENTER_LEFT);
         button.setAccessibleText(label); button.setFocusTraversable(true); button.getStyleClass().add("nav-button");
         if (activePage.equals(page)) button.getStyleClass().add("active");
         button.setOnAction(event -> { stopTracking(); showPage(page); });
         sidebar.getChildren().add(button);
+    }
+
+    /** A crisp monochrome vector icon that recolours with the nav state via CSS (.nav-icon). */
+    private Region navIcon(String svg) {
+        SVGPath path = new SVGPath(); path.setContent(svg);
+        Region icon = new Region();
+        icon.setShape(path);
+        icon.setMinSize(18, 18); icon.setPrefSize(18, 18); icon.setMaxSize(18, 18);
+        icon.getStyleClass().add("nav-icon");
+        return icon;
     }
 
     private Node buildTopbar() {

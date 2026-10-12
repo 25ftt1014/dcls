@@ -111,7 +111,9 @@
 }
 .nav-button:hover { -fx-background-color: -accent-soft; -fx-text-fill: -accent; }
 .nav-button.active { -fx-background-color: -accent; -fx-text-fill: #ffffff; -fx-font-weight: 700; }
-.nav-icon { -fx-font-size: 15px; }
+.nav-icon { -fx-background-color: -ink-soft; }
+.nav-button:hover .nav-icon { -fx-background-color: -accent; }
+.nav-button.active .nav-icon { -fx-background-color: #ffffff; }
 .brand-word { -fx-font-size: 17px; -fx-font-weight: 800; -fx-text-fill: -ink; }
 .nav-section { -fx-font-size: 10px; -fx-font-weight: 700; -fx-text-fill: #9aa6ba; -fx-padding: 4 8 2 10; }
 .nav-user-name { -fx-font-size: 12.5px; -fx-font-weight: 700; -fx-text-fill: -ink; }
