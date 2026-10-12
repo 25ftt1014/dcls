@@ -7,6 +7,7 @@ import javafx.application.Application;
 import javafx.application.Platform;
 import javafx.collections.FXCollections;
 import javafx.collections.ObservableList;
+import javafx.event.ActionEvent;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Node;
@@ -25,11 +26,11 @@ import javafx.scene.control.MenuItem;
 import javafx.scene.control.PasswordField;
 import javafx.scene.control.ScrollPane;
 import javafx.scene.control.TextField;
-import javafx.scene.control.Tooltip;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Region;
 import javafx.scene.layout.VBox;
+import javafx.scene.shape.SVGPath;
 import javafx.scene.image.Image;
 import javafx.scene.image.ImageView;
 import javafx.stage.Modality;
@@ -251,47 +252,83 @@ public final class DclsApp extends Application {
         if (page.equals("tracking")) startTracking();
     }
 
+    // Monochrome icon silhouettes (Material Symbols, 24px viewBox) used in the nav rail.
+    private static final String IC_DASHBOARD = "M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z";
+    private static final String IC_USERS = "M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z";
+    private static final String IC_FLEET = "M20 8h-3V4H3c-1.1 0-2 .9-2 2v11h2c0 1.66 1.34 3 3 3s3-1.34 3-3h6c0 1.66 1.34 3 3 3s3-1.34 3-3h2v-5l-3-4zM6 18.5c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5zm13.5-9l1.96 2.5H17V9.5h2.5zm-1.5 9c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5z";
+    private static final String IC_ORDERS = "M20 2H4c-1.1 0-2 .9-2 2v3.01c0 .72.43 1.34 1 1.69V20c0 1.1 1.1 2 2 2h14c.9 0 2-.9 2-2V8.7c.57-.35 1-.97 1-1.69V4c0-1.1-.9-2-2-2zm-5 12H9v-2h6v2zm5-7H4V4h16v3z";
+    private static final String IC_ROUTES = "M20.5 3l-.16.03L15 5.1 9 3 3.36 4.9c-.21.07-.36.25-.36.48V20.5c0 .28.22.5.5.5l.16-.03L9 18.9l6 2.1 5.64-1.9c.21-.07.36-.25.36-.48V3.5c0-.28-.22-.5-.5-.5zM15 19l-6-2.11V5l6 2.11V19z";
+    private static final String IC_TRACKING = "M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z";
+
     private VBox buildNav() {
-        VBox sidebar = new VBox(7);
-        sidebar.setPrefWidth(72); sidebar.setMinWidth(72); sidebar.setPadding(new Insets(15, 8, 8, 8));
+        VBox sidebar = new VBox(9);
+        sidebar.setPrefWidth(204); sidebar.setMinWidth(204); sidebar.setPadding(new Insets(16, 12, 12, 12));
         sidebar.getStyleClass().add("sidebar");
+
+        // Brand: logo + wordmark
+        HBox brand = new HBox(10); brand.setAlignment(Pos.CENTER_LEFT); brand.setPadding(new Insets(2, 4, 14, 6));
         InputStream logo = getClass().getResourceAsStream("/edu/pb/dcls/Logo.svg");
         if (logo != null) {
             ImageView mark = new ImageView(new Image(logo));
-            mark.setFitWidth(36); mark.setFitHeight(36); mark.setPreserveRatio(true);
-            VBox markWrap = new VBox(mark); markWrap.setAlignment(Pos.CENTER); markWrap.setPadding(new Insets(0, 0, 17, 0));
-            sidebar.getChildren().add(markWrap);
+            mark.setFitWidth(30); mark.setFitHeight(30); mark.setPreserveRatio(true);
+            brand.getChildren().add(mark);
         }
-        addNav(sidebar, "dashboard", "▦", "Dashboard");
-        addNav(sidebar, "users", "♙", "Users and roles");
-        addNav(sidebar, "fleet", "▤", "Fleet");
-        addNav(sidebar, "orders", "▣", "Orders and shipments");
-        addNav(sidebar, "routes", "⌁", "Route planning");
-        addNav(sidebar, "tracking", "◉", "Live tracking");
+        Label wordmark = new Label("Trackify"); wordmark.getStyleClass().add("brand-word");
+        brand.getChildren().add(wordmark);
+        sidebar.getChildren().add(brand);
+
+        Label menuHeader = new Label("MENU"); menuHeader.getStyleClass().add("nav-section");
+        sidebar.getChildren().add(menuHeader);
+
+        addNav(sidebar, "dashboard", IC_DASHBOARD, "Dashboard");
+        addNav(sidebar, "users", IC_USERS, "Users & roles");
+        addNav(sidebar, "fleet", IC_FLEET, "Fleet");
+        addNav(sidebar, "orders", IC_ORDERS, "Orders");
+        addNav(sidebar, "routes", IC_ROUTES, "Route planning");
+        addNav(sidebar, "tracking", IC_TRACKING, "Live tracking");
+
         Region spacer = new Region(); VBox.setVgrow(spacer, ALWAYS); sidebar.getChildren().add(spacer);
-        MenuButton settings = new MenuButton("Setting  ›"); settings.setMaxWidth(Double.MAX_VALUE); settings.setAccessibleText("Settings and profile"); settings.getStyleClass().add("settings-button");
+
+        // Signed-in user identity
+        Label who = new Label(currentUser.name()); who.getStyleClass().add("nav-user-name");
+        Label role = new Label(currentUser.role().label()); role.getStyleClass().add("nav-user-role");
+        VBox identity = new VBox(1, who, role); identity.setPadding(new Insets(0, 0, 8, 8));
+        sidebar.getChildren().add(identity);
+
+        MenuButton settings = new MenuButton("Settings"); settings.setMaxWidth(Double.MAX_VALUE); settings.setAccessibleText("Settings and profile"); settings.getStyleClass().add("settings-button");
         settings.getItems().addAll(menu("My profile", this::profileDialog), menu("Change password", this::passwordDialog), menu("Sign out", () -> { stopTracking(); currentUser = null; showLogin(); }));
         sidebar.getChildren().add(settings);
         return sidebar;
     }
 
-    private void addNav(VBox sidebar, String page, String glyph, String accessibleName) {
+    private void addNav(VBox sidebar, String page, String svgIcon, String label) {
         if (!access.canOpen(currentUser.role(), page)) return;
-        Button button = new Button(glyph);
-        button.setMinSize(44, 42); button.setMaxWidth(Double.MAX_VALUE); button.setTooltip(new Tooltip(accessibleName));
-        button.setAccessibleText(accessibleName); button.setFocusTraversable(true); button.getStyleClass().add("nav-button");
+        Button button = new Button(label, navIcon(svgIcon));
+        button.setGraphicTextGap(12); button.setMaxWidth(Double.MAX_VALUE); button.setAlignment(Pos.CENTER_LEFT);
+        button.setAccessibleText(label); button.setFocusTraversable(true); button.getStyleClass().add("nav-button");
         if (activePage.equals(page)) button.getStyleClass().add("active");
         button.setOnAction(event -> { stopTracking(); showPage(page); });
         sidebar.getChildren().add(button);
     }
 
+    /** A crisp monochrome vector icon that recolours with the nav state via CSS (.nav-icon). */
+    private Region navIcon(String svg) {
+        SVGPath path = new SVGPath(); path.setContent(svg);
+        Region icon = new Region();
+        icon.setShape(path);
+        icon.setMinSize(18, 18); icon.setPrefSize(18, 18); icon.setMaxSize(18, 18);
+        icon.getStyleClass().add("nav-icon");
+        return icon;
+    }
+
     private Node buildTopbar() {
         HBox bar = new HBox(10); bar.setAlignment(Pos.CENTER_LEFT); bar.setPadding(new Insets(9, 24, 9, 24)); bar.getStyleClass().add("topbar");
-        Label back = new Label("‹"); back.setStyle("-fx-font-size: 21px; -fx-text-fill: #172033;");
         Label title = new Label(activePage.equals("dashboard") ? "Dashboard" : pageLabel(activePage)); title.setStyle("-fx-font-size: 16px; -fx-font-weight: 700;");
-        dataModeLabel = new Label("");
+        // Status chip on the right: shows the data mode, and briefly flashes action feedback (toasts).
+        dataModeLabel = new Label(repository.persistent() ? "MySQL connected" : "Demo data");
+        dataModeLabel.getStyleClass().add("mode-chip");
         Region spacer = new Region(); HBox.setHgrow(spacer, ALWAYS);
-        bar.getChildren().addAll(back, title, spacer);
+        bar.getChildren().addAll(title, spacer, dataModeLabel);
         return bar;
     }
 
@@ -401,16 +438,49 @@ public final class DclsApp extends Application {
         press.playFromStart();
         signInRipple.playFromStart();
     }
+    /** Shared dialog setup: owner, modality, title, and — importantly — our stylesheet on the
+     *  DialogPane itself (the old code added it to a not-yet-created scene, so dialogs fell back
+     *  to default Java styling). */
+    private void initDialog(Dialog<?> dialog, String title) {
+        dialog.initOwner(stage); dialog.initModality(Modality.WINDOW_MODAL); dialog.setTitle(title);
+        dialog.getDialogPane().getStyleClass().add("app-dialog");
+        dialog.getDialogPane().getStylesheets().add(getClass().getResource("/edu/pb/dcls/styles.css").toExternalForm());
+    }
+
     Optional<ButtonType> confirmDialog(String title, Node content, String action) {
-        Dialog<ButtonType> dialog = new Dialog<>(); dialog.initOwner(stage); dialog.initModality(Modality.WINDOW_MODAL); dialog.setTitle(title);
-        dialog.getDialogPane().getButtonTypes().addAll(new ButtonType(action, ButtonType.OK.getButtonData()), ButtonType.CANCEL);
+        Dialog<ButtonType> dialog = new Dialog<>(); initDialog(dialog, title);
+        ButtonType actionType = new ButtonType(action, ButtonType.OK.getButtonData());
+        dialog.getDialogPane().getButtonTypes().addAll(actionType, ButtonType.CANCEL);
         dialog.getDialogPane().setContent(content); dialog.getDialogPane().setPrefWidth(480);
-        Scene scene = dialog.getDialogPane().getScene(); if (scene != null) scene.getStylesheets().add(getClass().getResource("/edu/pb/dcls/styles.css").toExternalForm());
+        ((Button) dialog.getDialogPane().lookupButton(actionType)).setDefaultButton(true);
         return dialog.showAndWait();
+    }
+
+    /** Form dialog that stays open and keeps the user's input when {@code submit} throws,
+     *  showing the message inline instead of closing and firing a separate alert.
+     *  {@code submit} validates, persists, and navigates; Enter triggers it. */
+    void confirmForm(String title, Node content, String action, Runnable submit) {
+        Dialog<ButtonType> dialog = new Dialog<>(); initDialog(dialog, title);
+        ButtonType actionType = new ButtonType(action, ButtonType.OK.getButtonData());
+        dialog.getDialogPane().getButtonTypes().addAll(actionType, ButtonType.CANCEL);
+        Label error = new Label(); error.getStyleClass().add("form-error"); error.setWrapText(true);
+        error.setManaged(false); error.setVisible(false);
+        VBox wrap = new VBox(12, error, content);
+        dialog.getDialogPane().setContent(wrap); dialog.getDialogPane().setPrefWidth(480);
+        Button ok = (Button) dialog.getDialogPane().lookupButton(actionType); ok.setDefaultButton(true);
+        ok.addEventFilter(ActionEvent.ACTION, event -> {
+            try { submit.run(); }
+            catch (RuntimeException exception) {
+                error.setText(readable(exception)); error.setManaged(true); error.setVisible(true);
+                event.consume();
+            }
+        });
+        dialog.showAndWait();
     }
 
     boolean confirm(String title, String message) {
         Alert alert = new Alert(Alert.AlertType.CONFIRMATION, message, ButtonType.YES, ButtonType.NO); alert.initOwner(stage); alert.setTitle(title); alert.setHeaderText(null);
+        alert.getDialogPane().getStylesheets().add(getClass().getResource("/edu/pb/dcls/styles.css").toExternalForm());
         return alert.showAndWait().filter(ButtonType.YES::equals).isPresent();
     }
 
@@ -426,8 +496,19 @@ public final class DclsApp extends Application {
     }
 
     void showError(String message) { alert(Alert.AlertType.ERROR, "Action could not be completed", message); }
-    void toast(String message) { if (dataModeLabel != null) { dataModeLabel.setText(message); dataModeLabel.setStyle("-fx-text-fill: #17613f; -fx-font-size: 12px;"); javafx.animation.PauseTransition pause = new javafx.animation.PauseTransition(Duration.seconds(3)); pause.setOnFinished(event -> { if (dataModeLabel != null) dataModeLabel.setText(repository.persistent() ? "MySQL connected" : "Demo data"); }); pause.play(); } }
-    void alert(Alert.AlertType type, String title, String message) { Alert alert = new Alert(type, message, ButtonType.OK); alert.initOwner(stage); alert.setTitle(title); alert.setHeaderText(null); alert.showAndWait(); }
+    void toast(String message) {
+        if (dataModeLabel == null) return;
+        dataModeLabel.setText(message);
+        if (!dataModeLabel.getStyleClass().contains("mode-chip-success")) dataModeLabel.getStyleClass().add("mode-chip-success");
+        javafx.animation.PauseTransition pause = new javafx.animation.PauseTransition(Duration.seconds(3));
+        pause.setOnFinished(event -> {
+            if (dataModeLabel == null) return;
+            dataModeLabel.getStyleClass().remove("mode-chip-success");
+            dataModeLabel.setText(repository.persistent() ? "MySQL connected" : "Demo data");
+        });
+        pause.play();
+    }
+    void alert(Alert.AlertType type, String title, String message) { Alert alert = new Alert(type, message, ButtonType.OK); alert.initOwner(stage); alert.setTitle(title); alert.setHeaderText(null); alert.getDialogPane().getStylesheets().add(getClass().getResource("/edu/pb/dcls/styles.css").toExternalForm()); alert.showAndWait(); }
     private void showStartupError(String message) { Alert alert = new Alert(Alert.AlertType.ERROR, message, ButtonType.OK); alert.setTitle("DCLS could not start"); alert.setHeaderText("Check the MySQL configuration"); alert.showAndWait(); }
 
     String driverName(String id) { return id == null ? "Unassigned" : repository.users().stream().filter(u -> u.id().equals(id)).map(User::name).findFirst().orElse("Unknown driver"); }

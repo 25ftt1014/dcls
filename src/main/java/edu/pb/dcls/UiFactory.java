@@ -7,7 +7,10 @@ import javafx.scene.Node;
 import javafx.scene.control.Button;
 import javafx.scene.control.ChoiceBox;
 import javafx.scene.control.Label;
+import javafx.scene.control.TableCell;
 import javafx.scene.control.TableColumn;
+import javafx.scene.control.TableRow;
+import javafx.scene.control.TableView;
 import javafx.scene.layout.ColumnConstraints;
 import javafx.scene.layout.GridPane;
 import javafx.scene.layout.HBox;
@@ -16,6 +19,7 @@ import javafx.scene.layout.VBox;
 import javafx.util.StringConverter;
 
 import java.util.Optional;
+import java.util.function.Consumer;
 import java.util.function.Function;
 
 /**
@@ -68,9 +72,47 @@ final class UiFactory {
 
     static VBox pageHeader(String title, String subtitle) {
         VBox page = new VBox(14);
-        page.setPadding(new Insets(15, 20, 22, 58));
+        page.setPadding(new Insets(15, 24, 22, 28));
         page.getStyleClass().add("workspace");
+        // Render the (previously discarded) descriptive subtitle so each screen
+        // has a clear heading hierarchy, not just a bare toolbar.
+        if (subtitle != null && !subtitle.isBlank()) {
+            Label caption = new Label(subtitle);
+            caption.getStyleClass().add("page-subtitle");
+            caption.setWrapText(true);
+            page.getChildren().add(caption);
+        }
         return page;
+    }
+
+    /** Maps a human status label to a pill style class, so colour is consistent everywhere. */
+    static String pillClassFor(String label) {
+        if (label == null) return "status-info";
+        return switch (label) {
+            case "Available", "Delivered", "Active" -> "status-good";
+            case "In Delivery", "In Transit", "Assigned" -> "status-info";
+            case "Under Maintenance", "Pending" -> "status-warn";
+            case "Unavailable", "Cancelled", "Inactive" -> "status-bad";
+            default -> "status-info";
+        };
+    }
+
+    /** A table column that renders its value as a coloured status pill instead of plain text. */
+    static <T> TableColumn<T, String> statusCol(String heading, Function<T, String> value, double width) {
+        TableColumn<T, String> column = new TableColumn<>(heading);
+        column.setPrefWidth(width);
+        column.setCellValueFactory(cell -> new SimpleStringProperty(Optional.ofNullable(value.apply(cell.getValue())).orElse("—")));
+        column.setCellFactory(col -> new TableCell<>() {
+            @Override protected void updateItem(String item, boolean empty) {
+                super.updateItem(item, empty);
+                if (empty || item == null) { setGraphic(null); setText(null); return; }
+                Label pill = new Label(item);
+                pill.getStyleClass().addAll("status-pill", pillClassFor(item));
+                setGraphic(pill);
+                setText(null);
+            }
+        });
+        return column;
     }
 
     static Node detailField(String title, String value) {
@@ -109,6 +151,15 @@ final class UiFactory {
         ColumnConstraints left = new ColumnConstraints(145), right = new ColumnConstraints(280);
         grid.getColumnConstraints().addAll(left, right);
         return grid;
+    }
+
+    /** Opens {@code action} for a row when it is double-clicked (a common, expected table affordance). */
+    static <T> void onRowDoubleClick(TableView<T> table, Consumer<T> action) {
+        table.setRowFactory(tv -> {
+            TableRow<T> row = new TableRow<>();
+            row.setOnMouseClicked(event -> { if (event.getClickCount() == 2 && !row.isEmpty()) action.accept(row.getItem()); });
+            return row;
+        });
     }
 
     static void addField(GridPane grid, int row, String label, Node field) {

@@ -39,7 +39,7 @@ final class DashboardView {
         long active = shipmentRows.stream().filter(s -> s.status() == OrderStatus.ASSIGNED || s.status() == OrderStatus.IN_TRANSIT).count();
         long pending = shipmentRows.stream().filter(s -> s.status() == OrderStatus.PENDING).count();
         long completed = shipmentRows.stream().filter(s -> s.status() == OrderStatus.DELIVERED).count();
-        VBox page = pageHeader("", ""); page.setSpacing(18); page.setPadding(new Insets(18, 20, 20, 58));
+        VBox page = pageHeader("", ""); page.setSpacing(18); page.setPadding(new Insets(18, 24, 20, 28));
         HBox metrics = new HBox(18,
                 metric("Vehicles", String.valueOf(vehicleRows.size()), ""),
                 metric("Active deliveries", String.valueOf(active), ""),
@@ -51,7 +51,7 @@ final class DashboardView {
         if (!app.repository.routes().isEmpty()) drawRoute(map, app.repository.routes().getFirst().stops(), null); else drawDashboardRoads(map);
         mapPanel.getChildren().add(map);
         VBox activity = panel(new Label("Active deliveries")); ((Label) activity.getChildren().get(0)).getStyleClass().add("section-title");
-        HBox summary = new HBox(8, new Label("+4 vs yesterday"), new Region(), new Label(String.valueOf(active)));
+        HBox summary = new HBox(8, new Label("Currently active"), new Region(), new Label(String.valueOf(active)));
         summary.getStyleClass().add("activity-summary"); HBox.setHgrow(summary.getChildren().get(1), ALWAYS); activity.getChildren().add(summary);
         activity.getChildren().add(activityChart());
         List<Shipment> latest = shipmentRows.stream().filter(s -> s.status() == OrderStatus.ASSIGNED || s.status() == OrderStatus.IN_TRANSIT)

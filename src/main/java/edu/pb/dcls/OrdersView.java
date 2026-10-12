@@ -36,8 +36,10 @@ import static edu.pb.dcls.UiFactory.detailField;
 import static edu.pb.dcls.UiFactory.enumFilter;
 import static edu.pb.dcls.UiFactory.formGrid;
 import static edu.pb.dcls.UiFactory.labeled;
+import static edu.pb.dcls.UiFactory.onRowDoubleClick;
 import static edu.pb.dcls.UiFactory.pageHeader;
 import static edu.pb.dcls.UiFactory.panel;
+import static edu.pb.dcls.UiFactory.statusCol;
 import static edu.pb.dcls.UiFactory.textCol;
 import static javafx.scene.layout.Priority.ALWAYS;
 
@@ -57,6 +59,7 @@ final class OrdersView {
         Button create = button("Create order", "primary-button"); create.setDisable(!app.access.canDispatch(app.currentUser.role())); create.setOnAction(event -> shipmentDialog(null));
         tools.getChildren().addAll(search, statusFilter, priorityFilter, gap, create);
         TableView<Shipment> table = shipmentTable();
+        onRowDoubleClick(table, s -> { if (app.access.canDispatch(app.currentUser.role())) shipmentDialog(s); });
         Runnable refresh = () -> {
             String q = search.getText() == null ? "" : search.getText().toLowerCase(Locale.ROOT).trim();
             OrderStatus s = statusFilter.getValue(); Priority p = priorityFilter.getValue();
@@ -103,7 +106,7 @@ final class OrdersView {
         TableView<Shipment> table = new TableView<>(); table.setPlaceholder(new Label("No orders match this search."));
         table.getColumns().add(textCol("Order", Shipment::id, 115));
         table.getColumns().add(textCol("Customer", Shipment::customerName, 190));
-        table.getColumns().add(textCol("Status", s -> s.status().label(), 110));
+        table.getColumns().add(statusCol("Status", s -> s.status().label(), 110));
         table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY);
         return table;
     }
@@ -118,15 +121,12 @@ final class OrdersView {
         ComboBox<Priority> priority = new ComboBox<>(FXCollections.observableArrayList(Priority.values())); priority.setValue(existing == null ? Priority.NORMAL : existing.priority());
         GridPane form = formGrid(); addField(form, 0, "Customer", customer); addField(form, 1, "Contact", contact); addField(form, 2, "Delivery address", address);
         addField(form, 3, "Package details", packageText); addField(form, 4, "Quantity", quantity); addField(form, 5, "Weight (kg)", weight); addField(form, 6, "Priority", priority);
-        Optional<ButtonType> result = app.confirmDialog(existing == null ? "Create order" : "Edit order details", form, existing == null ? "Create order" : "Save changes");
-        if (result.isPresent() && result.get().getButtonData() == ButtonType.OK.getButtonData()) {
-            try {
-                Shipment shipment = existing == null ? new Shipment("DCLS-" + (2400 + app.repository.shipments().size() + 1), customer.getText().trim(), contact.getText().trim(), address.getText().trim(), packageText.getText().trim(),
-                        app.integer(quantity.getText()), app.number(weight.getText()), priority.getValue(), OrderStatus.PENDING, null, null, null, LocalDateTime.now(), null) : existing;
-                if (existing != null) shipment.update(customer.getText().trim(), contact.getText().trim(), address.getText().trim(), packageText.getText().trim(), app.integer(quantity.getText()), app.number(weight.getText()), priority.getValue(), shipment.driverId(), shipment.vehicleId(), shipment.routeId());
-                app.orders.save(shipment); app.showPage("orders");
-            } catch (RuntimeException exception) { app.alert(Alert.AlertType.WARNING, "Order not saved", app.readable(exception)); }
-        }
+        app.confirmForm(existing == null ? "Create order" : "Edit order details", form, existing == null ? "Create order" : "Save changes", () -> {
+            Shipment shipment = existing == null ? new Shipment("DCLS-" + (2400 + app.repository.shipments().size() + 1), customer.getText().trim(), contact.getText().trim(), address.getText().trim(), packageText.getText().trim(),
+                    app.integer(quantity.getText()), app.number(weight.getText()), priority.getValue(), OrderStatus.PENDING, null, null, null, LocalDateTime.now(), null) : existing;
+            if (existing != null) shipment.update(customer.getText().trim(), contact.getText().trim(), address.getText().trim(), packageText.getText().trim(), app.integer(quantity.getText()), app.number(weight.getText()), priority.getValue(), shipment.driverId(), shipment.vehicleId(), shipment.routeId());
+            app.orders.save(shipment); app.showPage("orders");
+        });
     }
 
     private void assignmentDialog(Shipment shipment) {

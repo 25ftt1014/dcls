@@ -50,6 +50,7 @@
 
 /* ---- typography ---------------------------------------------- */
 .page-title { -fx-font-size: 24px; -fx-font-weight: 800; -fx-text-fill: -ink; }
+.page-subtitle { -fx-text-fill: -ink-soft; -fx-font-size: 13px; }
 .section-title { -fx-font-size: 15px; -fx-font-weight: 700; -fx-text-fill: -ink; }
 .muted { -fx-text-fill: -ink-soft; }
 .eyebrow { -fx-text-fill: -ink-soft; -fx-font-size: 11px; -fx-font-weight: 700; }
@@ -101,23 +102,32 @@
 .nav-button {
     -fx-background-color: transparent;
     -fx-text-fill: -ink-soft;
-    -fx-alignment: center;
-    -fx-padding: 8 10;
+    -fx-alignment: center-left;
+    -fx-padding: 9 12;
     -fx-background-radius: 10;
-    -fx-font-size: 17px;
+    -fx-font-size: 13.5px;
+    -fx-font-weight: 600;
     -fx-cursor: hand;
 }
 .nav-button:hover { -fx-background-color: -accent-soft; -fx-text-fill: -accent; }
 .nav-button.active { -fx-background-color: -accent; -fx-text-fill: #ffffff; -fx-font-weight: 700; }
+.nav-icon { -fx-background-color: -ink-soft; }
+.nav-button:hover .nav-icon { -fx-background-color: -accent; }
+.nav-button.active .nav-icon { -fx-background-color: #ffffff; }
+.brand-word { -fx-font-size: 17px; -fx-font-weight: 800; -fx-text-fill: -ink; }
+.nav-section { -fx-font-size: 10px; -fx-font-weight: 700; -fx-text-fill: #9aa6ba; -fx-padding: 4 8 2 10; }
+.nav-user-name { -fx-font-size: 12.5px; -fx-font-weight: 700; -fx-text-fill: -ink; }
+.nav-user-role { -fx-font-size: 11px; -fx-text-fill: -ink-soft; }
 
 .settings-button {
     -fx-background-color: #eef1f6;
     -fx-text-fill: #273349;
-    -fx-font-size: 10px;
+    -fx-font-size: 12px;
     -fx-font-weight: 700;
-    -fx-background-radius: 9;
-    -fx-padding: 8 4;
+    -fx-background-radius: 10;
+    -fx-padding: 9 12;
     -fx-cursor: hand;
+    -fx-alignment: center-left;
 }
 .settings-button:hover { -fx-background-color: -accent-soft; }
 .settings-button > .arrow-button { -fx-padding: 0; -fx-background-color: transparent; }
@@ -202,6 +212,27 @@
 .status-info { -fx-background-color: -accent-soft; -fx-text-fill: #1b47aa; }
 .status-warn { -fx-background-color: #fff3da; -fx-text-fill: #8a5a00; }
 .status-bad { -fx-background-color: #fdecea; -fx-text-fill: #a6281d; }
+
+/* topbar data-mode chip (also flashes action feedback) */
+.mode-chip { -fx-background-color: -accent-soft; -fx-text-fill: #1b47aa; -fx-font-size: 11px; -fx-font-weight: 700; -fx-padding: 4 11; -fx-background-radius: 20; }
+.mode-chip-success { -fx-background-color: #e6f6ee; -fx-text-fill: #12724a; }
+
+/* keep status-pill cells left-aligned and padded like text cells */
+.table-cell { -fx-alignment: center-left; -fx-padding: 0 12 0 12; }
+
+/* dialogs (form + alerts) */
+.app-dialog { -fx-background-color: -surface; }
+.app-dialog > .content { -fx-padding: 18 18 6 18; }
+.app-dialog > .header-panel { -fx-background-color: -surface; }
+.app-dialog .label { -fx-text-fill: -ink; }
+.app-dialog .button-bar .button {
+    -fx-background-color: -surface; -fx-border-color: #d3dbe8; -fx-border-radius: 8;
+    -fx-background-radius: 8; -fx-padding: 8 16; -fx-cursor: hand; -fx-font-weight: 600; -fx-text-fill: #273349;
+}
+.app-dialog .button-bar .button:hover { -fx-background-color: -accent-soft; }
+.app-dialog .button-bar .button:default { -fx-background-color: -accent; -fx-text-fill: #ffffff; -fx-border-color: -accent; }
+.app-dialog .button-bar .button:default:hover { -fx-background-color: -accent-hover; -fx-border-color: -accent-hover; }
+.form-error { -fx-text-fill: #a6281d; -fx-background-color: #fdecea; -fx-background-radius: 8; -fx-padding: 9 12; -fx-font-size: 12px; -fx-font-weight: 600; }
 
 /* ---- map & misc ---------------------------------------------- */
 .map-canvas { -fx-border-color: -line; -fx-border-radius: 10; -fx-background-radius: 10; }
