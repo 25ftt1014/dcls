@@ -99,7 +99,11 @@ final class OrdersView {
                 detailField("Driver / vehicle", app.driverName(shipment.driverId())+" · "+app.vehiclePlate(shipment.vehicleId())),
                 detailField("Shipment", shipment.quantity()+" packages · "+shipment.weightKg()+" kg"), detailField("Status", shipment.status().label()));
         Button trackingButton=button("Open tracking", "primary-button"); trackingButton.setMaxWidth(Double.MAX_VALUE);
-        trackingButton.setOnAction(event -> app.showPage("tracking")); panel.getChildren().add(trackingButton);
+        boolean trackable = (shipment.status() == OrderStatus.ASSIGNED || shipment.status() == OrderStatus.IN_TRANSIT)
+                && shipment.vehicleId() != null;
+        trackingButton.setDisable(!trackable);
+        if (!trackable) trackingButton.setTooltip(new javafx.scene.control.Tooltip("Assign a driver and vehicle first"));
+        trackingButton.setOnAction(event -> { app.focusedShipmentId = shipment.id(); app.showPage("tracking"); }); panel.getChildren().add(trackingButton);
     }
 
     private TableView<Shipment> shipmentTable() {

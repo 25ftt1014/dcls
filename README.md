@@ -21,7 +21,20 @@ Sign in with:
 
 The sign-in screen opens with the Admin demo credentials filled in. The local demo data resets when the app closes.
 
-Map data © OpenStreetMap contributors (bundled zoom-11 country + zoom-13 Bandar-metro/Tutong/Muara renders and a 90-pair road network, all used offline; vehicle movement is simulated).
+Map data © OpenStreetMap contributors © CARTO: live Google-style Voyager retina tiles (zoom 0–20, buildings and addresses at max zoom) with a 90-pair road-network overlay; vehicle movement is simulated. Maps need internet — visited areas reload from the cache under `~/.dcls/tiles` when offline.
+
+Route geometry uses live OSRM routing (`router.project-osrm.org`, OSM data, no key) with the bundled road network as the offline fallback; OSRM legs cache under `~/.dcls/osrm`. To point at a self-hosted OSRM instead:
+
+```powershell
+$env:DCLS_OSRM_URL = 'https://your-osrm-host'
+```
+
+CARTO asks for a free key (no billing, no account, 5M tiles/month): get one at `https://carto.com/basemaps/apikey`, then run with it set. Without a key the app still tries keyless tiles until CARTO throttles them:
+
+```powershell
+$env:DCLS_CARTO_KEY = 'paste-your-key-here'
+mvn javafx:run
+```
 
 ## Demo flow
 
