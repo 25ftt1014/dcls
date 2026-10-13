@@ -95,7 +95,13 @@ public final class MockRepository implements Repository {
     @Override public void saveFuel(FuelRecord record) { fuel.removeIf(item -> item.id().equals(record.id())); fuel.add(record); }
     @Override public void saveFuelAndVehicle(FuelRecord record, Vehicle vehicle) { saveFuel(record); saveVehicle(vehicle); }
     @Override public void deleteFuel(String id) { fuel.removeIf(item -> item.id().equals(id)); }
+    /** Demo memory cap: keep the latest fixes only (mirrors the JDBC prune). */
+    static final int TRACKING_CAP = 2000;
+
     @Override public List<TrackingPoint> trackingHistory() { return new ArrayList<>(tracking); }
-    @Override public void saveTrackingPoint(TrackingPoint point) { tracking.add(point); }
+    @Override public void saveTrackingPoint(TrackingPoint point) {
+        tracking.add(point);
+        while (tracking.size() > TRACKING_CAP) tracking.removeFirst();
+    }
     @Override public boolean persistent() { return false; }
 }

@@ -1153,14 +1153,36 @@ final class AppServices {
 
         /** One optimized multi-stop tour for a vehicle: live fix → remaining destinations. */
         public record VehicleTour(List<Stop> ordered, int progressIndex, double remainingKm) { }
+        
+        private final Map<String, CachedTour> tourCache = new HashMap<>();
+        private record CachedTour(VehicleTour tour, String signature) { }
 
         public VehicleTour tourForVehicle(String vehicleId) {
             List<Shipment> group = repository.shipments().stream()
                     .filter(s -> vehicleId.equals(s.vehicleId()))
                     .filter(s -> s.status() == OrderStatus.IN_TRANSIT || s.status() == OrderStatus.ASSIGNED)
                     .toList();
-            if (group.isEmpty()) return new VehicleTour(List.of(), 0, 0);
+            if (group.isEmpty()) { tourCache.remove(vehicleId); return new VehicleTour(List.of(), 0, 0); }
             TrackingPoint live = latestForVehicle(vehicleId);
+            // Reuse the cached tour unless the order set or the live fix changed —
+            // geocoding every address on every 1-second tick is what froze the UI.
+            String sig = tourSignature(group, live);
+            CachedTour cached = tourCache.get(vehicleId);
+            if (cached != null && cached.signature().equals(sig)) return cached.tour();
+            VehicleTour tour = buildTour(vehicleId, group, live);
+            tourCache.put(vehicleId, new CachedTour(tour, sig));
+            return tour;
+        }
+
+        private String tourSignature(List<Shipment> group, TrackingPoint live) {
+            StringBuilder sb = new StringBuilder();
+            group.stream().map(s -> s.id() + ":" + s.status() + ":" + s.address()).sorted()
+                    .forEach(sb::append);
+            sb.append('|').append(live == null ? "nofix" : live.recordedAt().toString());
+            return sb.toString();
+        }
+
+        private VehicleTour buildTour(String vehicleId, List<Shipment> group, TrackingPoint live) {
             RouteService rs = new RouteService(repository);
             Stop start = live == null ? rs.depot()
                     : new Stop("live-" + vehicleId, "Live position", live.x(), live.y());
