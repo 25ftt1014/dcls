@@ -82,6 +82,7 @@ final class AppServices {
     }
 
     static final class FleetService {
+        private static final int SERVICE_WARNING_KM = 500;
         private final Repository repository;
         FleetService(Repository repository) { this.repository = repository; }
         void save(Vehicle vehicle) {
@@ -109,7 +110,7 @@ final class AppServices {
             repository.saveVehicle(updated);
         }
         List<Vehicle> maintenanceDue() {
-            return repository.vehicles().stream().filter(vehicle -> vehicle.mileageKm() >= vehicle.nextServiceKm() - 500).toList();
+            return repository.vehicles().stream().filter(vehicle -> vehicle.mileageKm() >= vehicle.nextServiceKm() - SERVICE_WARNING_KM).toList();
         }
         void logMaintenance(Vehicle vehicle, LocalDate date, double mileage, String details, double cost) {
             if (vehicle == null) throw new AppException("Choose a vehicle first.");

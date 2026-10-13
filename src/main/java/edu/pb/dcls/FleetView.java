@@ -13,14 +13,17 @@ import javafx.scene.control.Label;
 import javafx.scene.control.MenuButton;
 import javafx.scene.control.TableView;
 import javafx.scene.control.TextField;
-import javafx.scene.layout.GridPane;
-import javafx.scene.layout.HBox;
+import javafx.scene.layout.GridPane;import javafx.scene.layout.HBox;
 import javafx.scene.layout.Region;
 import javafx.scene.layout.VBox;
+import javafx.util.StringConverter;
 
 import java.time.LocalDate;
 import java.util.Arrays;
+import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.Locale;
 import java.util.Optional;
 
@@ -107,10 +110,17 @@ final class FleetView {
 
     private TableView<Vehicle> vehicleTable() {
         TableView<Vehicle> table = new TableView<>(); table.setPlaceholder(new Label("No vehicles match this search."));
-        table.getColumns().add(textCol("Plate", Vehicle::plate, 110));
-        table.getColumns().add(textCol("Vehicle", Vehicle::model, 180));
-        table.getColumns().add(textCol("Driver", v -> app.driverName(v.driverId()), 150));
-        table.getColumns().add(statusCol("Status", v -> v.status().label(), 140));
+        Set<String> due = new HashSet<>();
+        app.fleet.maintenanceDue().forEach(v -> due.add(v.id()));
+        table.getColumns().add(textCol("Plate", Vehicle::plate, 90));
+        table.getColumns().add(textCol("Vehicle", Vehicle::model, 130));
+        table.getColumns().add(textCol("Type", Vehicle::type, 90));
+        table.getColumns().add(textCol("Capacity", v -> String.format("%,.0f kg", v.capacityKg()), 85));
+        table.getColumns().add(textCol("Mileage", v -> String.format("%,.0f km", v.mileageKm()), 85));
+        table.getColumns().add(textCol("Next service", v -> String.format("%,.0f km", v.nextServiceKm()), 95));
+        table.getColumns().add(textCol("Driver", v -> app.driverName(v.driverId()), 110));
+        table.getColumns().add(statusCol("Status", v -> v.status().label(), 110));
+        table.getColumns().add(textCol("Due", v -> due.contains(v.id()) ? "Due" : "", 55));
         table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY);
         return table;
     }
@@ -119,14 +129,25 @@ final class FleetView {
         VBox content = new VBox(12); content.setPadding(new Insets(12, 0, 0, 0));
         HBox tools = new HBox(8); tools.setAlignment(Pos.CENTER_LEFT);
         Button add = button("Record service", "primary-button"); add.setDisable(!app.access.canManageFleet(app.currentUser.role())); add.setOnAction(event -> maintenanceDialog());
-        Label due = new Label(app.fleet.maintenanceDue().size() + " vehicle(s) are approaching service"); due.getStyleClass().add("muted"); tools.getChildren().addAll(add, due);
+        ComboBox<Vehicle> vehicleFilter = vehicleFilter();
+        Label due = new Label(app.fleet.maintenanceDue().size() + " vehicle(s) are approaching service"); due.getStyleClass().add("muted"); tools.getChildren().addAll(add, vehicleFilter, due);
         TableView<MaintenanceRecord> table = new TableView<>(); table.setPlaceholder(new Label("No maintenance records yet."));
         table.getColumns().add(textCol("Vehicle", m -> app.vehiclePlate(m.vehicleId()), 110));
         table.getColumns().add(textCol("Date", m -> m.date().toString(), 100));
         table.getColumns().add(textCol("Mileage", m -> String.format("%,.0f km", m.mileageKm()), 110));
         table.getColumns().add(textCol("Service", MaintenanceRecord::description, 300));
         table.getColumns().add(textCol("Cost", m -> String.format("$%.2f", m.cost()), 110));
-        table.setItems(FXCollections.observableArrayList(app.repository.maintenanceRecords())); table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY);
+        table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY);
+        Runnable refresh = () -> {
+            Vehicle selected = vehicleFilter.getValue();
+            List<MaintenanceRecord> rows = app.repository.maintenanceRecords().stream()
+                    .filter(m -> selected == null || selected.id().equals(m.vehicleId()))
+                    .sorted(Comparator.comparing(MaintenanceRecord::date).reversed())
+                    .toList();
+            table.setItems(FXCollections.observableArrayList(rows));
+        };
+        vehicleFilter.valueProperty().addListener((observable, oldValue, newValue) -> refresh.run());
+        refresh.run();
         Button edit = button("Edit", "secondary-button"), remove = button("Delete", "danger-button");
         boolean canManage = app.access.canManageFleet(app.currentUser.role()); edit.setDisable(!canManage); remove.setDisable(!canManage);
         edit.setOnAction(event -> { MaintenanceRecord selected = table.getSelectionModel().getSelectedItem(); if (selected != null) maintenanceDialog(selected); });
@@ -136,19 +157,45 @@ final class FleetView {
 
     private Node fuelTab() {
         VBox content = new VBox(12); content.setPadding(new Insets(12, 0, 0, 0));
+        HBox tools = new HBox(8); tools.setAlignment(Pos.CENTER_LEFT);
         Button add = button("Record refuel", "primary-button"); add.setDisable(!app.access.canManageFleet(app.currentUser.role())); add.setOnAction(event -> fuelDialog());
+        ComboBox<Vehicle> vehicleFilter = vehicleFilter();
+        tools.getChildren().addAll(add, vehicleFilter);
         TableView<FuelRecord> table = new TableView<>(); table.setPlaceholder(new Label("No fuel records yet."));
         table.getColumns().add(textCol("Vehicle", f -> app.vehiclePlate(f.vehicleId()), 110));
         table.getColumns().add(textCol("Date", f -> f.date().toString(), 100));
         table.getColumns().add(textCol("Mileage", f -> String.format("%,.0f km", f.mileageKm()), 110));
         table.getColumns().add(textCol("Amount", f -> String.format("%.1f L", f.litres()), 110));
         table.getColumns().add(textCol("Cost", f -> String.format("$%.2f", f.cost()), 110));
-        table.setItems(FXCollections.observableArrayList(app.repository.fuelRecords())); table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY);
+        table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY);
+        Runnable refresh = () -> {
+            Vehicle selected = vehicleFilter.getValue();
+            List<FuelRecord> rows = app.repository.fuelRecords().stream()
+                    .filter(f -> selected == null || selected.id().equals(f.vehicleId()))
+                    .sorted(Comparator.comparing(FuelRecord::date).reversed())
+                    .toList();
+            table.setItems(FXCollections.observableArrayList(rows));
+        };
+        vehicleFilter.valueProperty().addListener((observable, oldValue, newValue) -> refresh.run());
+        refresh.run();
         Button edit = button("Edit", "secondary-button"), remove = button("Delete", "danger-button");
         boolean canManage = app.access.canManageFleet(app.currentUser.role()); edit.setDisable(!canManage); remove.setDisable(!canManage);
         edit.setOnAction(event -> { FuelRecord selected = table.getSelectionModel().getSelectedItem(); if (selected != null) fuelDialog(selected); });
         remove.setOnAction(event -> { FuelRecord selected = table.getSelectionModel().getSelectedItem(); if (selected != null && app.confirm("Delete fuel record?", "Delete this refuel record? The vehicle's current odometer will be kept.")) app.runAction(() -> app.fleet.deleteFuel(selected.id()), "Fuel record deleted.", () -> app.showPage("fleet")); });
-        content.getChildren().addAll(add, table, new HBox(8, edit, remove)); VBox.setVgrow(table, ALWAYS); return content;
+        content.getChildren().addAll(tools, table, new HBox(8, edit, remove)); VBox.setVgrow(table, ALWAYS); return content;
+    }
+
+    private ComboBox<Vehicle> vehicleFilter() {
+        ComboBox<Vehicle> filter = new ComboBox<>(FXCollections.observableArrayList(app.repository.vehicles()));
+        filter.getItems().add(0, null);
+        filter.setValue(null);
+        filter.setPromptText("All vehicles");
+        filter.setConverter(new StringConverter<>() {
+            public String toString(Vehicle vehicle) { return vehicle == null ? "All vehicles" : vehicle.plate() + " · " + vehicle.model(); }
+            public Vehicle fromString(String value) { return null; }
+        });
+        filter.setPrefWidth(220);
+        return filter;
     }
 
     private void vehicleDialog(Vehicle existing) {
