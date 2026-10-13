@@ -35,6 +35,7 @@ import javafx.scene.image.Image;
 import javafx.scene.image.ImageView;
 import javafx.stage.FileChooser;
 import javafx.stage.Modality;
+import javafx.scene.input.KeyCode;
 import javafx.stage.Stage;
 import javafx.util.Duration;
 import javafx.util.StringConverter;
@@ -93,6 +94,7 @@ public final class DclsApp extends Application {
     Label trackingEta;
     String routeNameInput = "";
     final ObservableList<Stop> routeStopsDraft = FXCollections.observableArrayList();
+    int routePageGen;
     int customPinCount = 0;
     List<Stop> previewStops = List.of();
     List<double[]> trackingFrame = List.of();
@@ -100,6 +102,8 @@ public final class DclsApp extends Application {
     final Map<String, List<TrackingPoint>> trackingTrails = new LinkedHashMap<>();
     MapController trackingMaps;
     VBox trackingLegend;
+    VBox focusChipBox;
+    String focusedShipmentId;
     private Timeline signInRipple;
     private Runnable pendingSignIn;
     private String loginNotice;
@@ -112,7 +116,7 @@ public final class DclsApp extends Application {
     @Override public void start(Stage stage) {
         this.stage = stage;
         stage.setTitle("DCLS — Delivery Logistics Simulator");
-        stage.setMinWidth(900);
+        stage.setMinWidth(1080);
         stage.setMinHeight(560);
         stage.setWidth(900);
         stage.setHeight(560);
@@ -181,6 +185,8 @@ public final class DclsApp extends Application {
         HBox loginOptions = new HBox(8, remember, new Region(), forgot); loginOptions.setAlignment(Pos.CENTER_LEFT); HBox.setHgrow(loginOptions.getChildren().get(1), ALWAYS);
         Label error = new Label(); error.setWrapText(true); error.setStyle("-fx-text-fill: #9b2c24;");
         Button submit = button("Sign in", "primary-button"); submit.setMaxWidth(Double.MAX_VALUE);
+        Node passwordBox = passwordInput(password);
+        passwordBox.setOnKeyPressed(event -> { if (event.getCode() == KeyCode.ENTER) submit.fire(); });
         Label demoInfo = new Label("Demo: admin@dcls.local  ·  demo1234"); demoInfo.getStyleClass().add("muted"); demoInfo.setStyle("-fx-font-size:10px;");
         Button register = new Button("Create a new account"); register.getStyleClass().add("link-button"); register.setMaxWidth(Double.MAX_VALUE);
         Runnable signIn = () -> {
@@ -213,7 +219,7 @@ public final class DclsApp extends Application {
         password.setOnAction(event -> submit.fire());
         register.setOnAction(event -> registerDialog());
         forgot.setOnAction(event -> alert(Alert.AlertType.INFORMATION, "Password reset", "Ask an administrator to update your account password."));
-        card.getChildren().addAll(formTitle, hint, new Region(), labeled("EMAIL", email), labeled("PASSWORD", password), loginOptions, error);
+        card.getChildren().addAll(formTitle, hint, new Region(), labeled("EMAIL", email), labeled("PASSWORD", passwordBox), loginOptions, error);
         if (!repository.persistent()) card.getChildren().add(demoInfo);
         card.getChildren().addAll(submit, register);
         if (loginNotice != null && !loginNotice.isBlank()) {
@@ -453,22 +459,92 @@ public final class DclsApp extends Application {
             for (TrackingPoint p : recent) frame.add(ll(p.x(), p.y()));
         }
         trackingFrame = frame;
+        if (focusedShipmentId != null && trackingMaps != null) {
+            Shipment focused = focusedShipment();
+            TrackingFocus focus = focused == null ? null : trackingFocusFor(focused);
+            if (focus != null && !focus.points().isEmpty()) {
+                double aspect = trackingMaps.canvas.getWidth() / trackingMaps.canvas.getHeight();
+                trackingMaps.manual = fitAspect(fitBounds(focus.points(), aspect), aspect);
+            }
+        }
         trackingMaps.redraw();
         updateTrackingLegend(byVehicle);
     }
 
+    /** Click-to-focus target: points to frame plus how they were found. */
+    record TrackingFocus(List<double[]> points, String label) { }
+
+    Shipment focusedShipment() {
+        if (focusedShipmentId == null) return null;
+        return visibleShipments().stream().filter(s -> focusedShipmentId.equals(s.id())).findFirst().orElse(null);
+    }
+
+    TrackingFocus trackingFocusFor(Shipment shipment) {
+        if (shipment == null) return null;
+        if (shipment.vehicleId() != null) {
+            TrackingPoint fix = tracking.latestForVehicle(shipment.vehicleId());
+            if (fix == null) fix = tracking.latestFor(shipment.id());
+            if (fix != null) return new TrackingFocus(List.of(ll(fix.x(), fix.y())), "Live position");
+            if (shipment.routeId() != null) {
+                RoutePlan route = repository.routes().stream().filter(r -> r.id().equals(shipment.routeId())).findFirst().orElse(null);
+                if (route != null && !route.stops().isEmpty()) {
+                    List<double[]> points = new ArrayList<>();
+                    for (Stop stop : route.stops()) points.add(ll(stop.x(), stop.y()));
+                    return new TrackingFocus(points, "Assigned route");
+                }
+            }
+        }
+        Stop dest = routeService.geocode(shipment.address());
+        return new TrackingFocus(List.of(ll(dest.x(), dest.y())), "Destination");
+    }
+
+    void focusShipment(Shipment shipment) {
+        focusedShipmentId = shipment == null ? null : shipment.id();
+        drawTracking();
+        refreshFocusChip();
+        showEta(shipment);
+    }
+
+    void clearTrackingFocus() {
+        focusedShipmentId = null;
+        if (trackingMaps != null) trackingMaps.manual = null;
+        drawTracking();
+        refreshFocusChip();
+    }
+
+    void refreshFocusChip() {
+        if (focusChipBox == null) return;
+        focusChipBox.getChildren().clear();
+        Shipment focused = focusedShipment();
+        if (focused == null) return;
+        TrackingFocus focus = trackingFocusFor(focused);
+        Label text = new Label("Following " + focused.id() + (focus == null ? "" : " · " + focus.label()));
+        text.getStyleClass().add("muted");
+        javafx.scene.control.Button clear = new javafx.scene.control.Button("Clear");
+        clear.getStyleClass().add("link-button");
+        clear.setOnAction(event -> clearTrackingFocus());
+        HBox row = new HBox(8, text, new Region(), clear);
+        row.setAlignment(Pos.CENTER_LEFT);
+        HBox.setHgrow(row.getChildren().get(1), ALWAYS);
+        focusChipBox.getChildren().add(row);
+    }
+
     void paintTracking(GraphicsContext g, double w, double h, ViewBounds view) {
+        Shipment focused = focusedShipment();
+        String focusVehicle = focused == null ? null : focused.vehicleId();
         for (String vehicleId : trackingTrails.keySet()) {
+            boolean dimmed = focusVehicle != null && !focusVehicle.equals(vehicleId);
+            g.setGlobalAlpha(dimmed ? 0.45 : 1.0);
             String color = vehicleColor(vehicleId);
             RoutePlan route = trackingRoutes.get(vehicleId);
             if (route != null) drawRouteOn(g, w, h, route.stops(), null, color, view);
             List<TrackingPoint> recent = trackingTrails.getOrDefault(vehicleId, List.of());
             g.setStroke(javafx.scene.paint.Color.web(color));
-            g.setLineWidth(2.5);
+            g.setLineWidth(dimmed ? 2.5 : 3.5);
             for (int i = 1; i < recent.size(); i++) {
-                double[] a = project(recent.get(i - 1).x(), recent.get(i - 1).y(), w, h, view);
-                double[] b = project(recent.get(i).x(), recent.get(i).y(), w, h, view);
-                g.strokeLine(a[0], a[1], b[0], b[1]);
+                double[] a = projectRaw(recent.get(i - 1).x(), recent.get(i - 1).y(), w, h, view);
+                double[] b = projectRaw(recent.get(i).x(), recent.get(i).y(), w, h, view);
+                strokeClippedLine(g, a[0], a[1], b[0], b[1], w, h);
             }
             TrackingPoint latest = recent.isEmpty() ? tracking.latestForVehicle(vehicleId) : recent.get(recent.size() - 1);
             if (latest != null) {
@@ -478,7 +554,15 @@ public final class DclsApp extends Application {
                 Stop depot = route.stops().get(0);
                 drawVehicleMarker(g, w, h, depot.x(), depot.y(), vehiclePlate(vehicleId), color, false, view);
             }
+            g.setGlobalAlpha(1.0);
         }
+        // Focused order with no live fix yet: pin its preset destination.
+        if (focused != null && (focused.vehicleId() == null
+                || (tracking.latestForVehicle(focused.vehicleId()) == null && tracking.latestFor(focused.id()) == null))) {
+            Stop dest = routeService.geocode(focused.address());
+            drawVehicleMarker(g, w, h, dest.x(), dest.y(), "To: " + focused.address(), "#7c3aed", false, view);
+        }
+        g.setGlobalAlpha(1.0);
     }
 
     static double[] ll(double lon, double lat) { return new double[] {lon, lat}; }
@@ -553,9 +637,11 @@ public final class DclsApp extends Application {
         ViewBounds lastAuto = FULL_MAP;
         private double pressX, pressY;
         private boolean dragging;
+        private final Runnable tileRefresh = this::redraw;
 
         MapController(double width, double height) {
             canvas = mapCanvas(width, height);
+            addTileListener(tileRefresh);
             Button in = button("+", "secondary-button"), out = button("−", "secondary-button"), reset = button("Reset view", "secondary-button");
             in.setOnAction(event -> zoomAt(1.4, width / 2, height / 2));
             out.setOnAction(event -> zoomAt(1 / 1.4, width / 2, height / 2));
@@ -576,8 +662,10 @@ public final class DclsApp extends Application {
         ViewBounds currentView() { return manual != null ? manual : lastAuto; }
 
         void redraw() {
-            ViewBounds auto = fitBounds(content.get(), canvas.getWidth() / canvas.getHeight());
+            double aspect = canvas.getWidth() / canvas.getHeight();
+            ViewBounds auto = fitAspect(fitBounds(content.get(), aspect), aspect);
             lastAuto = auto;
+            if (manual != null) manual = fitAspect(manual, aspect);
             ViewBounds view = manual != null ? manual : auto;
             GraphicsContext g = prepareMap(canvas, view);
             painter.accept(g, view);
@@ -587,12 +675,12 @@ public final class DclsApp extends Application {
             ViewBounds base = currentView();
             double w = canvas.getWidth(), h = canvas.getHeight(), pad = 14;
             double[] cursor = unproject(px, py);
-            double lonSpan = Math.min(Math.max((base.lonMax() - base.lonMin()) / factor, 0.03), MAP_LON_MAX - MAP_LON_MIN);
-            double latSpan = Math.min(Math.max((base.latMax() - base.latMin()) / factor, 0.022), MAP_LAT_MAX - MAP_LAT_MIN);
+            double lonSpan = Math.min(Math.max((base.lonMax() - base.lonMin()) / factor, 0.0006), MAP_LON_MAX - MAP_LON_MIN);
+            double latSpan = Math.min(Math.max((base.latMax() - base.latMin()) / factor, 0.00045), MAP_LAT_MAX - MAP_LAT_MIN);
             double lonMin = cursor[0] - (cursor[0] - base.lonMin()) / factor;
             double latTop = mercator(cursor[1]) + (mercator(base.latMax()) - mercator(cursor[1])) / factor;
             double latBottom = mercator(cursor[1]) - (mercator(cursor[1]) - mercator(base.latMin())) / factor;
-            manual = clamp(new ViewBounds(lonMin, lonMin + lonSpan, mercToLat(latBottom), mercToLat(latTop)));
+            manual = clamp(fitAspect(new ViewBounds(lonMin, lonMin + lonSpan, mercToLat(latBottom), mercToLat(latTop)), w / h));
             redraw();
         }
 
@@ -886,24 +974,97 @@ public final class DclsApp extends Application {
         ioExecutor.shutdown();
     }
 
+    /** Draft stop list: numbered rows matching the map pins, with per-row
+     *  move-up / move-down / remove. The depot stays pinned first. */
     static final class ListViewWithRemove extends VBox {
         ListViewWithRemove(ObservableList<Stop> items) {
-            javafx.scene.control.ListView<Stop> list = new javafx.scene.control.ListView<>(items); list.setPrefHeight(120);
+            this(items, null);
+        }
+        ListViewWithRemove(ObservableList<Stop> items, Runnable onChange) {
+            javafx.scene.control.ListView<Stop> list = new javafx.scene.control.ListView<>(items); list.setPrefHeight(172);
             list.setCellFactory(view -> new javafx.scene.control.ListCell<>() {
+                private final Label name = new Label();
+                private final Button up = miniButton("↑", "Move stop up");
+                private final Button down = miniButton("↓", "Move stop down");
+                private final Button remove = miniButton("×", "Remove stop");
+                private final HBox row = new HBox(4, name, new Region(), up, down, remove);
+                {
+                    HBox.setHgrow(row.getChildren().get(1), ALWAYS);
+                    row.setAlignment(Pos.CENTER_LEFT);
+                    up.setOnAction(event -> move(-1));
+                    down.setOnAction(event -> move(1));
+                    remove.setOnAction(event -> {
+                        int i = getIndex();
+                        Stop stop = i >= 0 && i < items.size() ? items.get(i) : null;
+                        if (stop != null && !"DCLS Depot".equals(stop.name()) && items.remove(stop)
+                                && onChange != null) onChange.run();
+                    });
+                    setOnDragDetected(event -> {
+                        int i = getIndex();
+                        if (isEmpty() || i <= 0 || i >= items.size()) return;
+                        if ("DCLS Depot".equals(items.get(i).name())) return;
+                        javafx.scene.input.Dragboard db = startDragAndDrop(javafx.scene.input.TransferMode.MOVE);
+                        javafx.scene.input.ClipboardContent content = new javafx.scene.input.ClipboardContent();
+                        content.putString(String.valueOf(i));
+                        db.setContent(content);
+                        event.consume();
+                    });
+                    setOnDragOver(event -> {
+                        if (!isEmpty() && event.getGestureSource() != this && event.getDragboard().hasString()
+                                && getIndex() > 0) {
+                            event.acceptTransferModes(javafx.scene.input.TransferMode.MOVE);
+                        }
+                        event.consume();
+                    });
+                    setOnDragDropped(event -> {
+                        boolean done = false;
+                        try {
+                            int from = Integer.parseInt(event.getDragboard().getString());
+                            int to = getIndex();
+                            if (!isEmpty() && from > 0 && to > 0 && from < items.size() && to < items.size() && from != to) {
+                                Stop moving = items.remove(from);
+                                items.add(to, moving);
+                                list.getSelectionModel().select(to);
+                                if (onChange != null) onChange.run();
+                                done = true;
+                            }
+                        } catch (NumberFormatException ignored) { }
+                        event.setDropCompleted(done);
+                        event.consume();
+                    });
+                }
+                private void move(int delta) {
+                    int i = getIndex();
+                    int j = i + delta;
+                    if (i < 0 || i >= items.size() || j <= 0 || j >= items.size()) return;
+                    if ("DCLS Depot".equals(items.get(i).name())) return;
+                    java.util.Collections.swap(items, i, j);
+                    list.getSelectionModel().select(j);
+                    if (onChange != null) onChange.run();
+                }
                 @Override protected void updateItem(Stop stop, boolean empty) {
                     super.updateItem(stop, empty);
-                    if (empty || stop == null) { setText(null); return; }
-                    setText(stop.id().startsWith("custom-")
+                    if (empty || stop == null) { setGraphic(null); setText(null); return; }
+                    setText(null);
+                    int i = getIndex();
+                    name.setText((i + 1) + ". " + (stop.id().startsWith("custom-")
                             ? stop.name() + String.format("  ·  %.4f, %.4f", stop.x(), stop.y())
-                            : stop.name());
+                            : stop.name()));
+                    boolean depot = "DCLS Depot".equals(stop.name());
+                    up.setDisable(depot || i <= 1);
+                    down.setDisable(depot || i < 0 || i >= items.size() - 1);
+                    remove.setDisable(depot);
+                    setGraphic(row);
                 }
             });
-            Button remove = new Button("Remove selected stop"); remove.getStyleClass().add("secondary-button");
-            remove.setOnAction(event -> {
-                Stop selected = list.getSelectionModel().getSelectedItem();
-                if (selected != null && !"DCLS Depot".equals(selected.name())) items.remove(selected);
-            });
-            getChildren().addAll(list, remove); setSpacing(6);
+            getChildren().add(list);
+        }
+        private static Button miniButton(String text, String tip) {
+            Button button = new Button(text);
+            button.getStyleClass().add("mini-button");
+            button.setTooltip(new javafx.scene.control.Tooltip(tip));
+            button.setFocusTraversable(false);
+            return button;
         }
     }
 
