@@ -963,26 +963,14 @@ public final class DclsApp extends Application {
         if (trackingTimer != null) trackingTimer.stop();
         int generation = ++trackingGeneration;
         trackingTimer = new Timeline(new KeyFrame(Duration.seconds(1), event -> {
-<<<<<<< HEAD
-            // No simulation: just refresh ages, stale flags, arrival/off-route watchdog.
+// No simulation: GPS fixes arrive from the feed and are ingested on poll.
+// This tick only refreshes ages, stale flags, arrival/off-route watchdog.
+            if (generation != trackingGeneration) return;
             drawTracking();
             checkReroute();
             Shipment focused = focusedShipment();
             if (focused != null) showEta(focused);
             if (activePage.equals("dashboard")) showPage("dashboard");
-=======
-            if (trackingTickRunning) return;
-            trackingTickRunning = true;
-            runAsync(() -> {
-                for (Shipment shipment : visibleShipments()) if (shipment.status() == OrderStatus.IN_TRANSIT) tracking.advance(shipment);
-            }, () -> {
-                trackingTickRunning = false;
-                if (generation == trackingGeneration && "tracking".equals(activePage)) drawTracking();
-            }, exception -> {
-                trackingTickRunning = false;
-                if (generation == trackingGeneration) { stopTracking(); showError(readable(exception)); }
-            });
->>>>>>> 5b642d156815b24cdcab954157b3c8caeffca1e4
         }));
         trackingTimer.setCycleCount(Timeline.INDEFINITE); trackingTimer.play();
     }

@@ -801,28 +801,16 @@ final class AppServices {
             return optimizeStops(routeName, stops, driver);
         }
 
-<<<<<<< HEAD
-        /** Optimize a mixed list of district and map-clicked custom stops. */
-        RoutePlan optimizeStops(String routeName, List<Stop> stops, User driver) {
-            RoutePlan route = calculateStops(routeName, stops, driver);
-            repository.saveRoute(route);
-            return route;
-        }
-
-        RoutePlan calculateStops(String routeName, List<Stop> stops, User driver) {
-=======
-        /** Preview-only calculation: visiting order + metrics without persisting.
+/** Preview-only calculation: visiting order + metrics without persisting.
          *  Safe for debounced auto-calc; only Save &amp; assign writes history. */
         RoutePlan computeRoute(String routeName, List<Stop> stops) {
->>>>>>> origin/Sam-part
             if (stops == null || stops.size() < 2) throw new AppException("Add a depot and at least one stop.");
             List<Stop> ordered = nearestNeighbor(new ArrayList<>(stops));
             twoOpt(ordered);
             double km = totalKm(ordered);
             int minutes = Math.max(1, (int) Math.ceil(km / BruneiPlaces.AVG_SPEED_KMH * 60));
             return new RoutePlan(id(), routeName == null || routeName.isBlank() ? "Delivery route" : routeName.trim(),
-<<<<<<< HEAD
-                    driver == null ? null : driver.id(), ordered, round(km), minutes, false, LocalDateTime.now());
+                    null, ordered, round(km), minutes, false, LocalDateTime.now());
         }
 
         void delete(RoutePlan route) {
@@ -831,8 +819,6 @@ final class AppServices {
                 throw new AppException("This route is assigned to an order. Reassign the order before deleting the route.");
             }
             repository.deleteRoute(route.id());
-=======
-                    null, ordered, round(km), minutes, false, LocalDateTime.now());
         }
 
         /** Optimize a mixed list of district and map-clicked custom stops (persists). */
@@ -843,7 +829,6 @@ final class AppServices {
                     preview.distanceKm(), preview.estimatedMinutes(), preview.completed(), preview.createdAt());
             repository.saveRoute(route);
             return route;
->>>>>>> origin/Sam-part
         }
 
         /** Cumulative arrival minutes per stop along the given order (road km @ demo speed). */

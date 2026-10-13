@@ -84,38 +84,19 @@ final class OrdersView {
         statusFilter.valueProperty().addListener((observable, oldValue, newValue) -> refresh.run());
         priorityFilter.valueProperty().addListener((observable, oldValue, newValue) -> refresh.run()); refresh.run();
         HBox actions = new HBox(8);
-<<<<<<< HEAD
-        Button edit = button("Edit details", "secondary-button"), assign = button("Assign driver / vehicle", "secondary-button"), advance = button("Advance status", "primary-button"), cancel = button("Cancel order", "danger-button");
+Button edit = button("Edit details", "secondary-button"), assign = button("Assign driver / vehicle", "secondary-button"), advance = button("Advance status", "primary-button"), cancel = button("Cancel order", "danger-button"), delete = button("Delete", "danger-button");
         Button planRoute = button("Plan route", "secondary-button"), viewTour = button("View vehicle tour", "secondary-button");
-        boolean canDispatch = app.access.canDispatch(app.currentUser.role());
-        edit.setDisable(!canDispatch); assign.setDisable(!canDispatch); advance.setDisable(!app.access.canUpdateDelivery(app.currentUser.role())); cancel.setDisable(!canDispatch);
-        planRoute.setDisable(!canDispatch);
-        edit.setOnAction(event -> { Shipment selected = table.getSelectionModel().getSelectedItem(); if (selected != null) shipmentDialog(selected); });
-        assign.setOnAction(event -> { Shipment selected = table.getSelectionModel().getSelectedItem(); if (selected != null) assignmentDialog(selected); });
-        advance.setOnAction(event -> { Shipment selected = table.getSelectionModel().getSelectedItem(); if (selected != null) advanceShipment(selected, refresh); });
-        cancel.setOnAction(event -> { Shipment selected = table.getSelectionModel().getSelectedItem(); if (selected != null && app.confirm("Cancel order", "Cancel " + selected.id() + "?")) { app.runAction(() -> app.orders.transition(selected, OrderStatus.CANCELLED, app.currentUser), "Order cancelled."); refresh.run(); } });
-        planRoute.setOnAction(event -> { Shipment selected = table.getSelectionModel().getSelectedItem(); if (selected != null) app.planRouteForShipments(List.of(selected.id())); });
-        viewTour.setOnAction(event -> {
-            Shipment selected = table.getSelectionModel().getSelectedItem();
-            if (selected != null && selected.vehicleId() != null) app.focusVehicleTour(selected.vehicleId(), selected.id());
-            else if (selected != null) app.alert(Alert.AlertType.INFORMATION, "No vehicle", "Assign a vehicle first, then view its tour.");
-        });
-        actions.getChildren().addAll(edit, assign, advance, cancel, planRoute, viewTour);
-        VBox list = panel(new Label("Orders")); ((Label)list.getChildren().get(0)).getStyleClass().add("section-title");
-        table.setPrefWidth(475); table.setPrefHeight(335); list.getChildren().addAll(table, actions); VBox.setVgrow(table, ALWAYS);
-        VBox detail = panel(new Label("Order details")); ((Label)detail.getChildren().get(0)).getStyleClass().add("section-title"); detail.setPrefWidth(230); detail.setMinWidth(215);
-        Shipment initial = table.getItems().isEmpty() ? null : table.getItems().getFirst();
-        showShipmentDetails(detail, initial);
-        table.getSelectionModel().selectedItemProperty().addListener((o, old, selected) -> showShipmentDetails(detail, selected));
-        HBox body = new HBox(14, list, detail); HBox.setHgrow(list, ALWAYS);
-        page.getChildren().addAll(tools, body); VBox.setVgrow(body, ALWAYS); return page;
-=======
-        Button edit = button("Edit details", "secondary-button"), assign = button("Assign driver / vehicle", "secondary-button"), advance = button("Advance status", "primary-button"), cancel = button("Cancel order", "danger-button"), delete = button("Delete", "danger-button");
         boolean canDispatch = app.access.canDispatch(app.currentUser.role());
         edit.setDisable(true); assign.setDisable(true); advance.setDisable(true); cancel.setDisable(true); delete.setDisable(true);
         edit.setOnAction(event -> { if (selected != null) shipmentDialog(selected); });
         assign.setOnAction(event -> { if (selected != null) assignmentDialog(selected); });
         advance.setOnAction(event -> { if (selected != null) advanceShipment(selected, refresh); });
+        planRoute.setOnAction(event -> { if (selected != null) app.planRouteForShipments(List.of(selected.id())); });
+        viewTour.setOnAction(event -> {
+            Shipment row = selected;
+            if (row != null && row.vehicleId() != null) app.focusVehicleTour(row.vehicleId(), row.id());
+            else if (row != null) app.alert(Alert.AlertType.INFORMATION, "No vehicle", "Assign a vehicle first, then view its tour.");
+        });
         cancel.setOnAction(event -> { Shipment row = selected; if (row != null && app.confirm("Cancel order", "Cancel " + row.id() + "? This cannot be undone.")) app.runAction(() -> app.orders.transition(row, OrderStatus.CANCELLED, app.currentUser), "Order cancelled.", refresh); });
         delete.setOnAction(event -> { Shipment row = selected; if (row != null && app.confirm("Delete order", "Delete " + row.id() + "? Delivered and active deliveries are retained.")) app.runAction(() -> app.orders.delete(row), "Order deleted.", refresh); });
         Runnable updateActions = () -> {
@@ -126,6 +107,8 @@ final class OrdersView {
             advance.setDisable(!app.access.canUpdateDelivery(app.currentUser.role()) || selected == null || closed);
             cancel.setDisable(!canDispatch || selected == null || status != OrderStatus.PENDING);
             delete.setDisable(!canDispatch || selected == null || (status != OrderStatus.PENDING && status != OrderStatus.CANCELLED));
+            planRoute.setDisable(!canDispatch || selected == null);
+            viewTour.setDisable(selected == null || selected.vehicleId() == null);
         };
         table.getSelectionModel().selectedItemProperty().addListener((o, old, row) -> {
             selected = row;
@@ -140,7 +123,7 @@ final class OrdersView {
             else { selected = row; packageTable.setItems(FXCollections.observableArrayList(packageFields(row))); updateActions.run(); }
         });
         updateActions.run();
-        actions.getChildren().addAll(edit, assign, advance, cancel, delete);
+        actions.getChildren().addAll(edit, assign, advance, cancel, delete, planRoute, viewTour);
         VBox list = section("Orders");
         list.getChildren().addAll(table, actions); table.setMaxWidth(Double.MAX_VALUE); table.setPrefHeight(215);
         VBox assignedPanel = section("Assigned deliveries");
@@ -152,10 +135,8 @@ final class OrdersView {
         ScrollPane scroll = new ScrollPane(body);
         scroll.setFitToWidth(true); scroll.setStyle("-fx-background-color: transparent;");
         page.getChildren().addAll(tools, scroll); VBox.setVgrow(scroll, ALWAYS); return page;
->>>>>>> 5b642d156815b24cdcab954157b3c8caeffca1e4
     }
 
-<<<<<<< HEAD
     private static boolean isAssigned(Shipment shipment) { return shipment.status() == OrderStatus.ASSIGNED || shipment.status() == OrderStatus.IN_TRANSIT; }
 
     private static Shipment byId(List<Shipment> rows, String id) { return rows.stream().filter(row -> row.id().equals(id)).findFirst().orElse(null); }
@@ -240,39 +221,6 @@ final class OrdersView {
         table.getColumns().add(textCol("Destination", Shipment::address, 260));
         table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY);
         return table;
-=======
-    private void showShipmentDetails(VBox panel, Shipment shipment) {
-        while (panel.getChildren().size() > 1) panel.getChildren().removeLast();
-        if (shipment == null) { panel.getChildren().add(new Label("Select an order to see its details.")); return; }
-        Label orderId=new Label(shipment.id()); orderId.setStyle("-fx-font-size:16px;-fx-font-weight:700;");
-        panel.getChildren().addAll(orderId, detailField("Customer", shipment.customerName()), detailField("Phone", shipment.customerContact()),
-                detailField("Driver / vehicle", app.driverName(shipment.driverId())+" · "+app.vehiclePlate(shipment.vehicleId())),
-                detailField("Shipment", shipment.quantity()+" packages · "+shipment.weightKg()+" kg"), detailField("Status", shipment.status().label()));
-        Button routeButton=button("Plan route from address", "secondary-button"); routeButton.setMaxWidth(Double.MAX_VALUE);
-        routeButton.setDisable(!app.access.canDispatch(app.currentUser.role()));
-        routeButton.setOnAction(event -> app.planRouteForShipments(List.of(shipment.id())));
-        Button trackingButton=button("Open tracking", "primary-button"); trackingButton.setMaxWidth(Double.MAX_VALUE);
-        boolean trackable = (shipment.status() == OrderStatus.ASSIGNED || shipment.status() == OrderStatus.IN_TRANSIT)
-                && shipment.vehicleId() != null;
-        trackingButton.setDisable(!trackable);
-        if (!trackable) trackingButton.setTooltip(new javafx.scene.control.Tooltip("Assign a driver and vehicle first"));
-<<<<<<< HEAD
-        trackingButton.setOnAction(event -> app.focusVehicleTour(shipment.vehicleId(), shipment.id()));
-        panel.getChildren().addAll(routeButton, trackingButton);
-        if (shipment.vehicleId() != null) {
-            long aboard = app.repository.shipments().stream()
-                    .filter(s -> shipment.vehicleId().equals(s.vehicleId())
-                            && (s.status() == OrderStatus.IN_TRANSIT || s.status() == OrderStatus.ASSIGNED)).count();
-            if (aboard > 1) {
-                Label multi = new Label(aboard + " orders aboard " + app.vehiclePlate(shipment.vehicleId()) + " — tour view shows one fastest route.");
-                multi.getStyleClass().add("muted"); multi.setWrapText(true);
-                panel.getChildren().add(multi);
-            }
-        }
-=======
-        trackingButton.setOnAction(event -> { app.focusedShipmentId = shipment.id(); app.showPage("tracking"); }); panel.getChildren().add(trackingButton);
->>>>>>> origin/Sam-part
->>>>>>> 5b642d156815b24cdcab954157b3c8caeffca1e4
     }
 
     private TableView<Shipment> shipmentTable() {
