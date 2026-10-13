@@ -105,7 +105,7 @@ final class FleetView {
                 app.runAction(() -> app.fleet.deleteVehicle(selected.id()), "Vehicle deleted.", refresh);
             }
         });
-        Label reminders = new Label(app.fleet.maintenanceDue().size() + " service reminder(s) based on current mileage"); reminders.getStyleClass().add("muted");
+        Label reminders = new Label(app.fleet.maintenanceDue().size() + " vehicle(s) need servicing (due soon or overdue)"); reminders.getStyleClass().add("muted");
         Region spacer = new Region(); HBox.setHgrow(spacer, ALWAYS);
         actions.getChildren().addAll(edit, status, remove, spacer, reminders);
         VBox inventory = panel(new Label("Fleet inventory")); ((Label)inventory.getChildren().get(0)).getStyleClass().add("section-title");
@@ -173,22 +173,22 @@ final class FleetView {
         TableView<Vehicle> table = new TableView<>(); table.setPlaceholder(new Label("No vehicles match this search."));
         Map<String, FleetService.MaintenanceStatus> service = serviceStatuses();
         table.getColumns().add(textCol("Plate", Vehicle::plate, 90));
-        table.getColumns().add(textCol("Vehicle", Vehicle::model, 130));
+        table.getColumns().add(textCol("Vehicle", Vehicle::model, 125));
         table.getColumns().add(textCol("Type", Vehicle::type, 90));
         table.getColumns().add(textCol("Capacity", v -> String.format("%,.0f kg", v.capacityKg()), 85));
         table.getColumns().add(textCol("Mileage", v -> String.format("%,.0f km", v.mileageKm()), 85));
         table.getColumns().add(textCol("Next service", v -> String.format("%,.0f km", v.nextServiceKm()), 95));
-        table.getColumns().add(textCol("Driver", v -> app.driverName(v.driverId()), 110));
+        table.getColumns().add(textCol("Driver", v -> app.driverName(v.driverId()), 105));
         table.getColumns().add(statusCol("Status", v -> v.status().label(), 110));
-        table.getColumns().add(textCol("Due", v -> serviceLabel(service.get(v.id())), 70));
+        table.getColumns().add(textCol("Service", v -> serviceLabel(service.get(v.id())), 100));
         table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY);
         return table;
     }
 
     private static String serviceLabel(FleetService.MaintenanceStatus status) {
-        if (status == FleetService.MaintenanceStatus.OVERDUE) return "Overdue";
-        if (status == FleetService.MaintenanceStatus.DUE_SOON) return "Due";
-        return "";
+        if (status == FleetService.MaintenanceStatus.OVERDUE) return "Needs service";
+        if (status == FleetService.MaintenanceStatus.DUE_SOON) return "Service soon";
+        return "OK";
     }
 
     private Node maintenanceTab() {
@@ -196,7 +196,7 @@ final class FleetView {
         HBox tools = new HBox(8); tools.setAlignment(Pos.CENTER_LEFT);
         Button add = button("Record service", "primary-button"); add.setDisable(!app.access.canManageFleet(app.currentUser.role())); add.setOnAction(event -> maintenanceDialog());
         ComboBox<Vehicle> vehicleFilter = vehicleFilter();
-        Label due = new Label(app.fleet.maintenanceDue().size() + " vehicle(s) are approaching service"); due.getStyleClass().add("muted"); tools.getChildren().addAll(add, vehicleFilter, due);
+        Label due = new Label(app.fleet.maintenanceDue().size() + " vehicle(s) need servicing"); due.getStyleClass().add("muted"); tools.getChildren().addAll(add, vehicleFilter, due);
         TableView<MaintenanceRecord> table = new TableView<>(); table.setPlaceholder(new Label("No maintenance records yet."));
         table.getColumns().add(textCol("Vehicle", m -> app.vehiclePlate(m.vehicleId()), 110));
         table.getColumns().add(textCol("Date", m -> m.date().toString(), 100));
