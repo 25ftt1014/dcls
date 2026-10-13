@@ -360,6 +360,15 @@ class AppServicesTest {
         }
 
         @Test
+        void onlyPendingOrdersCanBeCancelled() {
+            Shipment pending = repo.shipment("DCLS-2403").orElseThrow(); // PENDING
+            orders.transition(pending, OrderStatus.CANCELLED, admin());
+            assertEquals(OrderStatus.CANCELLED, repo.shipment(pending.id()).orElseThrow().status());
+            assertThrows(AppException.class, () -> orders.transition(repo.shipment("DCLS-2402").orElseThrow(), OrderStatus.CANCELLED, admin()));
+            assertEquals(OrderStatus.ASSIGNED, repo.shipment("DCLS-2402").orElseThrow().status());
+        }
+
+        @Test
         void deliveredOrderCannotBeCancelled() {
             Shipment delivered = repo.shipment("DCLS-2398").orElseThrow(); // DELIVERED
             assertThrows(AppException.class, () -> orders.transition(delivered, OrderStatus.CANCELLED, admin()));

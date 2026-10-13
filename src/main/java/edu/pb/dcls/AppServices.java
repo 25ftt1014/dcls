@@ -190,7 +190,7 @@ final class AppServices {
         }
         void transition(Shipment shipment, OrderStatus next, User actor, int rating) {
             if (next == OrderStatus.CANCELLED) {
-                if (shipment.status() == OrderStatus.DELIVERED) throw new AppException("A delivered order cannot be cancelled.");
+                if (shipment.status() != OrderStatus.PENDING) throw new AppException("Only a pending order can be cancelled.");
             } else if (next == OrderStatus.ASSIGNED) {
                 throw new AppException("Assign a driver and vehicle before marking this order assigned.");
             } else if (shipment.status() == OrderStatus.PENDING && next != OrderStatus.PENDING) {
@@ -206,12 +206,11 @@ final class AppServices {
             Shipment updatedShipment = copy(shipment);
             if (rating > 0) updatedShipment.setCustomerSatisfaction(rating);
             updatedShipment.setStatus(next);
-            if (shipment.vehicleId() != null && (next == OrderStatus.DELIVERED || next == OrderStatus.CANCELLED)) {
-                repository.vehicle(shipment.vehicleId()).ifPresent(vehicle -> {
-                    Vehicle updatedVehicle = copy(vehicle);
-                    updatedVehicle.setStatus(VehicleStatus.AVAILABLE);
-                    repository.saveShipmentAndVehicle(updatedShipment, updatedVehicle);
-                });
+            Optional<Vehicle> assignedVehicle = shipment.vehicleId() == null ? Optional.empty() : repository.vehicle(shipment.vehicleId());
+            if (next == OrderStatus.DELIVERED && assignedVehicle.isPresent()) {
+                Vehicle freed = copy(assignedVehicle.get());
+                freed.setStatus(VehicleStatus.AVAILABLE);
+                repository.saveShipmentAndVehicle(updatedShipment, freed);
             } else repository.saveShipment(updatedShipment);
         }
         private Shipment copy(Shipment shipment) {

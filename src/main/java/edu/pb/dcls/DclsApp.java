@@ -35,6 +35,7 @@ import javafx.scene.image.Image;
 import javafx.scene.image.ImageView;
 import javafx.stage.FileChooser;
 import javafx.stage.Modality;
+import javafx.scene.input.KeyCode;
 import javafx.stage.Stage;
 import javafx.util.Duration;
 import javafx.util.StringConverter;
@@ -181,6 +182,8 @@ public final class DclsApp extends Application {
         HBox loginOptions = new HBox(8, remember, new Region(), forgot); loginOptions.setAlignment(Pos.CENTER_LEFT); HBox.setHgrow(loginOptions.getChildren().get(1), ALWAYS);
         Label error = new Label(); error.setWrapText(true); error.setStyle("-fx-text-fill: #9b2c24;");
         Button submit = button("Sign in", "primary-button"); submit.setMaxWidth(Double.MAX_VALUE);
+        Node passwordBox = passwordInput(password);
+        passwordBox.setOnKeyPressed(event -> { if (event.getCode() == KeyCode.ENTER) submit.fire(); });
         Label demoInfo = new Label("Demo: admin@dcls.local  ·  demo1234"); demoInfo.getStyleClass().add("muted"); demoInfo.setStyle("-fx-font-size:10px;");
         Button register = new Button("Create a new account"); register.getStyleClass().add("link-button"); register.setMaxWidth(Double.MAX_VALUE);
         Runnable signIn = () -> {
@@ -213,7 +216,7 @@ public final class DclsApp extends Application {
         password.setOnAction(event -> submit.fire());
         register.setOnAction(event -> registerDialog());
         forgot.setOnAction(event -> alert(Alert.AlertType.INFORMATION, "Password reset", "Ask an administrator to update your account password."));
-        card.getChildren().addAll(formTitle, hint, new Region(), labeled("EMAIL", email), labeled("PASSWORD", password), loginOptions, error);
+        card.getChildren().addAll(formTitle, hint, new Region(), labeled("EMAIL", email), labeled("PASSWORD", passwordBox), loginOptions, error);
         if (!repository.persistent()) card.getChildren().add(demoInfo);
         card.getChildren().addAll(submit, register);
         if (loginNotice != null && !loginNotice.isBlank()) {
