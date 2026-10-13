@@ -304,7 +304,6 @@ public final class JdbcRepository implements Repository {
             return result;
         });
     }
-<<<<<<< HEAD
 
     private TrackingPoint trackingFrom(ResultSet rows, LocalDateTime recorded) throws SQLException {
         double speed = colDouble(rows, "speed_kmh", 0);
@@ -329,8 +328,6 @@ public final class JdbcRepository implements Repository {
         catch (Exception e) { return null; }
     }
     // ponytail: prunes on every write, a PK-ordered scan per tracking tick; throttle to a counter if the tick rate ever matters.
-=======
->>>>>>> 5b642d156815b24cdcab954157b3c8caeffca1e4
     private void pruneTrackingHistory(Connection connection) throws SQLException {
         // Derived table required: MySQL forbids a DELETE whose subquery reads the same table.
         try (PreparedStatement statement = connection.prepareStatement(

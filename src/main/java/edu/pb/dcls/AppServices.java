@@ -238,10 +238,8 @@ final class AppServices {
     /** Shared Brunei Darussalam coordinate base (WGS84 degrees, sensible Bandar defaults).
      *  Stop.x() carries longitude, Stop.y() carries latitude so existing storage keeps working. */
     static final class BruneiPlaces {
-        /** Average simulated driving speed. Kept at 35 km/h per project decision. */
+        /** Reference driving speed for ETA estimates when a fix carries no speed. */
         static final double AVG_SPEED_KMH = 35d;
-        /** How many simulated minutes pass per one-second live tick (demo time compression). */
-        static final double SIM_MINUTES_PER_TICK = 1d;
         static final Stop DEPOT = new Stop("depot", "DCLS Depot", 114.9400, 4.8900);
 
         static Map<String, Stop> places() {
@@ -784,37 +782,15 @@ final class AppServices {
             return optimizeStops(routeName, stops, driver);
         }
 
-<<<<<<< HEAD
-        /** Optimize a mixed list of district and map-clicked custom stops. */
-        RoutePlan optimizeStops(String routeName, List<Stop> stops, User driver) {
-            RoutePlan route = calculateStops(routeName, stops, driver);
-            repository.saveRoute(route);
-            return route;
-        }
-
-        RoutePlan calculateStops(String routeName, List<Stop> stops, User driver) {
-=======
         /** Preview-only calculation: visiting order + metrics without persisting.
          *  Safe for debounced auto-calc; only Save &amp; assign writes history. */
         RoutePlan computeRoute(String routeName, List<Stop> stops) {
->>>>>>> origin/Sam-part
             if (stops == null || stops.size() < 2) throw new AppException("Add a depot and at least one stop.");
             List<Stop> ordered = nearestNeighbor(new ArrayList<>(stops));
             twoOpt(ordered);
             double km = totalKm(ordered);
             int minutes = Math.max(1, (int) Math.ceil(km / BruneiPlaces.AVG_SPEED_KMH * 60));
             return new RoutePlan(id(), routeName == null || routeName.isBlank() ? "Delivery route" : routeName.trim(),
-<<<<<<< HEAD
-                    driver == null ? null : driver.id(), ordered, round(km), minutes, false, LocalDateTime.now());
-        }
-
-        void delete(RoutePlan route) {
-            if (route == null) return;
-            if (repository.shipments().stream().anyMatch(shipment -> route.id().equals(shipment.routeId()))) {
-                throw new AppException("This route is assigned to an order. Reassign the order before deleting the route.");
-            }
-            repository.deleteRoute(route.id());
-=======
                     null, ordered, round(km), minutes, false, LocalDateTime.now());
         }
 
@@ -826,7 +802,14 @@ final class AppServices {
                     preview.distanceKm(), preview.estimatedMinutes(), preview.completed(), preview.createdAt());
             repository.saveRoute(route);
             return route;
->>>>>>> origin/Sam-part
+        }
+
+        void delete(RoutePlan route) {
+            if (route == null) return;
+            if (repository.shipments().stream().anyMatch(shipment -> route.id().equals(shipment.routeId()))) {
+                throw new AppException("This route is assigned to an order. Reassign the order before deleting the route.");
+            }
+            repository.deleteRoute(route.id());
         }
 
         /** Cumulative arrival minutes per stop along the given order (road km @ demo speed). */
@@ -948,10 +931,6 @@ final class AppServices {
 
         void note(TrackingPoint p) { lastByVehicle.put(p.vehicleId(), p); }
         void reset(String vehicleId) { lastByVehicle.remove(vehicleId); }
-
-        // Back-compat for callers that toggled a simulated fix flag: no-op now.
-        void setFixLost(String vehicleId, boolean lost) { if (!lost) lastByVehicle.remove(vehicleId); }
-        boolean isFixLost(String vehicleId) { return isStale(vehicleId); }
 
         boolean isStale(String vehicleId) { return ageSeconds(vehicleId) > STALE_AFTER_SECONDS; }
 
@@ -1134,13 +1113,35 @@ final class AppServices {
         /** One optimized multi-stop tour for a vehicle: live fix → remaining destinations. */
         public record VehicleTour(List<Stop> ordered, int progressIndex, double remainingKm) { }
 
+        private final Map<String, CachedTour> tourCache = new HashMap<>();
+        private record CachedTour(VehicleTour tour, String signature) { }
+
         public VehicleTour tourForVehicle(String vehicleId) {
             List<Shipment> group = repository.shipments().stream()
                     .filter(s -> vehicleId.equals(s.vehicleId()))
                     .filter(s -> s.status() == OrderStatus.IN_TRANSIT || s.status() == OrderStatus.ASSIGNED)
                     .toList();
-            if (group.isEmpty()) return new VehicleTour(List.of(), 0, 0);
+            if (group.isEmpty()) { tourCache.remove(vehicleId); return new VehicleTour(List.of(), 0, 0); }
             TrackingPoint live = latestForVehicle(vehicleId);
+            // Reuse the cached tour unless the order set or the live fix changed —
+            // geocoding every address on every 1-second tick is what froze the UI.
+            String sig = tourSignature(group, live);
+            CachedTour cached = tourCache.get(vehicleId);
+            if (cached != null && cached.signature().equals(sig)) return cached.tour();
+            VehicleTour tour = buildTour(vehicleId, group, live);
+            tourCache.put(vehicleId, new CachedTour(tour, sig));
+            return tour;
+        }
+
+        private String tourSignature(List<Shipment> group, TrackingPoint live) {
+            StringBuilder sb = new StringBuilder();
+            group.stream().map(s -> s.id() + ":" + s.status() + ":" + s.address()).sorted()
+                    .forEach(sb::append);
+            sb.append('|').append(live == null ? "nofix" : live.recordedAt().toString());
+            return sb.toString();
+        }
+
+        private VehicleTour buildTour(String vehicleId, List<Shipment> group, TrackingPoint live) {
             RouteService rs = new RouteService(repository);
             Stop start = live == null ? rs.depot()
                     : new Stop("live-" + vehicleId, "Live position", live.x(), live.y());

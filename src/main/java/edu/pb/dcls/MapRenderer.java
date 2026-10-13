@@ -72,22 +72,59 @@ final class MapRenderer {
         purgePoisonedKeylessCache();
     }
 
-    /** One-time cleanup: delete watermark tiles cached from keyless CARTO requests. */
+    /** One-time cleanup of dead cache weight: watermark keyless scopes, the obsolete
+     *  keyed scope, abandoned numeric-zoom layout dirs, and OSRM/geocode files
+     *  older than 30 days. Current scopes are never touched. */
     private static void purgePoisonedKeylessCache() {
-        if (!CARTO_KEY.isEmpty()) return;
         try {
-            Path poisoned = Path.of(System.getProperty("user.home"), ".dcls", "tiles", "keyless");
-            if (Files.isDirectory(poisoned)) {
-                // Only remove the voyager subtree; keep osm/ entries.
-                Path voyager = poisoned.resolve("voyager");
-                if (Files.isDirectory(voyager)) {
-                    try (var walk = Files.walk(voyager)) {
-                        walk.sorted(java.util.Comparator.reverseOrder())
-                                .forEach(p -> { try { Files.deleteIfExists(p); } catch (Exception ignored) { } });
-                    }
-                    System.out.println("[dcls-tiles] purged poisoned keyless CARTO cache");
-                }
+            Path tiles = Path.of(System.getProperty("user.home"), ".dcls", "tiles");
+            String live = currentScopeName();
+            if (!"keyless".equals(live)) deleteTree(tiles.resolve("keyless"));
+            if (!"k6d775938".equals(live)) deleteTree(tiles.resolve("k6d775938"));
+            if (Files.isDirectory(tiles)) {
+                try (var entries = Files.list(tiles)) {
+                    entries.filter(p -> Files.isDirectory(p)
+                                    && p.getFileName().toString().matches("\\d+"))
+                            .forEach(MapRenderer::deleteTree);
+                } catch (Exception ignored) { }
             }
+            pruneOldFiles(Path.of(System.getProperty("user.home"), ".dcls", "osrm"));
+            pruneOldFiles(Path.of(System.getProperty("user.home"), ".dcls", "geocode"));
+        } catch (Exception ignored) { }
+    }
+
+    /** Scope dir written by {@link #tileDiskPath} for the current config. */
+    static String currentScopeName() {
+        boolean osm = basemap == Basemap.OSM_STANDARD || CARTO_KEY.isEmpty();
+        return (osm ? "osm-v2-" : "")
+                + (CARTO_KEY.isEmpty() ? "keyless-v2" : "k" + Integer.toHexString(CARTO_KEY.hashCode()));
+    }
+
+    private static void deleteTree(Path root) {
+        try {
+            if (!Files.isDirectory(root)) return;
+            try (var walk = Files.walk(root)) {
+                walk.sorted(java.util.Comparator.reverseOrder())
+                        .forEach(p -> { try { Files.deleteIfExists(p); } catch (Exception ignored) { } });
+            }
+            System.out.println("[dcls-tiles] purged stale cache " + root.getFileName());
+        } catch (Exception ignored) { }
+    }
+
+    private static void pruneOldFiles(Path dir) {
+        try {
+            if (!Files.isDirectory(dir)) return;
+            long cutoff = System.currentTimeMillis() - 30L * 24 * 3600 * 1000;
+            final int[] removed = {0};
+            try (var walk = Files.walk(dir)) {
+                walk.filter(Files::isRegularFile).forEach(p -> {
+                    try {
+                        if (Files.getLastModifiedTime(p).toMillis() < cutoff
+                                && Files.deleteIfExists(p)) removed[0]++;
+                    } catch (Exception ignored) { }
+                });
+            }
+            if (removed[0] > 0) System.out.println("[dcls-tiles] pruned " + removed[0] + " old files in " + dir.getFileName());
         } catch (Exception ignored) { }
     }
 
@@ -870,7 +907,67 @@ final class MapRenderer {
         return hits;
     }
 
-    private static List<PlaceHit> fetchNominatim(String q) {
+    /** Session caches so the 1-second tracking tick never touches disk or network
+     *  for known queries. Misses (empty results) are cached too — otherwise an
+     *  unresolvable address would fire HTTP requests every tick, forever. */
+    private static final Map<String, List<PlaceHit>> GEO_HIT_MEM =
+            Collections.synchronizedMap(new LinkedHashMap<>(200, 0.75f, true) {
+                @Override protected boolean removeEldestEntry(Map.Entry<String, List<PlaceHit>> e) { return size() > 200; }
+            });
+    private static final Map<String, Long> GEO_MISS_MEM = new ConcurrentHashMap<>();
+    private static final long GEO_NEG_TTL_MS = 24L * 3600 * 1000;
+    private static final long GEO_POS_TTL_MS = 30L * 24 * 3600 * 1000;
+
+    private static Path geoCachePath(String q) {
+        return Path.of(System.getProperty("user.home"), ".dcls", "geocode",
+                Integer.toHexString(("bn|" + q.toLowerCase(java.util.Locale.ROOT)).hashCode()) + ".json");
+    }
+
+    private static Path geoMissPath(String q) {
+        return Path.of(System.getProperty("user.home"), ".dcls", "geocode",
+                Integer.toHexString(("bn|" + q.toLowerCase(java.util.Locale.ROOT)).hashCode()) + ".empty");
+    }
+
+    private static void rememberMiss(String key, String q) {
+        GEO_MISS_MEM.put(key, System.currentTimeMillis());
+        try {
+            Path miss = geoMissPath(q);
+            Files.createDirectories(miss.getParent());
+            Files.writeString(miss, String.valueOf(System.currentTimeMillis()));
+        } catch (Exception ignored) { }
+    }
+
+    // Test hooks (package-visible).
+    static void noteGeoMissForTest(String q) {
+        rememberMiss("bn|" + q.toLowerCase(java.util.Locale.ROOT), q);
+    }
+
+    static boolean isGeoMissCached(String q) {
+        Long at = GEO_MISS_MEM.get("bn|" + q.toLowerCase(java.util.Locale.ROOT));
+        return at != null && System.currentTimeMillis() - at < GEO_NEG_TTL_MS;
+    }
+
+    static List<PlaceHit> fetchNominatim(String q) {
+        String key = "bn|" + q.toLowerCase(java.util.Locale.ROOT);
+        List<PlaceHit> mem = GEO_HIT_MEM.get(key);
+        if (mem != null) return mem;
+        long now = System.currentTimeMillis();
+        Long missAt = GEO_MISS_MEM.get(key);
+        if (missAt != null && now - missAt < GEO_NEG_TTL_MS) return List.of();
+        try {
+            Path cache = geoCachePath(q);
+            if (Files.isRegularFile(cache) && now - Files.getLastModifiedTime(cache).toMillis() < GEO_POS_TTL_MS) {
+                List<PlaceHit> cached = parseNominatim(Files.readString(cache), q);
+                if (!cached.isEmpty()) { GEO_HIT_MEM.put(key, cached); return cached; }
+            }
+            Path missFile = geoMissPath(q);
+            if (Files.isRegularFile(missFile) && now - Files.getLastModifiedTime(missFile).toMillis() < GEO_NEG_TTL_MS) {
+                GEO_MISS_MEM.put(key, now);
+                return List.of();
+            } else if (Files.isRegularFile(missFile)) {
+                Files.deleteIfExists(missFile);
+            }
+        } catch (Exception ignored) { }
         try {
             String url = "https://nominatim.openstreetmap.org/search?q="
                     + java.net.URLEncoder.encode(q + ", Brunei", StandardCharsets.UTF_8)
@@ -882,12 +979,14 @@ final class MapRenderer {
             if (res.statusCode() != 200) return List.of();
             List<PlaceHit> parsed = parseNominatim(res.body(), q);
             if (!parsed.isEmpty()) {
+                GEO_HIT_MEM.put(key, parsed);
                 try {
-                    Path cache = Path.of(System.getProperty("user.home"), ".dcls", "geocode",
-                            Integer.toHexString(("bn|" + q.toLowerCase(java.util.Locale.ROOT)).hashCode()) + ".json");
+                    Path cache = geoCachePath(q);
                     Files.createDirectories(cache.getParent());
                     Files.writeString(cache, res.body());
                 } catch (Exception ignored) { }
+            } else {
+                rememberMiss(key, q);
             }
             return parsed;
         } catch (Exception ignored) { }
