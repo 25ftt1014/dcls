@@ -85,18 +85,26 @@ final class AppServices {
         private final Repository repository;
         FleetService(Repository repository) { this.repository = repository; }
         void save(Vehicle vehicle) {
-            if (vehicle.plate().isBlank() || vehicle.model().isBlank() || vehicle.capacityKg() <= 0) {
+            if (vehicle == null) throw new AppException("Vehicle details are required.");
+            if (vehicle.plate() == null || vehicle.plate().isBlank() || vehicle.model() == null || vehicle.model().isBlank() || vehicle.capacityKg() <= 0) {
                 throw new AppException("Plate, model, and a positive capacity are required.");
             }
+            if (vehicle.mileageKm() < 0 || vehicle.nextServiceKm() <= 0) {
+                throw new AppException("Mileage cannot be negative and next service must be positive.");
+            }
+            if (vehicle.status() == null) throw new AppException("Choose a vehicle status.");
             boolean duplicate = repository.vehicles().stream().anyMatch(other -> !other.id().equals(vehicle.id()) && other.plate().equalsIgnoreCase(vehicle.plate().trim()));
             if (duplicate) throw new AppException("That plate number is already registered.");
+            String type = vehicle.type() == null ? "" : vehicle.type().trim();
             Vehicle updated = copy(vehicle);
-            updated.update(vehicle.plate().trim().toUpperCase(), vehicle.model().trim(), vehicle.type().trim(),
+            updated.update(vehicle.plate().trim().toUpperCase(), vehicle.model().trim(), type,
                     vehicle.capacityKg(), vehicle.mileageKm(), vehicle.status(), vehicle.driverId(), vehicle.nextServiceKm());
             repository.saveVehicle(updated);
         }
         void setStatus(Vehicle vehicle, VehicleStatus status) {
+            if (vehicle == null) throw new AppException("Choose a vehicle first.");
             if (status == null) throw new AppException("Choose a vehicle status.");
+            if (status == VehicleStatus.IN_DELIVERY) throw new AppException("Vehicles enter In Delivery only when assigned to an order.");
             Vehicle updated = copy(vehicle); updated.setStatus(status);
             repository.saveVehicle(updated);
         }
@@ -104,7 +112,9 @@ final class AppServices {
             return repository.vehicles().stream().filter(vehicle -> vehicle.mileageKm() >= vehicle.nextServiceKm() - 500).toList();
         }
         void logMaintenance(Vehicle vehicle, LocalDate date, double mileage, String details, double cost) {
-            if (vehicle == null || date == null || details == null || details.isBlank() || mileage < vehicle.mileageKm() || cost < 0) throw new AppException("Check the service details, date, mileage, and cost.");
+            if (vehicle == null) throw new AppException("Choose a vehicle first.");
+            if (date == null) throw new AppException("Choose a service date.");
+            if (details == null || details.isBlank() || mileage < vehicle.mileageKm() || cost < 0) throw new AppException("Check the service details, mileage, and cost.");
             MaintenanceRecord record = new MaintenanceRecord(id(), vehicle.id(), date, mileage, details.trim(), cost);
             Vehicle updated = copy(vehicle);
             updated.update(vehicle.plate(), vehicle.model(), vehicle.type(), vehicle.capacityKg(), mileage,
@@ -112,7 +122,9 @@ final class AppServices {
             repository.saveMaintenanceAndVehicle(record, updated);
         }
         void logFuel(Vehicle vehicle, LocalDate date, double mileage, double litres, double cost) {
-            if (vehicle == null || date == null || mileage < vehicle.mileageKm() || litres <= 0 || cost < 0) throw new AppException("Check the fuel amount, date, mileage, and cost.");
+            if (vehicle == null) throw new AppException("Choose a vehicle first.");
+            if (date == null) throw new AppException("Choose a refuel date.");
+            if (mileage < vehicle.mileageKm() || litres <= 0 || cost < 0) throw new AppException("Check the fuel amount, mileage, and cost.");
             FuelRecord record = new FuelRecord(id(), vehicle.id(), date, mileage, litres, cost);
             Vehicle updated = copy(vehicle);
             updated.update(vehicle.plate(), vehicle.model(), vehicle.type(), vehicle.capacityKg(), mileage,

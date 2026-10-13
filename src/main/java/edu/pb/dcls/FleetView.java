@@ -7,19 +7,16 @@ import javafx.scene.Node;
 import javafx.scene.control.Alert;
 import javafx.scene.control.Button;
 import javafx.scene.control.ButtonType;
-import javafx.scene.control.ChoiceBox;
 import javafx.scene.control.ComboBox;
 import javafx.scene.control.DatePicker;
 import javafx.scene.control.Label;
 import javafx.scene.control.MenuButton;
-import javafx.scene.control.MenuItem;
 import javafx.scene.control.TableView;
 import javafx.scene.control.TextField;
 import javafx.scene.layout.GridPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Region;
 import javafx.scene.layout.VBox;
-import javafx.util.StringConverter;
 
 import java.time.LocalDate;
 import java.util.List;
@@ -34,6 +31,7 @@ import static edu.pb.dcls.Domain.Vehicle;
 import static edu.pb.dcls.Domain.VehicleStatus;
 import static edu.pb.dcls.UiFactory.addField;
 import static edu.pb.dcls.UiFactory.button;
+import static edu.pb.dcls.UiFactory.enumFilter;
 import static edu.pb.dcls.UiFactory.formGrid;
 import static edu.pb.dcls.UiFactory.labeled;
 import static edu.pb.dcls.UiFactory.onRowDoubleClick;
@@ -52,13 +50,15 @@ final class FleetView {
     VBox page() {
         VBox page = pageHeader("Fleet", "Manage vehicle availability, assignments, and service records.");
         HBox recordLinks = new HBox(8); recordLinks.setAlignment(Pos.CENTER_RIGHT);
-        Button maintenance = button("Maintenance records", "secondary-button"); maintenance.setOnAction(event -> { page.getChildren().setAll(recordLinks, maintenanceTab()); });
-        Button fuelRecords = button("Fuel records", "secondary-button"); fuelRecords.setOnAction(event -> { page.getChildren().setAll(recordLinks, fuelTab()); });
-        Button vehicles = button("‹  Fleet inventory", "secondary-button"); vehicles.setOnAction(event -> { app.fleetRecordsView="vehicles"; app.showPage("fleet"); });
+        Button maintenance = button("Maintenance records", "secondary-button"); maintenance.setOnAction(event -> { app.fleetRecordsView = "maintenance"; app.showPage("fleet"); });
+        Button fuelRecords = button("Fuel records", "secondary-button"); fuelRecords.setOnAction(event -> { app.fleetRecordsView = "fuel"; app.showPage("fleet"); });
+        Button vehicles = button("‹  Fleet inventory", "secondary-button"); vehicles.setOnAction(event -> { app.fleetRecordsView = "vehicles"; app.showPage("fleet"); });
         recordLinks.getChildren().addAll(vehicles, maintenance, fuelRecords);
-        if (app.fleetRecordsView.equals("maintenance")) page.getChildren().addAll(recordLinks, maintenanceTab());
-        else if (app.fleetRecordsView.equals("fuel")) page.getChildren().addAll(recordLinks, fuelTab());
-        else page.getChildren().add(vehiclesTab());
+        Node body;
+        if (app.fleetRecordsView.equals("maintenance")) body = maintenanceTab();
+        else if (app.fleetRecordsView.equals("fuel")) body = fuelTab();
+        else body = vehiclesTab();
+        page.getChildren().addAll(recordLinks, body);
         return page;
     }
 
@@ -66,18 +66,12 @@ final class FleetView {
         VBox content = new VBox(12); content.setPadding(new Insets(12, 0, 0, 0));
         HBox tools = new HBox(9); tools.setAlignment(Pos.CENTER_LEFT);
         TextField search = new TextField(); search.setPromptText("Search plate, model, type, or driver"); search.setAccessibleText("Search fleet"); search.setPrefWidth(300);
-        ChoiceBox<VehicleStatus> filter = new ChoiceBox<>(FXCollections.observableArrayList(VehicleStatus.values()));
-        filter.getItems().add(0, null); filter.setValue(null); filter.setConverter(new StringConverter<>() { public String toString(VehicleStatus value) { return value == null ? "All statuses" : value.label(); } public VehicleStatus fromString(String value) { return null; } });
+        javafx.scene.control.ChoiceBox<VehicleStatus> filter = enumFilter(VehicleStatus.values(), "All statuses");
         Region gap = new Region(); HBox.setHgrow(gap, ALWAYS);
         Button add = button("Add vehicle", "primary-button"); add.setDisable(!app.access.canManageFleet(app.currentUser.role())); add.setOnAction(event -> vehicleDialog(null));
         MenuButton records = new MenuButton("Records");
-        records.getItems().addAll(app.menu("Maintenance", () -> { app.fleetRecordsView="maintenance"; app.showPage("fleet"); }), app.menu("Fuel records", () -> { app.fleetRecordsView="fuel"; app.showPage("fleet"); }));
-        MenuButton filters = new MenuButton("Filter");
-        MenuItem allStatuses = new MenuItem("All statuses"); allStatuses.setOnAction(event -> filter.setValue(null));
-        filters.getItems().add(allStatuses);
-        for (VehicleStatus value : VehicleStatus.values()) filters.getItems().add(app.menu(value.label(), () -> { filter.setValue(value); filters.setText(value.label()); }));
-        allStatuses.setOnAction(event -> { filter.setValue(null); filters.setText("Filter"); });
-        tools.getChildren().addAll(search, gap, filters, records, add);
+        records.getItems().addAll(app.menu("Maintenance", () -> { app.fleetRecordsView = "maintenance"; app.showPage("fleet"); }), app.menu("Fuel records", () -> { app.fleetRecordsView = "fuel"; app.showPage("fleet"); }));
+        tools.getChildren().addAll(search, filter, gap, records, add);
         TableView<Vehicle> table = vehicleTable();
         onRowDoubleClick(table, v -> { if (app.access.canManageFleet(app.currentUser.role())) vehicleDialog(v); });
         Runnable refresh = () -> {
@@ -101,7 +95,8 @@ final class FleetView {
             }
         });
         Label reminders = new Label(app.fleet.maintenanceDue().size() + " service reminder(s) based on current mileage"); reminders.getStyleClass().add("muted");
-        actions.getChildren().addAll(edit, status, remove, new Region(), reminders);
+        Region spacer = new Region(); HBox.setHgrow(spacer, ALWAYS);
+        actions.getChildren().addAll(edit, status, remove, spacer, reminders);
         VBox inventory = panel(new Label("Fleet inventory")); ((Label)inventory.getChildren().get(0)).getStyleClass().add("section-title");
         inventory.getChildren().addAll(table, actions); VBox.setVgrow(table, ALWAYS);
         content.getChildren().addAll(tools, inventory); VBox.setVgrow(inventory, ALWAYS);
