@@ -141,7 +141,9 @@ final class AppServices {
             repository.deleteVehicle(id);
         }
         void updateMaintenance(MaintenanceRecord existing, LocalDate date, double mileage, String details, double cost) {
-            if (existing == null || date == null || details == null || details.isBlank() || mileage < 0 || cost < 0) throw new AppException("Check the service details, date, mileage, and cost.");
+            if (existing == null) throw new AppException("Choose a maintenance record first.");
+            if (date == null) throw new AppException("Choose a service date.");
+            if (details == null || details.isBlank() || mileage < 0 || cost < 0) throw new AppException("Check the service details, mileage, and cost.");
             Vehicle vehicle = repository.vehicle(existing.vehicleId()).orElseThrow(() -> new AppException("The vehicle for this record no longer exists."));
             Vehicle updated = copy(vehicle);
             double currentMileage = Math.max(vehicle.mileageKm(), mileage);
@@ -151,7 +153,9 @@ final class AppServices {
         }
         void deleteMaintenance(String id) { repository.deleteMaintenance(id); }
         void updateFuel(FuelRecord existing, LocalDate date, double mileage, double litres, double cost) {
-            if (existing == null || date == null || mileage < 0 || litres <= 0 || cost < 0) throw new AppException("Check the fuel amount, date, mileage, and cost.");
+            if (existing == null) throw new AppException("Choose a fuel record first.");
+            if (date == null) throw new AppException("Choose a refuel date.");
+            if (mileage < 0 || litres <= 0 || cost < 0) throw new AppException("Check the fuel amount, mileage, and cost.");
             Vehicle vehicle = repository.vehicle(existing.vehicleId()).orElseThrow(() -> new AppException("The vehicle for this record no longer exists."));
             Vehicle updated = copy(vehicle);
             updated.update(vehicle.plate(), vehicle.model(), vehicle.type(), vehicle.capacityKg(), Math.max(vehicle.mileageKm(), mileage),

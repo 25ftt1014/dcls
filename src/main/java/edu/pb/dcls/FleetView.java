@@ -19,10 +19,12 @@ import javafx.scene.layout.Region;
 import javafx.scene.layout.VBox;
 
 import java.time.LocalDate;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
 
+import static edu.pb.dcls.AppServices.AppException;
 import static edu.pb.dcls.Domain.FuelRecord;
 import static edu.pb.dcls.Domain.MaintenanceRecord;
 import static edu.pb.dcls.Domain.Role;
@@ -164,18 +166,31 @@ final class FleetView {
         addField(form, 6, "Status", status); addField(form, 7, "Assigned driver", driver);
         app.confirmForm(existing == null ? "Add vehicle" : "Edit vehicle", form, existing == null ? "Add vehicle" : "Save changes", complete -> {
             try {
+                double capacityKg = number(capacity.getText(), "Capacity");
+                double mileageKm = number(mileage.getText(), "Mileage");
+                double nextServiceKm = number(nextService.getText(), "Next service");
                 Vehicle vehicle = new Vehicle(existing == null ? AppServices.id() : existing.id(), plate.getText().trim(), model.getText().trim(), type.getText().trim(),
-                        app.number(capacity.getText()), app.number(mileage.getText()), status.getValue(),
-                        driver.getValue() == null ? null : driver.getValue().id(), app.number(nextService.getText()));
+                        capacityKg, mileageKm, status.getValue(),
+                        driver.getValue() == null ? null : driver.getValue().id(), nextServiceKm);
                 app.runAsync(() -> app.fleet.save(vehicle), () -> { complete.accept(null); app.showPage("fleet"); }, complete);
             } catch (RuntimeException exception) { complete.accept(exception); }
         });
     }
 
     private void vehicleStatusDialog(Vehicle vehicle) {
-        ComboBox<VehicleStatus> status = new ComboBox<>(FXCollections.observableArrayList(VehicleStatus.values())); status.setValue(vehicle.status());
+        ComboBox<VehicleStatus> status = new ComboBox<>(FXCollections.observableArrayList(
+                Arrays.stream(VehicleStatus.values()).filter(s -> s != VehicleStatus.IN_DELIVERY).toList()));
+        status.setValue(vehicle.status());
         Optional<ButtonType> result = app.confirmDialog("Change status · " + vehicle.plate(), status, "Save status");
         if (result.isPresent() && result.get().getButtonData() == ButtonType.OK.getButtonData()) app.runAction(() -> app.fleet.setStatus(vehicle, status.getValue()), "Vehicle status updated.", () -> app.showPage("fleet"));
+    }
+
+    private double number(String text, String field) {
+        try {
+            return app.number(text);
+        } catch (AppException exception) {
+            throw new AppException(field + " must be a number zero or greater.");
+        }
     }
 
     private void maintenanceDialog() { maintenanceDialog(null); }

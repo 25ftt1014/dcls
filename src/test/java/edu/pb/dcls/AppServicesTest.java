@@ -239,6 +239,64 @@ class AppServicesTest {
         }
 
         @Test
+        void saveRejectsNullVehicleAndNullStatus() {
+            assertEquals("Vehicle details are required.",
+                    assertThrows(AppException.class, () -> fleet.save(null)).getMessage());
+            Vehicle noStatus = new Vehicle(AppServices.id(), "BQ 0001", "Model", "Light truck", 1000, 0, null, null, 5000);
+            assertEquals("Choose a vehicle status.",
+                    assertThrows(AppException.class, () -> fleet.save(noStatus)).getMessage());
+            Vehicle negativeMileage = new Vehicle(AppServices.id(), "BQ 0001", "Model", "Light truck", 1000, -1, VehicleStatus.AVAILABLE, null, 5000);
+            assertThrows(AppException.class, () -> fleet.save(negativeMileage));
+        }
+
+        @Test
+        void saveTreatsNullTypeAsEmpty() {
+            Vehicle v = new Vehicle(AppServices.id(), "BQ 0002", "Model", null, 1000, 0, VehicleStatus.AVAILABLE, null, 5000);
+            fleet.save(v);
+            assertEquals("", repo.vehicle(v.id()).orElseThrow().type());
+        }
+
+        @Test
+        void setStatusRejectsNullVehicleAndInDelivery() {
+            Vehicle v = repo.vehicle("v-3310").orElseThrow();
+            assertEquals("Choose a vehicle first.",
+                    assertThrows(AppException.class, () -> fleet.setStatus(null, VehicleStatus.AVAILABLE)).getMessage());
+            assertEquals("Vehicles enter In Delivery only when assigned to an order.",
+                    assertThrows(AppException.class, () -> fleet.setStatus(v, VehicleStatus.IN_DELIVERY)).getMessage());
+        }
+
+        @Test
+        void logMaintenanceAndLogFuelSplitValidationMessages() {
+            Vehicle v = repo.vehicle("v-3310").orElseThrow(); // 31840 km
+            assertEquals("Choose a vehicle first.",
+                    assertThrows(AppException.class, () -> fleet.logMaintenance(null, LocalDate.now(), 32000, "Oil", 50)).getMessage());
+            assertEquals("Choose a service date.",
+                    assertThrows(AppException.class, () -> fleet.logMaintenance(v, null, 32000, "Oil", 50)).getMessage());
+            assertEquals("Choose a vehicle first.",
+                    assertThrows(AppException.class, () -> fleet.logFuel(null, LocalDate.now(), 32000, 48, 40)).getMessage());
+            assertEquals("Choose a refuel date.",
+                    assertThrows(AppException.class, () -> fleet.logFuel(v, null, 32000, 48, 40)).getMessage());
+        }
+
+        @Test
+        void updateMaintenanceAndUpdateFuelSplitValidationMessages() {
+            Vehicle v = repo.vehicle("v-3310").orElseThrow(); // 31840 km
+            fleet.logMaintenance(v, LocalDate.now(), 32000, "Oil change", 60);
+            MaintenanceRecord maintenance = repo.maintenanceRecords().getLast();
+            assertEquals("Choose a maintenance record first.",
+                    assertThrows(AppException.class, () -> fleet.updateMaintenance(null, LocalDate.now(), 32000, "x", 1)).getMessage());
+            assertEquals("Choose a service date.",
+                    assertThrows(AppException.class, () -> fleet.updateMaintenance(maintenance, null, 32000, "x", 1)).getMessage());
+
+            fleet.logFuel(repo.vehicle("v-3310").orElseThrow(), LocalDate.now(), 32000, 48, 40);
+            FuelRecord fuel = repo.fuelRecords().getLast();
+            assertEquals("Choose a fuel record first.",
+                    assertThrows(AppException.class, () -> fleet.updateFuel(null, LocalDate.now(), 32000, 48, 40)).getMessage());
+            assertEquals("Choose a refuel date.",
+                    assertThrows(AppException.class, () -> fleet.updateFuel(fuel, null, 32000, 48, 40)).getMessage());
+        }
+
+        @Test
         void maintenanceDueFlagsVehiclesNearService() {
             // Seeded: only v-5201 (52870 km, next 53000) is within the 500 km window.
             List<Vehicle> due = fleet.maintenanceDue();
