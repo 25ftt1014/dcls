@@ -397,7 +397,7 @@ final class RoutesView {
             if (added > 0) markDirty.run();
             else app.toast("No additional pending orders within 5km.");
         });
-final RoutePlan[] editing = {null};
+        final RoutePlan[] editing = {null};
         previewMap.clickAction = lonLat -> placePinAt(lonLat[0], lonLat[1], markDirty);
         optimize.setOnAction(event -> { debounce.stop(); runCalcRef[0].accept(true); });
         optimizeToggle.setOnAction(event -> markDirty.run());

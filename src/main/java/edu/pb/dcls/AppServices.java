@@ -19,6 +19,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalDouble;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicLong;
@@ -119,8 +120,25 @@ final class AppServices {
             repository.saveVehicle(updated);
         }
         List<Vehicle> maintenanceDue() {
-            return repository.vehicles().stream().filter(vehicle -> vehicle.mileageKm() >= vehicle.nextServiceKm() - SERVICE_WARNING_KM).toList();
+            return repository.vehicles().stream().filter(vehicle -> maintenanceStatus(vehicle) != MaintenanceStatus.OK).toList();
         }
+        /** Service urgency for one vehicle: past its service point, inside the warning window, or fine. */
+        MaintenanceStatus maintenanceStatus(Vehicle vehicle) {
+            if (vehicle == null) throw new AppException("Choose a vehicle first.");
+            if (vehicle.mileageKm() >= vehicle.nextServiceKm()) return MaintenanceStatus.OVERDUE;
+            if (vehicle.mileageKm() >= vehicle.nextServiceKm() - SERVICE_WARNING_KM) return MaintenanceStatus.DUE_SOON;
+            return MaintenanceStatus.OK;
+        }
+        /** Kilometres per litre across a vehicle's fuel records; empty when there is too little data. */
+        OptionalDouble fuelEfficiencyKmPerL(String vehicleId) {
+            List<FuelRecord> records = repository.fuelRecords().stream().filter(record -> vehicleId.equals(record.vehicleId())).toList();
+            double litres = records.stream().mapToDouble(FuelRecord::litres).sum();
+            double first = records.stream().mapToDouble(FuelRecord::mileageKm).min().orElse(0);
+            double last = records.stream().mapToDouble(FuelRecord::mileageKm).max().orElse(0);
+            if (records.size() < 2 || litres <= 0 || last <= first) return OptionalDouble.empty();
+            return OptionalDouble.of((last - first) / litres);
+        }
+        enum MaintenanceStatus { OK, DUE_SOON, OVERDUE }
         void logMaintenance(Vehicle vehicle, LocalDate date, double mileage, String details, double cost) {
             if (vehicle == null) throw new AppException("Choose a vehicle first.");
             if (date == null) throw new AppException("Choose a service date.");
@@ -801,8 +819,8 @@ final class AppServices {
             return optimizeStops(routeName, stops, driver);
         }
 
-/** Preview-only calculation: visiting order + metrics without persisting.
-         *  Safe for debounced auto-calc; only Save &amp; assign writes history. */
+        /** Preview-only calculation: visiting order + metrics without persisting.
+         *  Safe for debounced auto-calc; only Save & assign writes history. */
         RoutePlan computeRoute(String routeName, List<Stop> stops) {
             if (stops == null || stops.size() < 2) throw new AppException("Add a depot and at least one stop.");
             List<Stop> ordered = nearestNeighbor(new ArrayList<>(stops));
@@ -811,7 +829,7 @@ final class AppServices {
             int minutes = Math.max(1, (int) Math.ceil(km / BruneiPlaces.AVG_SPEED_KMH * 60));
             return new RoutePlan(id(), routeName == null || routeName.isBlank() ? "Delivery route" : routeName.trim(),
                     null, ordered, round(km), minutes, false, LocalDateTime.now());
-        }
+}
 
         void delete(RoutePlan route) {
             if (route == null) return;

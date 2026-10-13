@@ -13,17 +13,21 @@ import javafx.scene.control.Label;
 import javafx.scene.control.MenuButton;
 import javafx.scene.control.TableView;
 import javafx.scene.control.TextField;
-import javafx.scene.layout.GridPane;import javafx.scene.layout.HBox;
+import javafx.scene.layout.GridPane;
+import javafx.scene.layout.HBox;
 import javafx.scene.layout.Region;
 import javafx.scene.layout.VBox;
 import javafx.util.StringConverter;
 
+import edu.pb.dcls.AppServices.FleetService;
+
 import java.time.LocalDate;
 import java.util.Arrays;
 import java.util.Comparator;
-import java.util.HashSet;
+import java.util.HashMap;
 import java.util.List;
-import java.util.Set;
+import java.util.Map;
+import java.util.OptionalDouble;
 import java.util.Locale;
 import java.util.Optional;
 
@@ -79,11 +83,13 @@ final class FleetView {
         tools.getChildren().addAll(search, filter, gap, records, add);
         TableView<Vehicle> table = vehicleTable();
         onRowDoubleClick(table, v -> { if (app.access.canManageFleet(app.currentUser.role())) vehicleDialog(v); });
+        Map<String, FleetService.MaintenanceStatus> service = serviceStatuses();
         Runnable refresh = () -> {
             String q = search.getText() == null ? "" : search.getText().toLowerCase(Locale.ROOT).trim();
             VehicleStatus status = filter.getValue();
             List<Vehicle> rows = app.repository.vehicles().stream().filter(v -> status == null || v.status() == status)
                     .filter(v -> q.isEmpty() || (v.plate() + " " + v.model() + " " + v.type() + " " + app.driverName(v.driverId())).toLowerCase(Locale.ROOT).contains(q))
+                    .sorted(Comparator.comparing((Vehicle v) -> serviceRank(service.get(v.id()))).thenComparing(Vehicle::plate))
                     .toList(); table.setItems(FXCollections.observableArrayList(rows));
         };
         search.textProperty().addListener((observable, oldValue, newValue) -> refresh.run()); filter.valueProperty().addListener((observable, oldValue, newValue) -> refresh.run());
@@ -99,30 +105,90 @@ final class FleetView {
                 app.runAction(() -> app.fleet.deleteVehicle(selected.id()), "Vehicle deleted.", refresh);
             }
         });
-        Label reminders = new Label(app.fleet.maintenanceDue().size() + " service reminder(s) based on current mileage"); reminders.getStyleClass().add("muted");
+        Label reminders = new Label(app.fleet.maintenanceDue().size() + " vehicle(s) need servicing (due soon or overdue)"); reminders.getStyleClass().add("muted");
         Region spacer = new Region(); HBox.setHgrow(spacer, ALWAYS);
         actions.getChildren().addAll(edit, status, remove, spacer, reminders);
         VBox inventory = panel(new Label("Fleet inventory")); ((Label)inventory.getChildren().get(0)).getStyleClass().add("section-title");
         inventory.getChildren().addAll(table, actions); VBox.setVgrow(table, ALWAYS);
-        content.getChildren().addAll(tools, inventory); VBox.setVgrow(inventory, ALWAYS);
+        VBox history = panel(new Label("Vehicle history")); ((Label)history.getChildren().get(0)).getStyleClass().add("section-title");
+        Label summary = new Label(); summary.getStyleClass().add("muted"); summary.setWrapText(true);
+        TableView<MaintenanceRecord> serviceTable = new TableView<>(); serviceTable.setPlaceholder(new Label("No service records for this vehicle."));
+        serviceTable.getColumns().add(textCol("Date", m -> m.date().toString(), 90));
+        serviceTable.getColumns().add(textCol("Mileage", m -> String.format("%,.0f km", m.mileageKm()), 100));
+        serviceTable.getColumns().add(textCol("Service", MaintenanceRecord::description, 220));
+        serviceTable.getColumns().add(textCol("Cost", m -> String.format("$%.2f", m.cost()), 90));
+        serviceTable.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY); serviceTable.setPrefHeight(130);
+        TableView<FuelRecord> fuelTable = new TableView<>(); fuelTable.setPlaceholder(new Label("No fuel records for this vehicle."));
+        fuelTable.getColumns().add(textCol("Date", f -> f.date().toString(), 90));
+        fuelTable.getColumns().add(textCol("Mileage", f -> String.format("%,.0f km", f.mileageKm()), 100));
+        fuelTable.getColumns().add(textCol("Amount", f -> String.format("%.1f L", f.litres()), 90));
+        fuelTable.getColumns().add(textCol("Cost", f -> String.format("$%.2f", f.cost()), 90));
+        fuelTable.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY); fuelTable.setPrefHeight(130);
+        HBox historyTables = new HBox(12, serviceTable, fuelTable); HBox.setHgrow(serviceTable, ALWAYS); HBox.setHgrow(fuelTable, ALWAYS);
+        Runnable refreshHistory = () -> {
+            Vehicle selected = table.getSelectionModel().getSelectedItem();
+            if (selected == null) {
+                summary.setText("Select a vehicle to see its service and fuel history.");
+                serviceTable.setItems(FXCollections.observableArrayList(List.of()));
+                fuelTable.setItems(FXCollections.observableArrayList(List.of()));
+                return;
+            }
+            List<MaintenanceRecord> services = app.repository.maintenanceRecords().stream()
+                    .filter(m -> selected.id().equals(m.vehicleId()))
+                    .sorted(Comparator.comparing(MaintenanceRecord::date).reversed()).toList();
+            List<FuelRecord> fuels = app.repository.fuelRecords().stream()
+                    .filter(f -> selected.id().equals(f.vehicleId()))
+                    .sorted(Comparator.comparing(FuelRecord::date).reversed()).toList();
+            serviceTable.setItems(FXCollections.observableArrayList(services));
+            fuelTable.setItems(FXCollections.observableArrayList(fuels));
+            double serviceCost = services.stream().mapToDouble(MaintenanceRecord::cost).sum();
+            double litres = fuels.stream().mapToDouble(FuelRecord::litres).sum();
+            double fuelCost = fuels.stream().mapToDouble(FuelRecord::cost).sum();
+            OptionalDouble efficiency = app.fleet.fuelEfficiencyKmPerL(selected.id());
+            summary.setText(String.format("%s · %,.0f km · next service %,.0f km · %s · service $%.2f · fuel %.1f L ($%.2f)",
+                    selected.plate(), selected.mileageKm(), selected.nextServiceKm(),
+                    efficiency.isPresent() ? String.format("%.1f km/L", efficiency.getAsDouble()) : "—",
+                    serviceCost, litres, fuelCost));
+        };
+        table.getSelectionModel().selectedItemProperty().addListener((observable, oldValue, newValue) -> refreshHistory.run());
+        refreshHistory.run();
+        history.getChildren().addAll(summary, historyTables);
+        content.getChildren().addAll(tools, inventory, history); VBox.setVgrow(inventory, ALWAYS);
         return content;
+    }
+
+    private Map<String, FleetService.MaintenanceStatus> serviceStatuses() {
+        Map<String, FleetService.MaintenanceStatus> statuses = new HashMap<>();
+        app.repository.vehicles().forEach(v -> statuses.put(v.id(), app.fleet.maintenanceStatus(v)));
+        return statuses;
+    }
+
+    private static int serviceRank(FleetService.MaintenanceStatus status) {
+        if (status == FleetService.MaintenanceStatus.OVERDUE) return 0;
+        if (status == FleetService.MaintenanceStatus.DUE_SOON) return 1;
+        return 2;
     }
 
     private TableView<Vehicle> vehicleTable() {
         TableView<Vehicle> table = new TableView<>(); table.setPlaceholder(new Label("No vehicles match this search."));
-        Set<String> due = new HashSet<>();
-        app.fleet.maintenanceDue().forEach(v -> due.add(v.id()));
+        Map<String, FleetService.MaintenanceStatus> service = serviceStatuses();
         table.getColumns().add(textCol("Plate", Vehicle::plate, 90));
-        table.getColumns().add(textCol("Vehicle", Vehicle::model, 130));
+        table.getColumns().add(textCol("Vehicle", Vehicle::model, 125));
         table.getColumns().add(textCol("Type", Vehicle::type, 90));
         table.getColumns().add(textCol("Capacity", v -> String.format("%,.0f kg", v.capacityKg()), 85));
         table.getColumns().add(textCol("Mileage", v -> String.format("%,.0f km", v.mileageKm()), 85));
         table.getColumns().add(textCol("Next service", v -> String.format("%,.0f km", v.nextServiceKm()), 95));
-        table.getColumns().add(textCol("Driver", v -> app.driverName(v.driverId()), 110));
+        table.getColumns().add(textCol("Driver", v -> app.driverName(v.driverId()), 105));
         table.getColumns().add(statusCol("Status", v -> v.status().label(), 110));
-        table.getColumns().add(textCol("Due", v -> due.contains(v.id()) ? "Due" : "", 55));
+        table.getColumns().add(textCol("Service", v -> serviceLabel(service.get(v.id())), 100));
         table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY);
         return table;
+    }
+
+    private static String serviceLabel(FleetService.MaintenanceStatus status) {
+        if (status == FleetService.MaintenanceStatus.OVERDUE) return "Needs service";
+        if (status == FleetService.MaintenanceStatus.DUE_SOON) return "Service soon";
+        return "OK";
     }
 
     private Node maintenanceTab() {
@@ -130,7 +196,7 @@ final class FleetView {
         HBox tools = new HBox(8); tools.setAlignment(Pos.CENTER_LEFT);
         Button add = button("Record service", "primary-button"); add.setDisable(!app.access.canManageFleet(app.currentUser.role())); add.setOnAction(event -> maintenanceDialog());
         ComboBox<Vehicle> vehicleFilter = vehicleFilter();
-        Label due = new Label(app.fleet.maintenanceDue().size() + " vehicle(s) are approaching service"); due.getStyleClass().add("muted"); tools.getChildren().addAll(add, vehicleFilter, due);
+        Label due = new Label(app.fleet.maintenanceDue().size() + " vehicle(s) need servicing"); due.getStyleClass().add("muted"); tools.getChildren().addAll(add, vehicleFilter, due);
         TableView<MaintenanceRecord> table = new TableView<>(); table.setPlaceholder(new Label("No maintenance records yet."));
         table.getColumns().add(textCol("Vehicle", m -> app.vehiclePlate(m.vehicleId()), 110));
         table.getColumns().add(textCol("Date", m -> m.date().toString(), 100));

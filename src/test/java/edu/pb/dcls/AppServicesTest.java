@@ -7,6 +7,7 @@ import org.junit.jupiter.api.Test;
 
 import java.time.LocalDate;
 import java.util.List;
+import java.util.OptionalDouble;
 
 import static edu.pb.dcls.AppServices.AccessService;
 import static edu.pb.dcls.AppServices.AppException;
@@ -294,6 +295,38 @@ class AppServicesTest {
                     assertThrows(AppException.class, () -> fleet.updateFuel(null, LocalDate.now(), 32000, 48, 40)).getMessage());
             assertEquals("Choose a refuel date.",
                     assertThrows(AppException.class, () -> fleet.updateFuel(fuel, null, 32000, 48, 40)).getMessage());
+        }
+
+        @Test
+        void maintenanceStatusFlagsTiers() {
+            Vehicle ok = new Vehicle(AppServices.id(), "BQ 0100", "Model", "Van", 1000, 1000, VehicleStatus.AVAILABLE, null, 5000);
+            Vehicle soon = new Vehicle(AppServices.id(), "BQ 0101", "Model", "Van", 1000, 4600, VehicleStatus.AVAILABLE, null, 5000);
+            Vehicle overdue = new Vehicle(AppServices.id(), "BQ 0102", "Model", "Van", 1000, 5200, VehicleStatus.AVAILABLE, null, 5000);
+            assertEquals(FleetService.MaintenanceStatus.OK, fleet.maintenanceStatus(ok));
+            assertEquals(FleetService.MaintenanceStatus.DUE_SOON, fleet.maintenanceStatus(soon));
+            assertEquals(FleetService.MaintenanceStatus.OVERDUE, fleet.maintenanceStatus(overdue));
+            assertThrows(AppException.class, () -> fleet.maintenanceStatus(null));
+        }
+
+        @Test
+        void maintenanceDueIncludesOverdueVehicles() {
+            Vehicle overdue = new Vehicle(AppServices.id(), "BQ 0103", "Model", "Van", 1000, 6000, VehicleStatus.AVAILABLE, null, 5000);
+            fleet.save(overdue);
+            assertTrue(fleet.maintenanceDue().stream().anyMatch(v -> v.id().equals(overdue.id())));
+        }
+
+        @Test
+        void fuelEfficiencyNeedsTwoRecordsAndFuel() {
+            Vehicle v = new Vehicle(AppServices.id(), "BQ 0104", "Model", "Van", 1000, 31840, VehicleStatus.AVAILABLE, null, 50000);
+            fleet.save(v);
+            assertTrue(fleet.fuelEfficiencyKmPerL(v.id()).isEmpty());
+            fleet.logFuel(repo.vehicle(v.id()).orElseThrow(), LocalDate.now(), 32000, 48, 40);
+            assertTrue(fleet.fuelEfficiencyKmPerL(v.id()).isEmpty(), "a single record cannot bracket consumption");
+            fleet.logFuel(repo.vehicle(v.id()).orElseThrow(), LocalDate.now(), 32500, 50, 42);
+            OptionalDouble efficiency = fleet.fuelEfficiencyKmPerL(v.id());
+            assertTrue(efficiency.isPresent());
+            assertEquals(500.0 / 98.0, efficiency.getAsDouble(), 1e-9);
+            assertTrue(fleet.fuelEfficiencyKmPerL("v-3310").isEmpty(), "seeded single record yields no figure");
         }
 
         @Test
