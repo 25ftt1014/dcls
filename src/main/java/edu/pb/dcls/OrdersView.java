@@ -78,9 +78,12 @@ final class OrdersView {
                     .filter(item -> s == null || item.status() == s).filter(item -> p == null || item.priority() == p)
                     .filter(item -> q.isEmpty() || (item.id() + " " + item.customerName() + " " + item.customerContact() + " " + item.address()).toLowerCase(Locale.ROOT).contains(q))
                     .sorted(Comparator.comparing(Shipment::createdAt).reversed()).toList();
+            // Grab the id before setItems: replacing the backing list clears the
+            // selection, whose listener nulls `selected`, so reading it afterwards loses it.
+            String keepId = selected == null ? null : selected.id();
             table.setItems(FXCollections.observableArrayList(rows));
             assignedTable.setItems(FXCollections.observableArrayList(rows.stream().filter(OrdersView::isAssigned).toList()));
-            keepSelected(table, assignedTable, rows, packageTable);
+            keepSelected(table, assignedTable, rows, packageTable, keepId);
         };
         search.textProperty().addListener((observable, oldValue, newValue) -> refresh.run());
         statusFilter.valueProperty().addListener((observable, oldValue, newValue) -> refresh.run());
@@ -141,15 +144,16 @@ Button edit = button("Edit details", "secondary-button"), assign = button("Assig
 
     private static boolean isAssigned(Shipment shipment) { return shipment.status() == OrderStatus.ASSIGNED || shipment.status() == OrderStatus.IN_TRANSIT; }
 
-    private static Shipment byId(List<Shipment> rows, String id) { return rows.stream().filter(row -> row.id().equals(id)).findFirst().orElse(null); }
+    static Shipment byId(List<Shipment> rows, String id) { return rows.stream().filter(row -> row.id().equals(id)).findFirst().orElse(null); }
 
-    /** Mirrors the current selection across both tables, so a status change never blanks the screen. */
-    private void keepSelected(TableView<Shipment> table, TableView<Shipment> assignedTable, List<Shipment> rows, TableView<PackageField> packageTable) {
-        String id = selected == null ? null : selected.id();
-        Shipment kept = id == null ? null : byId(rows, id);
+    /** Mirrors the current selection across both tables, so a status change never blanks the screen.
+     *  @param keepId the id that was selected <em>before</em> the tables were repopulated */
+    private void keepSelected(TableView<Shipment> table, TableView<Shipment> assignedTable, List<Shipment> rows,
+                              TableView<PackageField> packageTable, String keepId) {
+        Shipment kept = keepId == null ? null : byId(rows, keepId);
         if (kept == null) { selected = null; packageTable.setItems(FXCollections.observableArrayList(List.of())); table.getSelectionModel().clearSelection(); return; }
         selectIn(table, kept);
-        selectIn(assignedTable, byId(assignedTable.getItems(), id));
+        selectIn(assignedTable, byId(assignedTable.getItems(), keepId));
         if (selected != kept) { selected = kept; packageTable.setItems(FXCollections.observableArrayList(packageFields(kept))); }
     }
 
