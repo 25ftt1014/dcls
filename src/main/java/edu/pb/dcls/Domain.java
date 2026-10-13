@@ -206,10 +206,15 @@ public final class Domain {
         void deleteShipment(String id);
         List<RoutePlan> routes();
         void saveRoute(RoutePlan route);
+        void deleteRoute(String id);
         List<MaintenanceRecord> maintenanceRecords();
         void saveMaintenance(MaintenanceRecord record);
+        void saveMaintenanceAndVehicle(MaintenanceRecord record, Vehicle vehicle);
+        void deleteMaintenance(String id);
         List<FuelRecord> fuelRecords();
         void saveFuel(FuelRecord record);
+        void saveFuelAndVehicle(FuelRecord record, Vehicle vehicle);
+        void deleteFuel(String id);
         List<TrackingPoint> trackingHistory();
         void saveTrackingPoint(TrackingPoint point);
         boolean persistent();

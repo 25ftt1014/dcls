@@ -324,6 +324,7 @@ final class RoutesView {
                 markDirty.run();
             }
         });
+<<<<<<< HEAD
         // Handoff prefill: depot + geocoded order addresses. Low confidence blocks calc.
         Runnable prefillHandoff = () -> {
             if (handoffShipmentIds.isEmpty()) return;
@@ -396,9 +397,58 @@ final class RoutesView {
             if (added > 0) markDirty.run();
             else app.toast("No additional pending orders within 5km.");
         });
+=======
+        if (app.routeStopsDraft.isEmpty()) app.routeStopsDraft.add(AppServices.BruneiPlaces.DEPOT);
+<<<<<<< HEAD
+        ComboBox<User> driver = app.driverCombo(); driver.setPromptText("Assign driver (optional)");
+        Button optimize = button("Optimize route", "secondary-button");
+        Button saveAssign = button("Save & assign", "primary-button");
+        Button clickToggle = button("Map clicks: add stops ON", "secondary-button");
+        Label routeResult = new Label("Add at least one delivery stop after the depot."); routeResult.getStyleClass().add("muted"); routeResult.setWrapText(true);
+        VBox etaBreakdown = new VBox(2);
+        DclsApp.MapController previewMap = app.new MapController(430, 330);
+        previewMap.content = () -> app.previewStops.stream().map(s -> new double[] {s.x(), s.y()}).toList();
+        previewMap.painter = (g, v) -> {
+            if (!app.previewStops.isEmpty()) MapRenderer.drawRouteOn(g, previewMap.canvas.getWidth(), previewMap.canvas.getHeight(), app.previewStops, null, "#176df6", v);
+        };
+        final Runnable[] optimizeRouteRef = new Runnable[1];
+        previewMap.clickAction = lonLat -> {
+            Stop pin = new Stop("custom-" + AppServices.id(), "Custom pin " + (++app.customPinCount), lonLat[0], lonLat[1]);
+            app.routeStopsDraft.add(pin);
+            if (optimizeRouteRef[0] != null) optimizeRouteRef[0].run();
+        };
+        final RoutePlan[] planned = {null};
+        final RoutePlan[] editing = {null};
+        final boolean[] saved = {false};
+        Runnable optimizeRoute = () -> {
+            String routeName = name.getText();
+            List<Stop> stops = new ArrayList<>(app.routeStopsDraft);
+            User selectedDriver = driver.getValue();
+            RoutePlan currentEdit = editing[0];
+            optimize.setDisable(true);
+            optimize.setText("Optimizing…");
+            app.runAsync(() -> {
+                RoutePlan calculated = app.routeService.calculateStops(routeName, stops, selectedDriver);
+                planned[0] = currentEdit == null ? calculated : new RoutePlan(currentEdit.id(), calculated.name(), calculated.driverId(),
+                        calculated.stops(), calculated.distanceKm(), calculated.estimatedMinutes(), currentEdit.completed(), currentEdit.createdAt());
+                saved[0] = false;
+            }, () -> {
+                optimize.setDisable(false); optimize.setText("Optimize route");
+                RoutePlan plan = planned[0];
+                app.previewStops = plan.stops();
+                routeResult.setText(String.format("%s  ·  %.1f km  ·  about %d minutes", plan.name(), plan.distanceKm(), plan.estimatedMinutes()));
+                app.showEtaBreakdown(etaBreakdown, plan);
+                previewMap.redraw();
+            }, exception -> { optimize.setDisable(false); optimize.setText("Optimize route"); app.showError(app.readable(exception)); });
+        };
+        optimizeRouteRef[0] = optimizeRoute;
+        optimize.setOnAction(event -> optimizeRoute.run());
+=======
+>>>>>>> 5b642d156815b24cdcab954157b3c8caeffca1e4
         previewMap.clickAction = lonLat -> placePinAt(lonLat[0], lonLat[1], markDirty);
         optimize.setOnAction(event -> { debounce.stop(); runCalcRef[0].accept(true); });
         optimizeToggle.setOnAction(event -> markDirty.run());
+>>>>>>> origin/Sam-part
         clickToggle.setOnAction(event -> {
             if (previewMap.clickAction != null) {
                 previewMap.clickAction = null;
@@ -418,6 +468,7 @@ final class RoutesView {
             if (driver.getValue() == null) { app.alert(Alert.AlertType.INFORMATION, "Choose a driver", "Select a driver before saving and assigning this route."); return; }
             if (!saved[0]) {
                 RoutePlan route = planned[0];
+<<<<<<< HEAD
                 planned[0] = new RoutePlan(route.id(), route.name(), driver.getValue().id(), route.stops(), route.distanceKm(), route.estimatedMinutes(), route.completed(), route.createdAt());
                 app.repository.saveRoute(planned[0]); saved[0] = true;
                 // Link handoff orders to this route (risky orphan-route code removed: always link).
@@ -432,6 +483,17 @@ final class RoutesView {
             app.alert(Alert.AlertType.INFORMATION, "Route assigned", "Route " + planned[0].name() + " has been saved and assigned to " + driver.getValue().name() + "." + linked);
             handoffShipmentIds.clear();
             app.showPage("routes");
+=======
+                RoutePlan toSave = new RoutePlan(route.id(), route.name(), driver.getValue().id(), route.stops(), route.distanceKm(), route.estimatedMinutes(), route.completed(), route.createdAt());
+                saveAssign.setDisable(true);
+                app.runAsync(() -> app.repository.saveRoute(toSave), () -> {
+                    planned[0] = toSave; saved[0] = true; saveAssign.setDisable(false); editing[0] = null;
+                    app.toast("Route saved and assigned to " + driver.getValue().name() + "."); app.showPage("routes");
+                }, exception -> { saveAssign.setDisable(false); app.showError(app.readable(exception)); });
+                return;
+            }
+            app.toast("Route " + planned[0].name() + " is already saved.");
+>>>>>>> 5b642d156815b24cdcab954157b3c8caeffca1e4
         });
         // Pin hover names + click popups (badges carry numbers only).
         Tooltip pinTip = new Tooltip();
@@ -481,6 +543,27 @@ final class RoutesView {
         table.getColumns().add(textCol("Driver", r -> app.driverName(r.driverId()), 140));
         table.getColumns().add(textCol("Created", r -> r.createdAt().format(DclsApp.DATE_TIME), 130));
         table.setItems(FXCollections.observableArrayList(app.repository.routes())); table.setPrefHeight(180); table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY);
+        Button editRoute = button("Edit selected route", "secondary-button"), deleteRoute = button("Delete selected route", "danger-button");
+        editRoute.setDisable(true); deleteRoute.setDisable(true);
+        editRoute.setOnAction(event -> {
+            RoutePlan selected = table.getSelectionModel().getSelectedItem();
+            if (selected == null) return;
+            editing[0] = selected; planned[0] = null; saved[0] = false;
+            name.setText(selected.name()); app.routeStopsDraft.setAll(selected.stops());
+            app.repository.users().stream().filter(user -> user.id().equals(selected.driverId())).findFirst().ifPresent(driver::setValue);
+            app.previewStops = selected.stops(); previewMap.redraw();
+            routeResult.setText("Editing " + selected.name() + ". Optimize and save to update this route.");
+        });
+        deleteRoute.setOnAction(event -> {
+            RoutePlan selected = table.getSelectionModel().getSelectedItem();
+            if (selected != null && app.confirm("Delete route?", "Delete " + selected.name() + "? Routes assigned to orders cannot be removed.")) {
+                app.runAction(() -> app.routeService.delete(selected), "Route deleted.", () -> app.showPage("routes"));
+            }
+        });
+        table.getSelectionModel().selectedItemProperty().addListener((o, old, selected) -> {
+            editRoute.setDisable(selected == null); deleteRoute.setDisable(selected == null);
+        });
+        HBox routeActions = new HBox(8, editRoute, deleteRoute);
         table.getSelectionModel().selectedItemProperty().addListener((o, old, selected) -> {
             if (selected != null) {
                 debounce.stop();
@@ -521,7 +604,7 @@ final class RoutesView {
         });
         prefillHandoff.run();
         previewMap.redraw();
-        history.getChildren().add(table); page.getChildren().addAll(builder, history); return page;
+        history.getChildren().addAll(table, routeActions); page.getChildren().addAll(builder, history); return page;
     }
 
     private void placePinAt(double lon, double lat, Runnable markDirty) {

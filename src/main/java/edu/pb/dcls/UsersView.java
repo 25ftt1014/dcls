@@ -73,14 +73,14 @@ final class UsersView {
         suspend.setOnAction(event -> {
             User selected = table.getSelectionModel().getSelectedItem();
             if (selected == null || selected.id().equals(app.currentUser.id())) return;
-            selected.setActive(false); app.repository.saveUser(selected); refresh.run();
+            User updated = copy(selected); updated.setActive(false);
+            app.runAction(() -> app.repository.saveUser(updated), "Account suspended.", refresh);
         });
         reject.setOnAction(event -> {
             User selected = table.getSelectionModel().getSelectedItem();
             if (selected == null || selected.id().equals(app.currentUser.id()) || !selected.pending()) return;
             if (!app.confirm("Reject account", "Permanently delete " + selected.name() + " (" + selected.email() + ")? This cannot be undone.")) return;
-            try { app.repository.deleteUser(selected.id()); refresh.run(); }
-            catch (AppException exception) { app.alert(Alert.AlertType.WARNING, "Account not removed", exception.getMessage()); }
+            app.runAction(() -> app.repository.deleteUser(selected.id()), "Account deleted.", refresh);
         });
         table.getSelectionModel().selectedItemProperty().addListener((o, old, value) -> {
             approve.setDisable(value == null || !value.pending());
@@ -100,12 +100,11 @@ final class UsersView {
                 new Label(user.name() + " (" + user.email() + ") is waiting for approval."),
                 labeled("Role to grant", role));
         form.setPrefWidth(360);
-        Optional<ButtonType> result = app.confirmDialog("Approve account", form, "Approve");
-        if (result.isPresent() && result.get().getButtonData() == ButtonType.OK.getButtonData()) {
-            if (role.getValue() == null) { app.alert(Alert.AlertType.WARNING, "Role required", "Choose a role before approving this account."); return; }
-            user.setRole(role.getValue()); user.setActive(true); user.setPending(false);
-            app.repository.saveUser(user); app.showPage("users");
-        }
+        app.confirmForm("Approve account", form, "Approve", complete -> {
+            if (role.getValue() == null) { complete.accept(new AppException("Choose a role before approving this account.")); return; }
+            User updated = copy(user); updated.setRole(role.getValue()); updated.setActive(true); updated.setPending(false);
+            app.runAsync(() -> app.repository.saveUser(updated), () -> { complete.accept(null); app.showPage("users"); }, complete);
+        });
     }
 
     private void userDialog(User existing) {
@@ -116,19 +115,27 @@ final class UsersView {
         PasswordField password = new PasswordField(); password.setPromptText("At least 8 characters");
         VBox form = new VBox(10, labeled("Full name", name), labeled("Email", email), labeled("Phone", phone), labeled("Role", role));
         if (existing == null) form.getChildren().add(labeled("Temporary password", UiFactory.passwordInput(password)));
-        Optional<ButtonType> result = app.confirmDialog(existing == null ? "Register user" : "Edit user", form, existing == null ? "Create" : "Save");
-        if (result.isPresent() && result.get().getButtonData() == ButtonType.OK.getButtonData()) {
+        app.confirmForm(existing == null ? "Register user" : "Edit user", form, existing == null ? "Create" : "Save", complete -> {
             try {
                 if (name.getText().isBlank() || !email.getText().matches("^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$")) throw new AppException("Enter a name and valid email address.");
-                if (existing == null) {
-                    if (password.getText().length() < 8) throw new AppException("Use a temporary password with at least 8 characters.");
-                    Security.Credentials c = Security.credentials(password.getText().toCharArray());
-                    app.repository.saveUser(new User(AppServices.id(), name.getText().trim(), email.getText().trim(), phone.getText().trim(), c.hash(), c.salt(), role.getValue(), true, false));
-                } else {
-                    existing.updateProfile(name.getText().trim(), email.getText().trim(), phone.getText().trim()); existing.setRole(role.getValue()); app.repository.saveUser(existing);
-                }
-                app.showPage("users");
-            } catch (AppException exception) { app.alert(Alert.AlertType.WARNING, "User not saved", exception.getMessage()); }
-        }
+                String fullName = name.getText().trim(), address = email.getText().trim(), contact = phone.getText().trim();
+                Role selectedRole = role.getValue(); char[] secret = password.getText().toCharArray();
+                if (existing == null && secret.length < 8) throw new AppException("Use a temporary password with at least 8 characters.");
+                app.runAsync(() -> {
+                    User updated;
+                    if (existing == null) {
+                        Security.Credentials credentials = Security.credentials(secret);
+                        updated = new User(AppServices.id(), fullName, address, contact, credentials.hash(), credentials.salt(), selectedRole, true, false);
+                    } else {
+                        updated = copy(existing); updated.updateProfile(fullName, address, contact); updated.setRole(selectedRole);
+                    }
+                    app.repository.saveUser(updated);
+                }, () -> { complete.accept(null); app.showPage("users"); }, complete);
+            } catch (RuntimeException exception) { complete.accept(exception); }
+        });
+    }
+
+    private User copy(User user) {
+        return new User(user.id(), user.name(), user.email(), user.phone(), user.passwordHash(), user.passwordSalt(), user.role(), user.active(), user.pending());
     }
 }
