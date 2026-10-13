@@ -235,10 +235,11 @@ final class AppServices {
         void transition(Shipment shipment, OrderStatus next, User actor, int rating) {
             if (next == OrderStatus.CANCELLED) {
                 if (shipment.status() != OrderStatus.PENDING) throw new AppException("Only a pending order can be cancelled.");
-            } else if (next == OrderStatus.ASSIGNED) {
-                throw new AppException("Assign a driver and vehicle before marking this order assigned.");
-            } else if (shipment.status() == OrderStatus.PENDING && next != OrderStatus.PENDING) {
-                throw new AppException("Assign a driver and vehicle before dispatching this order.");
+            } else if (shipment.status() == OrderStatus.PENDING) {
+                // PENDING → ASSIGNED is legal once a driver and vehicle are set (Advance path);
+                // anything else must go through assignment first.
+                if (next != OrderStatus.ASSIGNED) throw new AppException("Assign a driver and vehicle before dispatching this order.");
+                if (shipment.driverId() == null || shipment.vehicleId() == null) throw new AppException("Assign a driver and vehicle before marking this order assigned.");
             } else if (shipment.status() == OrderStatus.ASSIGNED && next != OrderStatus.IN_TRANSIT) {
                 throw new AppException("Assigned orders can move to In Transit.");
             } else if (shipment.status() == OrderStatus.IN_TRANSIT && next != OrderStatus.DELIVERED) {
@@ -273,10 +274,8 @@ final class AppServices {
     /** Shared Brunei Darussalam coordinate base (WGS84 degrees, sensible Bandar defaults).
      *  Stop.x() carries longitude, Stop.y() carries latitude so existing storage keeps working. */
     static final class BruneiPlaces {
-        /** Average simulated driving speed. Kept at 35 km/h per project decision. */
+        /** Reference driving speed for ETA estimates when a fix carries no speed. */
         static final double AVG_SPEED_KMH = 35d;
-        /** How many simulated minutes pass per one-second live tick (demo time compression). */
-        static final double SIM_MINUTES_PER_TICK = 1d;
         static final Stop DEPOT = new Stop("depot", "DCLS Depot", 114.9400, 4.8900);
 
         static Map<String, Stop> places() {
@@ -916,32 +915,17 @@ final class AppServices {
             return Math.max(1, (int) Math.ceil(km / BruneiPlaces.AVG_SPEED_KMH * 60));
         }
 
+        /** Single geocoding path: delegates to {@link AddressGeocoder} so every
+         *  caller resolves an address to the same Stop. */
         Stop geocode(String address) {
-            // Search-first over normalized levels (buyer-typo tolerant); district last resort.
-            if (address != null && !address.isBlank()) {
-                try {
-                    MapRenderer.LevelHits lh = MapRenderer.searchLevels(AddressNormalizer.levels(address).inOrder());
-                    if (!lh.hits().isEmpty()) {
-                        MapRenderer.PlaceHit h = lh.hits().get(0);
-                        return new Stop("geo-" + Math.abs((h.displayName() + h.lon()).hashCode()),
-                                h.name(), h.lon(), h.lat());
-                    }
-                } catch (Exception ignored) { }
+            try {
+                return AddressGeocoder.geocode(address, places).stop();
+            } catch (RuntimeException e) {
+                return BruneiPlaces.geocodeAddress(address, places);
             }
-            return BruneiPlaces.geocodeAddress(address, places);
         }
 
         Stop depot() { return BruneiPlaces.DEPOT; }
-
-        /** Same route plus return-to-depot leg (for round-trip estimates). */
-        public RoutePlan withReturnToDepot(RoutePlan plan) {
-            if (plan.stops().size() < 2) return plan;
-            List<Stop> loop = new ArrayList<>(plan.stops());
-            loop.add(BruneiPlaces.DEPOT);
-            double km = totalKm(loop);
-            return new RoutePlan(plan.id(), plan.name() + " · return", plan.driverId(), loop,
-                    round(km), etaMinutes(km), plan.completed(), plan.createdAt());
-        }
 
         private double distance(Stop first, Stop second) {
             Double road = RoadNetwork.roadKm(first.x(), first.y(), second.x(), second.y());
@@ -964,14 +948,11 @@ final class AppServices {
      *  when no fix has arrived for {@link #STALE_AFTER_SECONDS}. */
     static final class LiveGpsState {
         static final long STALE_AFTER_SECONDS = 15;
-        private final Map<String, TrackingPoint> lastByVehicle = new HashMap<>();
+        // Concurrent: the mobile-feed worker writes via note(), the FX tick reads.
+        private final Map<String, TrackingPoint> lastByVehicle = new java.util.concurrent.ConcurrentHashMap<>();
 
         void note(TrackingPoint p) { lastByVehicle.put(p.vehicleId(), p); }
         void reset(String vehicleId) { lastByVehicle.remove(vehicleId); }
-
-        // Back-compat for callers that toggled a simulated fix flag: no-op now.
-        void setFixLost(String vehicleId, boolean lost) { if (!lost) lastByVehicle.remove(vehicleId); }
-        boolean isFixLost(String vehicleId) { return isStale(vehicleId); }
 
         boolean isStale(String vehicleId) { return ageSeconds(vehicleId) > STALE_AFTER_SECONDS; }
 
@@ -1049,7 +1030,17 @@ final class AppServices {
                         .findFirst();
             }
             if (route.isEmpty() || route.get().stops().size() < 2) {
-                // No route: distance to destination geocode as fallback.
+                // No route: straight-line distance from the fix to the geocoded
+                // delivery address, so ETA degrades gracefully instead of reading 0.
+                if (shipmentId != null) {
+                    Optional<Shipment> s = repository.shipment(shipmentId);
+                    if (s.isPresent() && s.get().address() != null && !s.get().address().isBlank()) {
+                        try {
+                            Stop dest = new RouteService(repository).geocode(s.get().address());
+                            return BruneiPlaces.haversineKm(lon, lat, dest.x(), dest.y());
+                        } catch (RuntimeException ignored) { }
+                    }
+                }
                 return 0;
             }
             List<Stop> stops = route.get().stops();
@@ -1131,6 +1122,7 @@ final class AppServices {
                     .max(Comparator.comparing(TrackingPoint::recordedAt)).orElse(null);
         }
         TrackingPoint latestForVehicle(String vehicleId) {
+            if (vehicleId == null) return null;
             TrackingPoint mem = gps.lastByVehicle.get(vehicleId);
             TrackingPoint stored = repository.trackingHistory().stream().filter(point -> vehicleId.equals(point.vehicleId()))
                     .max(Comparator.comparing(TrackingPoint::recordedAt)).orElse(null);
@@ -1154,7 +1146,7 @@ final class AppServices {
         /** One optimized multi-stop tour for a vehicle: live fix → remaining destinations. */
         public record VehicleTour(List<Stop> ordered, int progressIndex, double remainingKm) { }
         
-        private final Map<String, CachedTour> tourCache = new HashMap<>();
+        private final Map<String, CachedTour> tourCache = new java.util.concurrent.ConcurrentHashMap<>();
         private record CachedTour(VehicleTour tour, String signature) { }
 
         public VehicleTour tourForVehicle(String vehicleId) {
@@ -1175,8 +1167,11 @@ final class AppServices {
         }
 
         private String tourSignature(List<Shipment> group, TrackingPoint live) {
+            // Ordering also depends on priority and route links — include them so edits
+            // invalidate the cache instead of reusing a stale visiting order.
             StringBuilder sb = new StringBuilder();
-            group.stream().map(s -> s.id() + ":" + s.status() + ":" + s.address()).sorted()
+            group.stream().map(s -> s.id() + ":" + s.status() + ":" + s.address() + ":"
+                            + s.priority() + ":" + s.routeId()).sorted()
                     .forEach(sb::append);
             sb.append('|').append(live == null ? "nofix" : live.recordedAt().toString());
             return sb.toString();

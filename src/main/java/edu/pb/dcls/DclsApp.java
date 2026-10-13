@@ -312,7 +312,6 @@ public final class DclsApp extends Application {
         Scene scene = new Scene(shell);
         scene.getStylesheets().add(getClass().getResource("/edu/pb/dcls/styles.css").toExternalForm());
         stage.setScene(scene);
-        if (page.equals("tracking")) startTracking();
     }
 
     // Monochrome icon silhouettes (Material Symbols, 24px viewBox) used in the nav rail.
@@ -370,7 +369,7 @@ public final class DclsApp extends Application {
         button.setGraphicTextGap(12); button.setMaxWidth(Double.MAX_VALUE); button.setAlignment(Pos.CENTER_LEFT);
         button.setAccessibleText(label); button.setFocusTraversable(true); button.getStyleClass().add("nav-button");
         if (activePage.equals(page)) button.getStyleClass().add("active");
-        button.setOnAction(event -> { stopTracking(); showPage(page); });
+        button.setOnAction(event -> showPage(page));
         sidebar.getChildren().add(button);
     }
 
@@ -419,6 +418,9 @@ public final class DclsApp extends Application {
             if (pendingRouteShipmentIds == null) pendingRouteShipmentIds = List.of();
         }
         activePage = page;
+        // The tracking timer belongs to the page, not the navigation path:
+        // every route to "tracking" starts it, every route away stops it.
+        if ("tracking".equals(page)) startTracking(); else stopTracking();
         if (shell == null) return;
         if (nav != null) { shell.setLeft(buildNav()); nav = (VBox) shell.getLeft(); }
         BorderPane content = (BorderPane) shell.getCenter();
@@ -892,7 +894,7 @@ public final class DclsApp extends Application {
         String alert = "";
         if (age > 15) alert += " · STALE " + age + "s";
         if (dev > 0.2) alert += " · OFF-ROUTE " + String.format("%.2f km", dev);
-        if (tracking.arrivedAtDestination(shipment.vehicleId(), 0.15)) alert += " · ARRIVED — confirm delivery";
+        if (shipment.vehicleId() != null && tracking.arrivedAtDestination(shipment.vehicleId(), ARRIVAL_KM)) alert += " · ARRIVED — confirm delivery";
         trackingEta.setText(vehiclePlate(shipment.vehicleId()) + " · " + gps + " · " + ordersOnVehicle + " order(s)"
                 + "  ·  ETA about " + point.etaMinutes() + " min  ·  updated " + point.recordedAt().format(DATE_TIME) + alert);
     }
@@ -928,6 +930,11 @@ public final class DclsApp extends Application {
         }, "dcls-mobile-feed").start();
     }
 
+    /** Off-route distance that triggers an automatic re-route suggestion. */
+    static final double OFF_ROUTE_KM = 0.3;
+    /** Arrival radius: close enough to the final stop to prompt delivery confirmation. */
+    static final double ARRIVAL_KM = 0.15;
+
     /** Off-route watchdog: suggest re-route when deviation persists. */
     void checkReroute() {
         for (Shipment s : visibleShipments()) {
@@ -936,13 +943,13 @@ public final class DclsApp extends Application {
             if (p == null) continue;
             double dev = tracking.deviationKm(s.vehicleId(), p.x(), p.y());
             String key = s.vehicleId() + "@" + p.recordedAt();
-            if (dev > 0.3 && !key.equals(lastRerouteKey)) {
+            if (dev > OFF_ROUTE_KM && !key.equals(lastRerouteKey)) {
                 lastRerouteKey = key;
                 setFeedStatus("Off-route " + String.format("%.2f km", dev) + " — rebuilding route for " + vehiclePlate(s.vehicleId()));
                 try { autoRoutes.buildForVehicle(s.vehicleId()); } catch (RuntimeException ignored) { }
                 drawTracking();
             }
-            if (tracking.arrivedAtDestination(s.vehicleId(), 0.15)) {
+            if (tracking.arrivedAtDestination(s.vehicleId(), ARRIVAL_KM)) {
                 setFeedStatus(vehiclePlate(s.vehicleId()) + " arrived — confirm delivery for " + s.id());
             }
         }
@@ -1021,9 +1028,6 @@ public final class DclsApp extends Application {
             showError("Could not write the track file: " + readable(exception));
         }
     }
-
-    /** Back-compat alias. */
-    void exportGpx(Shipment selected) { exportTrack(selected); }
 
     void startTracking() {
         if (trackingTimer != null) trackingTimer.stop();

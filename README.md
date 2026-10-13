@@ -15,7 +15,7 @@ $env:DCLS_DB_PASSWORD = 'choose-a-strong-password'
 mvn javafx:run
 ```
 
-If the database settings are missing or the connection fails, startup shows an error instead of silently using temporary data.
+If the database settings are missing or the connection fails, startup shows an error instead of silently using temporary data. (Note: double-clicking `run-demo.bat` instead defaults to demo mode unless `DCLS_DB_URL` is set.)
 
 ## Run the in-memory demo
 
@@ -35,10 +35,10 @@ Sign in with:
 
 The sign-in screen opens with the Admin demo credentials filled in. Demo data resets when the app closes. Clear `DCLS_DEMO_MODE` to return to MySQL mode.
 
-Map data © OpenStreetMap contributors © CARTO: live Voyager retina tiles or OSM Standard (toggle in Live Tracking, zoom 0–20) with a 90-pair road-network overlay; WiFi-first real-time GPS — no simulation. Tiles cache under `~/.dcls/tiles` for transient blips only.
+Map data © OpenStreetMap contributors © CARTO: live Voyager retina tiles or OSM Standard (toggle in Live Tracking, zoom 3–20) with a 90-pair road-network overlay; WiFi-first real-time GPS — no simulation. Tiles cache under `~/.dcls/tiles` for transient blips only.
 
 Live GPS feeds (Live Tracking → feed selector):
-- NMEA: import `$GPGGA/$GPRMC` `.nmea/.txt` logs (checksum-validated), or stream via TCP by setting `DCLS_NMEA_HOST`/`DCLS_NMEA_PORT` in future builds.
+- NMEA: import `$GPGGA/$GPRMC` `.nmea/.txt` logs (checksum-validated). Live TCP streaming is planned, not implemented — there is no `DCLS_NMEA_HOST`/`DCLS_NMEA_PORT` support yet.
 - Driver mobile feed: poll JSON with `DCLS_MOBILE_FEED_URL='https://your-server/feed'` returning `[{vehicleId,lon,lat,speed,heading,accuracy,ts}]`.
 - GPX: import any GPX 1.1 track; export GPX/CSV/KML from the same screen.
 A vehicle shows STALE when no fix arrives for >15s; off-route >0.3km triggers an automatic re-route suggestion.

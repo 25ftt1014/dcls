@@ -110,19 +110,26 @@ public final class GpsFeed {
 
     // ---- GPX import (GPX 1.1 trkpt) ----
 
-    private static final Pattern TRKPT = Pattern.compile(
-            "<trkpt\\s+lat=\"([^\"]+)\"\\s+lon=\"([^\"]+)\"[^>]*>(.*?)</trkpt>", Pattern.DOTALL);
+    // Order-independent attributes; self-closing <trkpt .../> accepted.
+    private static final Pattern TRKPT_TAG = Pattern.compile(
+            "<trkpt\\b([^>]*?)(?:>(.*?)</trkpt>|/>)", Pattern.DOTALL);
+    private static final Pattern ATTR = Pattern.compile("(lat|lon)\\s*=\\s*\"([^\"]+)\"");
     private static final Pattern TIME = Pattern.compile("<time>([^<]+)</time>");
     private static final Pattern SPEED = Pattern.compile("<speed>([^<]+)</speed>");
 
     public static List<GpsFix> parseGpx(String xml, String vehicleId, String source) {
         List<GpsFix> out = new ArrayList<>();
-        Matcher m = TRKPT.matcher(xml);
+        Matcher m = TRKPT_TAG.matcher(xml);
         while (m.find()) {
             try {
-                double lat = Double.parseDouble(m.group(1));
-                double lon = Double.parseDouble(m.group(2));
-                String inner = m.group(3);
+                Double lat = null, lon = null;
+                Matcher attrs = ATTR.matcher(m.group(1));
+                while (attrs.find()) {
+                    if ("lat".equals(attrs.group(1))) lat = Double.parseDouble(attrs.group(2));
+                    else lon = Double.parseDouble(attrs.group(2));
+                }
+                if (lat == null || lon == null) continue;
+                String inner = m.group(2) == null ? "" : m.group(2);
                 Instant time = Instant.now();
                 Matcher tm = TIME.matcher(inner);
                 if (tm.find()) {

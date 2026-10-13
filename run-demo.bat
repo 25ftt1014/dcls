@@ -12,11 +12,10 @@ if errorlevel 1 (
   pause
   exit /b 1
 )
-rem Prefer a JDK 21+ for Maven builds when JAVA_HOME points at an older JDK.
-if "%JAVA_HOME%"=="" (
-  if exist "C:\Program Files\Java\jdk-21" set "JAVA_HOME=C:\Program Files\Java\jdk-21"
-  if exist "C:\Program Files\Java\jdk-26" set "JAVA_HOME=C:\Program Files\Java\jdk-26"
-)
+rem Prefer a JDK 21+ for Maven builds. Probes well-known installs even when
+rem JAVA_HOME is set but stale (points at an older JDK), newest wins.
+if exist "C:\Program Files\Java\jdk-21" set "JAVA_HOME=C:\Program Files\Java\jdk-21"
+if exist "C:\Program Files\Java\jdk-26" set "JAVA_HOME=C:\Program Files\Java\jdk-26"
 rem Demo mode by default (resettable in-memory data). To use MySQL instead,
 rem set DCLS_DB_URL/DCLS_DB_USER/DCLS_DB_PASSWORD, or set DCLS_DEMO_MODE=false.
 if "%DCLS_DB_URL%"=="" (

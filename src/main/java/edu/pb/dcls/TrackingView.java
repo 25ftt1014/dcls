@@ -62,11 +62,23 @@ final class TrackingView {
         javafx.scene.control.TextField search = new javafx.scene.control.TextField();
         search.setPromptText("Search place in Brunei…");
         search.setOnAction(e -> {
-            List<MapRenderer.PlaceHit> hits = MapRenderer.searchPlaces(search.getText());
-            if (hits.isEmpty()) { app.toast("No results in Brunei for: " + search.getText()); return; }
-            MapRenderer.PlaceHit h = hits.get(0);
-            app.trackingMaps.zoomTo(h.lon(), h.lat());
-            app.toast(h.name());
+            String query = search.getText();
+            if (query == null || query.isBlank()) return;
+            search.setDisable(true);
+            search.setPromptText("Searching…");
+            Thread thread = new Thread(() -> {
+                List<MapRenderer.PlaceHit> hits = MapRenderer.searchPlaces(query);
+                javafx.application.Platform.runLater(() -> {
+                    search.setDisable(false);
+                    search.setPromptText("Search place in Brunei…");
+                    if (hits.isEmpty()) { app.toast("No results in Brunei for: " + query); return; }
+                    MapRenderer.PlaceHit h = hits.get(0);
+                    if (app.trackingMaps != null) app.trackingMaps.zoomTo(h.lon(), h.lat());
+                    app.toast(h.name());
+                });
+            });
+            thread.setDaemon(true);
+            thread.start();
         });
         javafx.scene.control.CheckBox follow = new javafx.scene.control.CheckBox("Follow selected");
         follow.setSelected(app.followSelected);

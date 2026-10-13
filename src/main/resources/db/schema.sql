@@ -78,8 +78,9 @@ CREATE TABLE IF NOT EXISTS routes (
 );
 
 -- Stop/track coordinates are WGS84 degrees: x_coord = longitude, y_coord = latitude (Brunei Darussalam).
+-- Stop ids carry prefixes (custom-/order-/stop-/geo- + UUID), so 48 chars, not 36.
 CREATE TABLE IF NOT EXISTS route_stops (
-    id VARCHAR(36) PRIMARY KEY,
+    id VARCHAR(48) PRIMARY KEY,
     route_id VARCHAR(36) NOT NULL,
     stop_order INT NOT NULL,
     stop_name VARCHAR(160) NOT NULL,
@@ -127,11 +128,28 @@ CREATE TABLE IF NOT EXISTS tracking_history (
     CONSTRAINT fk_tracking_shipment FOREIGN KEY (shipment_id) REFERENCES shipments(id) ON DELETE CASCADE
 );
 
-ALTER TABLE tracking_history ADD COLUMN IF NOT EXISTS speed_kmh DECIMAL(6,2) NOT NULL DEFAULT 0;
-ALTER TABLE tracking_history ADD COLUMN IF NOT EXISTS heading_deg DECIMAL(5,1) NULL;
-ALTER TABLE tracking_history ADD COLUMN IF NOT EXISTS accuracy_m DECIMAL(6,1) NULL;
-ALTER TABLE tracking_history ADD COLUMN IF NOT EXISTS fix_type VARCHAR(8) NOT NULL DEFAULT 'GPS';
-ALTER TABLE tracking_history ADD COLUMN IF NOT EXISTS source VARCHAR(16) NOT NULL DEFAULT 'nmea';
+-- MySQL has no ADD COLUMN IF NOT EXISTS (MariaDB-only): guarded procedure instead.
+DELIMITER $$
+DROP PROCEDURE IF EXISTS dcls_add_tracking_col$$
+CREATE PROCEDURE dcls_add_tracking_col(col_def VARCHAR(200), col_name VARCHAR(32))
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tracking_history' AND COLUMN_NAME = col_name) THEN
+        SET @ddl = CONCAT('ALTER TABLE tracking_history ADD COLUMN ', col_def);
+        PREPARE stmt FROM @ddl;
+        EXECUTE stmt;
+        DEALLOCATE PREPARE stmt;
+    END IF;
+END$$
+DELIMITER ;
+CALL dcls_add_tracking_col('speed_kmh DECIMAL(6,2) NOT NULL DEFAULT 0', 'speed_kmh');
+CALL dcls_add_tracking_col('heading_deg DECIMAL(5,1) NULL', 'heading_deg');
+CALL dcls_add_tracking_col('accuracy_m DECIMAL(6,1) NULL', 'accuracy_m');
+CALL dcls_add_tracking_col('fix_type VARCHAR(8) NOT NULL DEFAULT \'GPS\'', 'fix_type');
+CALL dcls_add_tracking_col('source VARCHAR(16) NOT NULL DEFAULT \'nmea\'', 'source');
+DROP PROCEDURE IF EXISTS dcls_add_tracking_col;
+-- Existing databases created before the widening still have VARCHAR(36): upgrade in place.
+ALTER TABLE route_stops MODIFY COLUMN id VARCHAR(48);
 
 INSERT IGNORE INTO roles(role_code, display_name) VALUES
 ('ADMIN', 'Administrator'), ('MANAGER', 'Manager'), ('DISPATCHER', 'Dispatcher'), ('DRIVER', 'Driver');

@@ -44,7 +44,7 @@ import static edu.pb.dcls.Domain.TrackingPoint;
 
 /**
  * Real-map rendering over live tiles (OSM Standard default, no key; CARTO Voyager @2x
- * retina when DCLS_CARTO_KEY is set, zoom 0-20). WiFi-first: the disk tile cache covers
+ * retina when DCLS_CARTO_KEY is set, zoom 3-20). WiFi-first: the disk tile cache covers
  * transient blips. Stateless per call except the shared tile cache: every method takes
  * what it draws, so there is no shared state between screens.
  * Stop.x()/y() carry longitude/latitude (WGS84 degrees).
@@ -161,7 +161,11 @@ final class MapRenderer {
     }
 
     private static String tileUrlShifted(int z, int x, int y, int hostShift) {
-        if (basemap == Basemap.OSM_STANDARD) return osmUrl(z, x, y, hostShift);
+        return tileUrlFor(z, x, y, hostShift, basemap);
+    }
+
+    private static String tileUrlFor(int z, int x, int y, int hostShift, Basemap provider) {
+        if (provider == Basemap.OSM_STANDARD) return osmUrl(z, x, y, hostShift);
         // Never request CARTO without a key: it returns HTTP 200 watermark tiles
         // ("API KEY REQUIRED") which would otherwise be cached as good tiles.
         if (CARTO_KEY.isEmpty()) return osmUrl(z, x, y, hostShift);
@@ -210,9 +214,13 @@ final class MapRenderer {
     }
 
     private static Path tileDiskPath(String key) {
+        return tileDiskPathFor(key, basemap);
+    }
+
+    private static Path tileDiskPathFor(String key, Basemap provider) {
         // v2 scope: old "keyless/voyager/*" entries hold "API KEY REQUIRED" watermark
         // tiles (served HTTP 200) and must never be reused.
-        boolean osm = basemap == Basemap.OSM_STANDARD || CARTO_KEY.isEmpty();
+        boolean osm = provider == Basemap.OSM_STANDARD || CARTO_KEY.isEmpty();
         String scope = (osm ? "osm-v2-" : "")
                 + (CARTO_KEY.isEmpty() ? "keyless-v2" : "k" + Integer.toHexString(CARTO_KEY.hashCode()));
         String cacheKey = (osm ? "osm/" : "voyager/") + key;
@@ -220,70 +228,74 @@ final class MapRenderer {
     }
 
     /** Cached tile image, or null on a miss (queues one background fetch). Failures
-     *  are recorded with a reason (see tileProblem) and retried after a cooldown. */
+     *  are recorded with a reason (see tileProblem) and retried after a cooldown.
+     *  All cache keys are provider-scoped and the provider is snapshotted per
+     *  request, so toggling the basemap mid-fetch can never mix OSM/CARTO tiles. */
     static Image requestTile(int z, int x, int y) {
         String key = z + "/" + x + "/" + y;
-        Image hit = TILE_MEM.get(key);
+        Basemap provider = basemap;
+        String skey = (provider == Basemap.OSM_STANDARD ? "o/" : "v/") + key;
+        Image hit = TILE_MEM.get(skey);
         if (hit != null) return hit;
         try {
-            Path disk = tileDiskPath(key);
+            Path disk = tileDiskPathFor(key, provider);
             if (Files.isRegularFile(disk)) {
                 Image img = new Image(disk.toUri().toString(), false);
-                if (!img.isError()) { TILE_MEM.put(key, img); return img; }
+                if (!img.isError()) { TILE_MEM.put(skey, img); return img; }
             }
         } catch (Exception ignored) { }
-        Long failedAt = TILE_FAILED.get(key);
+        Long failedAt = TILE_FAILED.get(skey);
         if (failedAt != null && System.currentTimeMillis() - failedAt < 60_000) return null;
-        if (TILE_IN_FLIGHT.add(key)) {
+        if (TILE_IN_FLIGHT.add(skey)) {
             tileProblem = null;
-            TILE_IO.submit(() -> fetchTile(key, z, x, y));
+            TILE_IO.submit(() -> fetchTile(skey, key, z, x, y, provider));
         }
         return null;
     }
 
-    private static void fetchTile(String key, int z, int x, int y) {
+    private static void fetchTile(String skey, String key, int z, int x, int y, Basemap provider) {
         if (TILE_URL_LOGGED.compareAndSet(false, true)) {
-            boolean osm = basemap == Basemap.OSM_STANDARD || CARTO_KEY.isEmpty();
+            boolean osm = provider == Basemap.OSM_STANDARD || CARTO_KEY.isEmpty();
             System.out.println("[dcls-tiles] provider: " + (osm ? "OSM Standard (no key)"
                     : "CARTO Voyager (?key=****)"));
         }
         paceFetches();
         try {
-            storeTile(key, downloadTile(z, x, y, 0));
+            storeTile(skey, key, downloadTile(z, x, y, 0, provider), provider);
         } catch (TileHttpException e) {
             int code = e.code();
             if (code == 404) {
-                TILE_GONE.add(key);
-                failTile(key, "error", "HTTP 404 (no such tile)", 60_000);
+                TILE_GONE.add(skey);
+                failTile(skey, "error", "HTTP 404 (no such tile)", 60_000);
             } else if (code == 429) {
-                failTile(key, "throttled", "HTTP 429" + (e.retryAfter() == null ? "" : " (retry in " + e.retryAfter() + "s)"),
+                failTile(skey, "throttled", "HTTP 429" + (e.retryAfter() == null ? "" : " (retry in " + e.retryAfter() + "s)"),
                         parseRetryAfter(e.retryAfter()));
             } else if (code == 401 || code == 403) {
-                failTile(key, "denied", "HTTP " + code, 60_000);
+                failTile(skey, "denied", "HTTP " + code, 60_000);
             } else {
-                failTile(key, "error", "HTTP " + code, 60_000);
+                failTile(skey, "error", "HTTP " + code, 60_000);
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            failTile(key, "error", "interrupted", 60_000);
+            failTile(skey, "error", "interrupted", 60_000);
         } catch (IOException e) {
             // Transport failure: retry once via the next subdomain (covers per-host
             // DNS/adblock flakiness) before recording the failure.
             try {
-                storeTile(key, downloadTile(z, x, y, 1));
-                System.out.println("[dcls-tiles] " + key + " -> recovered via fallback host");
+                storeTile(skey, key, downloadTile(z, x, y, 1, provider), provider);
+                System.out.println("[dcls-tiles] " + skey + " -> recovered via fallback host");
             } catch (TileHttpException retry) {
-                failTile(key, "error", "HTTP " + retry.code() + " after host retry", 60_000);
+                failTile(skey, "error", "HTTP " + retry.code() + " after host retry", 60_000);
             } catch (InterruptedException retry) {
                 Thread.currentThread().interrupt();
-                failTile(key, "error", "interrupted", 60_000);
+                failTile(skey, "error", "interrupted", 60_000);
             } catch (IOException retry) {
-                failTile(key, classifyOffline(retry), "host retry: " + describe(retry), 60_000);
+                failTile(skey, classifyOffline(retry), "host retry: " + describe(retry), 60_000);
             }
         } catch (Exception e) {
-            failTile(key, "error", describe(e), 60_000);
+            failTile(skey, "error", describe(e), 60_000);
         } finally {
-            TILE_IN_FLIGHT.remove(key);
+            TILE_IN_FLIGHT.remove(skey);
         }
     }
 
@@ -314,7 +326,11 @@ final class MapRenderer {
     }
 
     private static byte[] downloadTile(int z, int x, int y, int hostShift) throws IOException, InterruptedException {
-        HttpRequest request = HttpRequest.newBuilder(URI.create(tileUrlShifted(z, x, y, hostShift)))
+        return downloadTile(z, x, y, hostShift, basemap);
+    }
+
+    private static byte[] downloadTile(int z, int x, int y, int hostShift, Basemap provider) throws IOException, InterruptedException {
+        HttpRequest request = HttpRequest.newBuilder(URI.create(tileUrlFor(z, x, y, hostShift, provider)))
                 .timeout(Duration.ofSeconds(15))
                 .header("User-Agent", "DCLS classroom demo")
                 .GET().build();
@@ -325,19 +341,19 @@ final class MapRenderer {
     }
 
     /** Cache a downloaded tile; returns false (and records failure) on decode errors. */
-    private static boolean storeTile(String key, byte[] body) {
+    private static boolean storeTile(String skey, String key, byte[] body, Basemap provider) {
         Image img = new Image(new ByteArrayInputStream(body));
         if (img.isError()) {
-            failTile(key, "error", "decode error", 60_000);
+            failTile(skey, "error", "decode error", 60_000);
             return false;
         }
-        TILE_MEM.put(key, img);
+        TILE_MEM.put(skey, img);
         try {
-            Path disk = tileDiskPath(key);
+            Path disk = tileDiskPathFor(key, provider);
             Files.createDirectories(disk.getParent());
             Files.write(disk, body);
         } catch (Exception ignored) { }
-        TILE_FAILED.remove(key);
+        TILE_FAILED.remove(skey);
         tileProblem = null;
         Platform.runLater(MapRenderer::fireTilesUpdated);
         return true;
@@ -473,11 +489,12 @@ final class MapRenderer {
     /** True while the tile sits out its post-failure cooldown (no fetch in flight). */
     static boolean tileCoolingDown(int z, int x, int y) {
         String key = z + "/" + x + "/" + y;
-        if (TILE_GONE.contains(key)) return true;
-        Long retryAt = TILE_FAILED.get(key);
+        String skey = (basemap == Basemap.OSM_STANDARD ? "o/" : "v/") + key;
+        if (TILE_GONE.contains(skey)) return true;
+        Long retryAt = TILE_FAILED.get(skey);
         if (retryAt == null) return false;
         if (retryAt > System.currentTimeMillis()) return true;
-        TILE_FAILED.remove(key, retryAt);
+        TILE_FAILED.remove(skey, retryAt);
         return false;
     }
 

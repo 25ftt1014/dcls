@@ -16,20 +16,10 @@ final class AddressGeocoder {
 
     static final double CONFIRM_THRESHOLD = 0.7;
 
-    private static final Map<String, String> ALIASES = Map.ofEntries(
-            Map.entry("bsb", "bandar"), Map.entry("b.s.b.", "bandar"),
-            Map.entry("bd", "bandar"), Map.entry("kg", "kampong"),
-            Map.entry("kg.", "kampong"), Map.entry("kampung", "kampong"),
-            Map.entry("jln", "jalan"), Map.entry("jln.", "jalan"),
-            Map.entry("gadong central", "gadong"), Map.entry("town", "bandar"));
-
+    /** Single normalization path: word-boundary alias fixes live in {@link AddressNormalizer}.
+     *  (The old substring table here corrupted names containing alias fragments.) */
     static String normalize(String address) {
-        if (address == null) return "";
-        String text = address.toLowerCase(Locale.ROOT).replaceAll("[,.;/\\-]+", " ").replaceAll("\\s+", " ").trim();
-        for (var e : ALIASES.entrySet()) {
-            text = text.replace(e.getKey(), e.getValue());
-        }
-        return text;
+        return AddressNormalizer.baseClean(address);
     }
 
     /** Search-first resolution over normalized buyer text (typo-tolerant):

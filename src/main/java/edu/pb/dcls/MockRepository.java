@@ -77,16 +77,32 @@ public final class MockRepository implements Repository {
     @Override public List<Vehicle> vehicles() { return new ArrayList<>(vehicles.values()); }
     @Override public Optional<Vehicle> vehicle(String id) { return Optional.ofNullable(vehicles.get(id)); }
     @Override public void saveVehicle(Vehicle vehicle) { vehicles.put(vehicle.id(), vehicle); }
-    @Override public void deleteVehicle(String id) { vehicles.remove(id); }
+    @Override public void deleteVehicle(String id) {
+        // Mirror the JDBC foreign-key protection so demo and MySQL behave alike.
+        if (shipments.values().stream().anyMatch(s -> id.equals(s.vehicleId()))
+                || maintenance.stream().anyMatch(r -> id.equals(r.vehicleId()))
+                || fuel.stream().anyMatch(r -> id.equals(r.vehicleId()))) {
+            throw new AppServices.AppException("This record is still linked to other data such as orders, routes or history. Remove those links first, then try again.");
+        }
+        vehicles.remove(id);
+    }
     @Override public List<Shipment> shipments() { return new ArrayList<>(shipments.values()); }
     @Override public Optional<Shipment> shipment(String id) { return Optional.ofNullable(shipments.get(id)); }
     @Override public void saveShipment(Shipment shipment) { shipments.put(shipment.id(), shipment); }
     @Override public void saveAssignment(Shipment shipment, Vehicle vehicle) { saveShipment(shipment); saveVehicle(vehicle); }
     @Override public void saveShipmentAndVehicle(Shipment shipment, Vehicle vehicle) { saveShipment(shipment); saveVehicle(vehicle); }
-    @Override public void deleteShipment(String id) { shipments.remove(id); }
+    @Override public void deleteShipment(String id) {
+        shipments.remove(id);
+        tracking.removeIf(p -> id.equals(p.shipmentId())); // match ON DELETE CASCADE
+    }
     @Override public List<RoutePlan> routes() { return new ArrayList<>(routes.values()); }
     @Override public void saveRoute(RoutePlan route) { routes.put(route.id(), route); }
-    @Override public void deleteRoute(String id) { routes.remove(id); }
+    @Override public void deleteRoute(String id) {
+        if (shipments.values().stream().anyMatch(s -> id.equals(s.routeId()))) {
+            throw new AppServices.AppException("This record is still linked to other data such as orders, routes or history. Remove those links first, then try again.");
+        }
+        routes.remove(id);
+    }
     @Override public List<MaintenanceRecord> maintenanceRecords() { return new ArrayList<>(maintenance); }
     @Override public void saveMaintenance(MaintenanceRecord record) { maintenance.removeIf(item -> item.id().equals(record.id())); maintenance.add(record); }
     @Override public void saveMaintenanceAndVehicle(MaintenanceRecord record, Vehicle vehicle) { saveMaintenance(record); saveVehicle(vehicle); }
