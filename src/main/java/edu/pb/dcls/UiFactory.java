@@ -52,22 +52,25 @@ final class UiFactory {
         return new HBox(item);
     }
 
-    static Node metric(String title, String value, String caption) {
+    /** A metric card plus handles on the two labels the dashboard ticks live. */
+    record Metric(VBox card, Label value, Label caption) { }
+
+    static Metric metric(String title, String value, String caption) {
         VBox card = new VBox(8);
         card.setPadding(new Insets(12, 14, 12, 14));
         card.setMinWidth(140);
-        card.setPrefHeight(80);
+        card.setMinHeight(80);
         card.getStyleClass().add("panel-tight");
         Label t = new Label(title);
         t.getStyleClass().add("metric-caption");
         Label v = new Label(value);
         v.getStyleClass().add("metric-value");
-        Label c = new Label(caption);
+        Label c = new Label(caption == null ? "" : caption);
         c.getStyleClass().add("muted");
         c.setStyle("-fx-font-size: 11px;");
-        card.getChildren().addAll(t, v);
-        if (caption != null && !caption.isBlank()) card.getChildren().add(c);
-        return card;
+        c.setWrapText(true);
+        card.getChildren().addAll(t, v, c);
+        return new Metric(card, v, c);
     }
 
     static VBox pageHeader(String title, String subtitle) {
