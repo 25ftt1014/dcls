@@ -19,6 +19,8 @@ import javafx.scene.layout.Region;
 import javafx.scene.layout.VBox;
 import javafx.util.StringConverter;
 
+import edu.pb.dcls.AppServices.FleetService;
+
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -259,6 +261,10 @@ final class OrdersView {
         Optional<ButtonType> result = app.confirmDialog("Assign delivery · " + shipment.id(), form, "Assign");
         if (result.isPresent() && result.get().getButtonData() == ButtonType.OK.getButtonData()) {
             User selectedDriver = driver.getValue(); Vehicle selectedVehicle = vehicle.getValue(); String selectedRoute = route.getValue() == null ? null : route.getValue().id();
+            if (selectedVehicle != null && app.fleet.maintenanceStatus(selectedVehicle) == FleetService.MaintenanceStatus.OVERDUE
+                    && !app.confirm("Vehicle overdue for service", selectedVehicle.plate() + " is "
+                            + String.format("%,.0f", selectedVehicle.mileageKm() - selectedVehicle.nextServiceKm())
+                            + " km past its service point. Assign it anyway?")) return;
             app.runAction(() -> app.orders.assign(shipment, selectedDriver, selectedVehicle, selectedRoute), "Driver and vehicle assigned.", () -> app.showPage("orders"));
         }
     }
