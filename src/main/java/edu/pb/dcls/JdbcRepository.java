@@ -297,28 +297,77 @@ public final class JdbcRepository implements Repository {
     @Override public List<TrackingPoint> trackingHistory() {
         return read(connection -> {
             List<TrackingPoint> result = new ArrayList<>();
-            try (PreparedStatement statement = connection.prepareStatement("SELECT * FROM tracking_history ORDER BY recorded_at DESC LIMIT 500"); ResultSet rows = statement.executeQuery()) {
+            try (PreparedStatement statement = connection.prepareStatement("SELECT * FROM tracking_history ORDER BY recorded_at DESC LIMIT 2000"); ResultSet rows = statement.executeQuery()) {
                 while (rows.next()) { Timestamp recorded = rows.getTimestamp("recorded_at");
-                    result.add(new TrackingPoint(rows.getString("id"), rows.getString("vehicle_id"), rows.getString("shipment_id"), rows.getDouble("x_coord"), rows.getDouble("y_coord"), rows.getInt("eta_minutes"), recorded.toLocalDateTime())); }
+                    result.add(trackingFrom(rows, recorded == null ? LocalDateTime.now() : recorded.toLocalDateTime())); }
             }
             return result;
         });
     }
+<<<<<<< HEAD
+
+    private TrackingPoint trackingFrom(ResultSet rows, LocalDateTime recorded) throws SQLException {
+        double speed = colDouble(rows, "speed_kmh", 0);
+        Double heading = colDoubleOrNull(rows, "heading_deg");
+        Double accuracy = colDoubleOrNull(rows, "accuracy_m");
+        FixType fix = FixType.GPS;
+        String source = "nmea";
+        try { String f = rows.getString("fix_type"); if (f != null) fix = FixType.valueOf(f); } catch (Exception ignored) { }
+        try { String s = rows.getString("source"); if (s != null && !s.isBlank()) source = s; } catch (Exception ignored) { }
+        return new TrackingPoint(rows.getString("id"), rows.getString("vehicle_id"), rows.getString("shipment_id"),
+                rows.getDouble("x_coord"), rows.getDouble("y_coord"), rows.getInt("eta_minutes"), recorded,
+                speed, heading, accuracy, fix, source);
+    }
+
+    private double colDouble(ResultSet rows, String col, double def) {
+        try { Object v = rows.getObject(col); return v == null ? def : ((Number) v).doubleValue(); }
+        catch (Exception e) { return def; }
+    }
+
+    private Double colDoubleOrNull(ResultSet rows, String col) {
+        try { Object v = rows.getObject(col); return v == null ? null : ((Number) v).doubleValue(); }
+        catch (Exception e) { return null; }
+    }
+    // ponytail: prunes on every write, a PK-ordered scan per tracking tick; throttle to a counter if the tick rate ever matters.
+=======
+>>>>>>> 5b642d156815b24cdcab954157b3c8caeffca1e4
     private void pruneTrackingHistory(Connection connection) throws SQLException {
         // Derived table required: MySQL forbids a DELETE whose subquery reads the same table.
         try (PreparedStatement statement = connection.prepareStatement(
-                "DELETE FROM tracking_history WHERE id NOT IN (SELECT id FROM (SELECT id FROM tracking_history ORDER BY id DESC LIMIT 500) keep)")) {
+                "DELETE FROM tracking_history WHERE id NOT IN (SELECT id FROM (SELECT id FROM tracking_history ORDER BY id DESC LIMIT 2000) keep)")) {
             statement.executeUpdate();
         }
     }
 
     @Override public void saveTrackingPoint(TrackingPoint point) { write(connection -> {
-        try (PreparedStatement statement = connection.prepareStatement("INSERT INTO tracking_history(vehicle_id,shipment_id,x_coord,y_coord,eta_minutes,recorded_at) VALUES(?,?,?,?,?,?)")) {
-            statement.setString(1, point.vehicleId()); statement.setString(2, point.shipmentId()); statement.setDouble(3, point.x()); statement.setDouble(4, point.y()); statement.setInt(5, point.etaMinutes()); statement.setTimestamp(6, Timestamp.valueOf(point.recordedAt())); statement.executeUpdate();
+        try {
+            try (PreparedStatement statement = connection.prepareStatement("INSERT INTO tracking_history(vehicle_id,shipment_id,x_coord,y_coord,eta_minutes,recorded_at,speed_kmh,heading_deg,accuracy_m,fix_type,source) VALUES(?,?,?,?,?,?,?,?,?,?,?)")) {
+                statement.setString(1, point.vehicleId()); statement.setString(2, point.shipmentId()); statement.setDouble(3, point.x()); statement.setDouble(4, point.y()); statement.setInt(5, point.etaMinutes()); statement.setTimestamp(6, Timestamp.valueOf(point.recordedAt()));
+                statement.setDouble(7, point.speedKmh());
+                if (point.headingDeg() == null) statement.setNull(8, java.sql.Types.DECIMAL); else statement.setDouble(8, point.headingDeg());
+                if (point.accuracyM() == null) statement.setNull(9, java.sql.Types.DECIMAL); else statement.setDouble(9, point.accuracyM());
+                statement.setString(10, point.fixType() == null ? "GPS" : point.fixType().name());
+                statement.setString(11, point.source() == null ? "nmea" : point.source());
+                statement.executeUpdate();
+            }
+        } catch (SQLException legacy) {
+            // Pre-migration DB without new columns.
+            if (legacy.getErrorCode() == 1054) {
+                try (PreparedStatement statement = connection.prepareStatement("INSERT INTO tracking_history(vehicle_id,shipment_id,x_coord,y_coord,eta_minutes,recorded_at) VALUES(?,?,?,?,?,?)")) {
+                    statement.setString(1, point.vehicleId()); statement.setString(2, point.shipmentId()); statement.setDouble(3, point.x()); statement.setDouble(4, point.y()); statement.setInt(5, point.etaMinutes()); statement.setTimestamp(6, Timestamp.valueOf(point.recordedAt())); statement.executeUpdate();
+                }
+            } else throw legacy;
         }
         if (trackingWritesSincePrune.incrementAndGet() >= 100) {
             pruneTrackingHistory(connection);
             trackingWritesSincePrune.set(0);
+        }
+        return null;
+    }); }
+
+    public void pruneBefore(LocalDateTime cutoff) { write(connection -> {
+        try (PreparedStatement statement = connection.prepareStatement("DELETE FROM tracking_history WHERE recorded_at < ?")) {
+            statement.setTimestamp(1, Timestamp.valueOf(cutoff)); statement.executeUpdate();
         }
         return null;
     }); }

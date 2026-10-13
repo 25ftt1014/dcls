@@ -22,6 +22,7 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Consumer;
 
 import static edu.pb.dcls.AppServices.AppException;
@@ -69,7 +70,19 @@ final class RoutesView {
 
     VBox page() {
         final int gen = ++app.routePageGen;
-        VBox page = pageHeader("Route planning", "Place stops, get the fastest road route automatically, then assign a driver.");
+        // Always-blank entry: clear stale draft/preview unless arriving via order handoff.
+        List<String> handoff = app.pendingRouteShipmentIds == null ? List.of() : List.copyOf(app.pendingRouteShipmentIds);
+        app.pendingRouteShipmentIds = List.of();
+        app.routeStopsDraft.clear();
+        app.previewStops = List.of();
+        final List<String> handoffShipmentIds = new ArrayList<>(handoff);
+        final Map<String, Double> stopConfidence = app.routeStopConfidence;
+        final java.util.Set<String> confirmedStops = app.routeStopConfirmed;
+        stopConfidence.clear();
+        confirmedStops.clear();
+        VBox page = pageHeader("Route planning", handoffShipmentIds.isEmpty()
+                ? "Start blank — add stops or arrive from an order to auto-locate its address."
+                : "Route for " + String.join(", ", handoffShipmentIds) + " — address located by keywords.");
         HBox builder = new HBox(12);
         VBox controls = panel(new Label("Create a route"));
         ((Label) controls.getChildren().get(0)).getStyleClass().add("section-title");
@@ -131,6 +144,23 @@ final class RoutesView {
         };
         runCalcRef[0] = manual -> {
             if (gen != app.routePageGen) return;
+            // Confidence gate: block fastest-route calc until unsure pins are confirmed.
+            for (Stop s : app.routeStopsDraft) {
+                if (s.id().startsWith("order-") && !confirmedStops.contains(s.id())) {
+                    Double c = stopConfidence.getOrDefault(s.id(), 0.0);
+                    if (c < AddressGeocoder.CONFIRM_THRESHOLD) {
+                        app.previewStops = new ArrayList<>(app.routeStopsDraft);
+                        planned[0] = null; saved[0] = false;
+                        dirty[0] = true;
+                        routeResult.setText("Confirm the highlighted address on the map before calculating the fastest route.");
+                        setStatus(statusPill, "Needs confirmation", "status-bad");
+                        previewMap.redraw();
+                        if (manual) app.alert(Alert.AlertType.WARNING, "Confirm location",
+                                "Address confidence is low (" + Math.round(c * 100) + "%). Pick a candidate or move the pin on the map.");
+                        return;
+                    }
+                }
+            }
             if (app.routeStopsDraft.size() < 2) {
                 app.previewStops = new ArrayList<>(app.routeStopsDraft);
                 planned[0] = null; saved[0] = false;
@@ -158,7 +188,9 @@ final class RoutesView {
                     int moved = 0;
                     for (Stop stop : snapshot) {
                         if (Thread.currentThread().isInterrupted()) return;
-                        if (stop.id().startsWith("custom-")) {
+                        // Snap every non-depot pin (custom + order + geo) so the marker
+                        // sits on the road the route line follows; depot stays fixed.
+                        if (!"DCLS Depot".equals(stop.name()) && !"depot".equals(stop.id())) {
                             double[] near = AppServices.OsrmRouter.snapToRoad(stop.x(), stop.y());
                             if (near != null && Double.isFinite(near[0]) && Double.isFinite(near[1])) {
                                 double shiftKm = AppServices.BruneiPlaces.haversineKm(stop.x(), stop.y(), near[0], near[1]);
@@ -280,14 +312,92 @@ final class RoutesView {
             if (app.routeStopsDraft.size() < 2) runCalcRef[0].accept(false);
             else markDirty.run();
         });
+        VBox geocodeBox = new VBox(4);
         addStop.setOnAction(event -> {
             if (place.getValue() == null) return;
             Stop stop = app.routeService.place(place.getValue());
             if (stop != null && app.routeStopsDraft.stream().noneMatch(s -> s.name().equals(stop.name()))) {
+                if (app.routeStopsDraft.isEmpty()) app.routeStopsDraft.add(AppServices.BruneiPlaces.DEPOT);
                 app.routeStopsDraft.add(stop);
+                stopConfidence.put(stop.id(), 1.0);
+                confirmedStops.add(stop.id());
                 markDirty.run();
             }
         });
+<<<<<<< HEAD
+        // Handoff prefill: depot + geocoded order addresses. Low confidence blocks calc.
+        Runnable prefillHandoff = () -> {
+            if (handoffShipmentIds.isEmpty()) return;
+            app.routeStopsDraft.clear();
+            app.routeStopsDraft.add(AppServices.BruneiPlaces.DEPOT);
+            stopConfidence.clear();
+            confirmedStops.clear();
+            geocodeBox.getChildren().clear();
+            var places = new java.util.HashMap<String, Stop>();
+            for (String n : app.routeService.placeNames()) places.put(n, app.routeService.place(n));
+            for (String sid : handoffShipmentIds) {
+                var ship = app.repository.shipment(sid).orElse(null);
+                if (ship == null) continue;
+                AddressGeocoder.GeocodedStop g = AddressGeocoder.geocode(ship.address(), places);
+                Stop pin = new Stop("order-" + sid, g.stop().name() + " · " + sid, g.stop().x(), g.stop().y());
+                app.routeStopsDraft.add(pin);
+                stopConfidence.put(pin.id(), g.confidence());
+                if (g.confidence() >= AddressGeocoder.CONFIRM_THRESHOLD) confirmedStops.add(pin.id());
+                Label line = new Label(sid + ": " + g.note()
+                        + String.format("%n%.0f%% · %s · %.6f, %.6f", g.confidence() * 100, g.method(), g.stop().x(), g.stop().y()));
+                line.getStyleClass().add("muted"); line.setWrapText(true);
+                geocodeBox.getChildren().add(line);
+                if (g.confidence() < AddressGeocoder.CONFIRM_THRESHOLD) {
+                    for (Stop cand : g.candidates()) {
+                        Stop alt = cand;
+                        Button use = button("Use " + alt.name(), "secondary-button");
+                        use.setMaxWidth(Double.MAX_VALUE);
+                        use.setOnAction(e2 -> {
+                            int idx = indexById(app.routeStopsDraft, pin.id());
+                            Stop confirmed = new Stop(pin.id(), alt.name() + " · " + sid, alt.x(), alt.y());
+                            if (idx >= 0) app.routeStopsDraft.set(idx, confirmed);
+                            stopConfidence.put(pin.id(), 1.0);
+                            confirmedStops.add(pin.id());
+                            geocodeBox.getChildren().clear();
+                            Label ok = new Label(sid + ": " + alt.name() + " (confirmed)");
+                            ok.getStyleClass().add("muted");
+                            geocodeBox.getChildren().add(ok);
+                            markDirty.run();
+                        });
+                        geocodeBox.getChildren().add(use);
+                    }
+                    Label hint = new Label("Confirm a candidate or drag the pin on the map to calculate.");
+                    hint.getStyleClass().add("muted"); hint.setWrapText(true);
+                    geocodeBox.getChildren().add(hint);
+                }
+            }
+            if (!app.routeStopsDraft.isEmpty() && app.routeStopsDraft.size() >= 2) markDirty.run();
+            else { dirty[0] = true; previewMap.redraw(); }
+        };
+        Button addNearby = button("Add nearby pending orders", "secondary-button");
+        addNearby.setMaxWidth(Double.MAX_VALUE);
+        addNearby.setOnAction(event -> {
+            if (app.routeStopsDraft.isEmpty()) return;
+            Stop anchor = app.routeStopsDraft.get(app.routeStopsDraft.size() - 1);
+            var near = AddressGeocoder.nearbyPending(app.repository.shipments(), anchor.x(), anchor.y(), 5, 5);
+            int added = 0;
+            var places2 = new java.util.HashMap<String, Stop>();
+            for (String n : app.routeService.placeNames()) places2.put(n, app.routeService.place(n));
+            for (var s : near) {
+                if (handoffShipmentIds.contains(s.id())) continue;
+                if (app.routeStopsDraft.stream().anyMatch(p -> p.id().equals("order-" + s.id()))) continue;
+                AddressGeocoder.GeocodedStop g = AddressGeocoder.geocode(s.address(), places2);
+                Stop pin = new Stop("order-" + s.id(), g.stop().name() + " · " + s.id(), g.stop().x(), g.stop().y());
+                app.routeStopsDraft.add(pin);
+                stopConfidence.put(pin.id(), g.confidence());
+                if (g.confidence() >= AddressGeocoder.CONFIRM_THRESHOLD) confirmedStops.add(pin.id());
+                handoffShipmentIds.add(s.id());
+                added++;
+            }
+            if (added > 0) markDirty.run();
+            else app.toast("No additional pending orders within 5km.");
+        });
+=======
         if (app.routeStopsDraft.isEmpty()) app.routeStopsDraft.add(AppServices.BruneiPlaces.DEPOT);
 <<<<<<< HEAD
         ComboBox<User> driver = app.driverCombo(); driver.setPromptText("Assign driver (optional)");
@@ -334,6 +444,7 @@ final class RoutesView {
         optimizeRouteRef[0] = optimizeRoute;
         optimize.setOnAction(event -> optimizeRoute.run());
 =======
+>>>>>>> 5b642d156815b24cdcab954157b3c8caeffca1e4
         previewMap.clickAction = lonLat -> placePinAt(lonLat[0], lonLat[1], markDirty);
         optimize.setOnAction(event -> { debounce.stop(); runCalcRef[0].accept(true); });
         optimizeToggle.setOnAction(event -> markDirty.run());
@@ -347,6 +458,7 @@ final class RoutesView {
                 clickToggle.setText("Map clicks: placing ON");
             }
         });
+        resetTrail.setText("Clear all");
         saveAssign.setOnAction(event -> {
             debounce.stop();
             if (planned[0] == null || dirty[0]) {
@@ -356,6 +468,22 @@ final class RoutesView {
             if (driver.getValue() == null) { app.alert(Alert.AlertType.INFORMATION, "Choose a driver", "Select a driver before saving and assigning this route."); return; }
             if (!saved[0]) {
                 RoutePlan route = planned[0];
+<<<<<<< HEAD
+                planned[0] = new RoutePlan(route.id(), route.name(), driver.getValue().id(), route.stops(), route.distanceKm(), route.estimatedMinutes(), route.completed(), route.createdAt());
+                app.repository.saveRoute(planned[0]); saved[0] = true;
+                // Link handoff orders to this route (risky orphan-route code removed: always link).
+                for (String sid : handoffShipmentIds) {
+                    app.repository.shipment(sid).ifPresent(s -> {
+                        s.setAssignments(s.driverId(), s.vehicleId(), planned[0].id());
+                        app.repository.saveShipment(s);
+                    });
+                }
+            }
+            String linked = handoffShipmentIds.isEmpty() ? "" : " Linked to " + String.join(", ", handoffShipmentIds) + ".";
+            app.alert(Alert.AlertType.INFORMATION, "Route assigned", "Route " + planned[0].name() + " has been saved and assigned to " + driver.getValue().name() + "." + linked);
+            handoffShipmentIds.clear();
+            app.showPage("routes");
+=======
                 RoutePlan toSave = new RoutePlan(route.id(), route.name(), driver.getValue().id(), route.stops(), route.distanceKm(), route.estimatedMinutes(), route.completed(), route.createdAt());
                 saveAssign.setDisable(true);
                 app.runAsync(() -> app.repository.saveRoute(toSave), () -> {
@@ -365,6 +493,7 @@ final class RoutesView {
                 return;
             }
             app.toast("Route " + planned[0].name() + " is already saved.");
+>>>>>>> 5b642d156815b24cdcab954157b3c8caeffca1e4
         });
         // Pin hover names + click popups (badges carry numbers only).
         Tooltip pinTip = new Tooltip();
@@ -395,7 +524,7 @@ final class RoutesView {
         });
         controls.getChildren().addAll(
                 stepSection(1, "Add stops"),
-                place, addStop, clickToggle,
+                place, addStop, addNearby, clickToggle, geocodeBox,
                 new Label("Delivery stops"), draft,
                 stepSection(2, "Route"),
                 optimizeToggle, statusPill, hero, routeResult, legRows, etaBreakdown, optimize, resetTrail,
@@ -451,58 +580,56 @@ final class RoutesView {
                 previewMap.redraw();
             }
         });
-        app.repository.routes().stream().max(Comparator.comparing(RoutePlan::createdAt)).ifPresent(route -> {
-            app.previewStops = route.stops();
-            routeResult.setText(route.name() + "  ·  " + route.stops().size() + " stops");
-            heroKm.setText(String.format("%.1f km", route.distanceKm()));
-            heroMin.setText("about " + route.estimatedMinutes() + " min");
-            setStatus(statusPill, "Viewing saved route", "status-good");
-            showLegEstimates.accept(route.stops());
-            app.showEtaBreakdown(etaBreakdown, route);
-        });
-        // Snapshot the entry state so new stop points never destroy the original trail.
-        final List<Stop> initialDraft = List.copyOf(app.routeStopsDraft);
-        final List<Stop> initialPreview = List.copyOf(app.previewStops);
-        final String initialResult = routeResult.getText();
-        final String initialKm = heroKm.getText(), initialMin = heroMin.getText();
-        final String initialStatus = statusPill.getText();
-        final List<String> initialStatusCls = new ArrayList<>(statusPill.getStyleClass());
-        final List<javafx.scene.Node> initialLegs = new ArrayList<>(legRows.getChildren());
-        final List<javafx.scene.Node> initialEta = new ArrayList<>(etaBreakdown.getChildren());
+        // Blank by default: no auto-loaded saved route (removed error-prone initial trail).
+        // Selecting a history row still previews it, but never mutates the draft.
         resetTrail.setOnAction(event -> {
             debounce.stop();
             if (worker[0] != null) worker[0].interrupt();
-            app.routeStopsDraft.setAll(initialDraft);
-            app.previewStops = new ArrayList<>(initialPreview);
+            app.routeStopsDraft.clear();
+            app.previewStops = List.of();
+            handoffShipmentIds.clear();
+            geocodeBox.getChildren().clear();
+            stopConfidence.clear();
+            confirmedStops.clear();
             planned[0] = null; saved[0] = false;
-            dirty[0] = false;
+            dirty[0] = true;
             highlightLeg[0] = -1;
-            routeResult.setText(initialResult);
-            heroKm.setText(initialKm); heroMin.setText(initialMin);
-            statusPill.setText(initialStatus);
-            statusPill.getStyleClass().setAll(initialStatusCls);
-            legRows.getChildren().setAll(initialLegs);
-            etaBreakdown.getChildren().setAll(initialEta);
+            routeResult.setText("Add at least one delivery stop after the depot.");
+            heroKm.setText("—"); heroMin.setText("—");
+            setStatus(statusPill, "Add stops", "status-warn");
+            legRows.getChildren().clear();
+            etaBreakdown.getChildren().clear();
             previewMap.manual = null;
             previewMap.redraw();
         });
+        prefillHandoff.run();
         previewMap.redraw();
         history.getChildren().addAll(table, routeActions); page.getChildren().addAll(builder, history); return page;
     }
 
     private void placePinAt(double lon, double lat, Runnable markDirty) {
-        if (!Double.isFinite(lon) || !Double.isFinite(lat)) {
-            System.out.println("[dcls-routes] ignored click with non-finite coords");
-            return;
-        }
+        if (!Double.isFinite(lon) || !Double.isFinite(lat)) return;
         if (lon < MapRenderer.MAP_LON_MIN || lon > MapRenderer.MAP_LON_MAX
-                || lat < MapRenderer.MAP_LAT_MIN || lat > MapRenderer.MAP_LAT_MAX) {
-            System.out.println("[dcls-routes] ignored out-of-map click " + lon + "," + lat);
-            return;
+                || lat < MapRenderer.MAP_LAT_MIN || lat > MapRenderer.MAP_LAT_MAX) return;
+        // If an order pin still needs confirmation, move it to the clicked point = confirm.
+        for (Stop s : List.copyOf(app.routeStopsDraft)) {
+            if (s.id().startsWith("order-") && !app.routeStopConfirmed.contains(s.id())) {
+                int idx = indexById(app.routeStopsDraft, s.id());
+                if (idx >= 0) {
+                    Stop moved = new Stop(s.id(), s.name(), lon, lat);
+                    app.routeStopsDraft.set(idx, moved);
+                    app.routeStopConfidence.put(s.id(), 1.0);
+                    app.routeStopConfirmed.add(s.id());
+                    markDirty.run();
+                    return;
+                }
+            }
         }
+        if (app.routeStopsDraft.isEmpty()) app.routeStopsDraft.add(AppServices.BruneiPlaces.DEPOT);
         Stop pin = new Stop("custom-" + AppServices.id(), "Custom pin " + (++app.customPinCount), lon, lat);
-        System.out.println("[dcls-routes] pin placed " + pin.name() + " @ " + lon + "," + lat);
         app.routeStopsDraft.add(pin);
+        app.routeStopConfidence.put(pin.id(), 1.0);
+        app.routeStopConfirmed.add(pin.id());
         markDirty.run();
     }
 
@@ -551,12 +678,24 @@ final class RoutesView {
             if (!"DCLS Depot".equals(stop.name())) {
                 int idx = indexById(app.routeStopsDraft, stop.id());
                 if (idx >= 0) app.routeStopsDraft.remove(idx);
+                app.routeStopConfidence.remove(stop.id());
+                app.routeStopConfirmed.remove(stop.id());
                 markDirty.run();
             }
         });
+        Button confirm = button("Confirm location", "primary-button");
+        boolean needsConfirm = stop.id().startsWith("order-") && !app.routeStopConfirmed.contains(stop.id());
+        confirm.setVisible(needsConfirm);
+        confirm.setManaged(needsConfirm);
+        confirm.setOnAction(event -> {
+            pinPopup.hide();
+            app.routeStopConfidence.put(stop.id(), 1.0);
+            app.routeStopConfirmed.add(stop.id());
+            markDirty.run();
+        });
         Button close = button("Close", "link-button");
         close.setOnAction(event -> pinPopup.hide());
-        VBox card = new VBox(8, title, coords, new HBox(8, remove, close));
+        VBox card = new VBox(8, title, coords, new HBox(8, remove, confirm, close));
         card.getStyleClass().add("panel-tight");
         card.setPadding(new javafx.geometry.Insets(12));
         card.getStylesheets().add(getClass().getResource("/edu/pb/dcls/styles.css").toExternalForm());

@@ -36,6 +36,25 @@ class MapSafetyTest {
     }
 
     @Nested
+    @DisplayName("basemap no-key default")
+    class BasemapDefault {
+        @Test
+        void noKeyNeverRequestsCarto() {
+            if (!MapRenderer.CARTO_KEY.isEmpty()) return; // keyed env: covered manually
+            assertEquals(MapRenderer.Basemap.OSM_STANDARD, MapRenderer.basemap);
+            String url = MapRenderer.tileUrl(14, 12950, 8260);
+            assertTrue(url.contains("tile.openstreetmap.org"));
+        }
+
+        @Test
+        void osmUrlShape() {
+            String url = MapRenderer.osmUrl(14, 12950, 8260, 0);
+            assertTrue(url.startsWith("https://"));
+            assertTrue(url.endsWith(".png"));
+        }
+    }
+
+    @Nested
     @DisplayName("projectIfVisible")
     class Visible {
         private final MapRenderer.ViewBounds view =

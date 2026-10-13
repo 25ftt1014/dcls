@@ -35,7 +35,13 @@ Sign in with:
 
 The sign-in screen opens with the Admin demo credentials filled in. Demo data resets when the app closes. Clear `DCLS_DEMO_MODE` to return to MySQL mode.
 
-Map data © OpenStreetMap contributors © CARTO: live Google-style Voyager retina tiles (zoom 0–20, buildings and addresses at max zoom) with a 90-pair road-network overlay; vehicle movement is simulated. Maps need internet — visited areas reload from the cache under `~/.dcls/tiles` when offline.
+Map data © OpenStreetMap contributors © CARTO: live Voyager retina tiles or OSM Standard (toggle in Live Tracking, zoom 0–20) with a 90-pair road-network overlay; WiFi-first real-time GPS — no simulation. Tiles cache under `~/.dcls/tiles` for transient blips only.
+
+Live GPS feeds (Live Tracking → feed selector):
+- NMEA: import `$GPGGA/$GPRMC` `.nmea/.txt` logs (checksum-validated), or stream via TCP by setting `DCLS_NMEA_HOST`/`DCLS_NMEA_PORT` in future builds.
+- Driver mobile feed: poll JSON with `DCLS_MOBILE_FEED_URL='https://your-server/feed'` returning `[{vehicleId,lon,lat,speed,heading,accuracy,ts}]`.
+- GPX: import any GPX 1.1 track; export GPX/CSV/KML from the same screen.
+A vehicle shows STALE when no fix arrives for >15s; off-route >0.3km triggers an automatic re-route suggestion.
 
 Route geometry uses live OSRM routing (`router.project-osrm.org`, OSM data, no key) with the bundled road network as the offline fallback; OSRM legs cache under `~/.dcls/osrm`. To point at a self-hosted OSRM instead:
 
@@ -43,19 +49,23 @@ Route geometry uses live OSRM routing (`router.project-osrm.org`, OSM data, no k
 $env:DCLS_OSRM_URL = 'https://your-osrm-host'
 ```
 
-CARTO asks for a free key (no billing, no account, 5M tiles/month): get one at `https://carto.com/basemaps/apikey`, then run with it set. Without a key the app still tries keyless tiles until CARTO throttles them:
+Maps work with no key: the app defaults to OSM Standard. CARTO Voyager is used only when a key is set.
+
+CARTO asks for a free key (no billing, no account, 5M tiles/month): get one at `https://carto.com/basemaps/apikey`, then run with it set:
 
 ```powershell
 $env:DCLS_CARTO_KEY = 'paste-your-key-here'
 mvn javafx:run
 ```
 
+If you previously ran without a key and see `API KEY REQUIRED` watermark tiles, just restart the app — it purges the poisoned `~/.dcls/tiles/keyless/voyager` cache once and switches to OSM automatically.
+
 ## Demo flow
 
 1. Sign in as Admin and review the dashboard totals.
 2. Open Fleet; search by plate, model, type, or driver and change a vehicle status.
 3. Open Orders; filter/search, assign the pending sample shipment, and advance an assigned order.
-4. Open Live Tracking. The active demo vehicle moves every second along a fictional Brunei route; the app does not use GPS.
+4. Open Live Tracking. Import a GPX/NMEA sample or set `DCLS_MOBILE_FEED_URL` and press Poll — markers move only on real fixes.
 5. Open Route Planning to add stops and view a nearest-stop route estimate.
 
 The account menu provides profile editing and password changes. Admin can manage accounts; Manager can manage the fleet and dispatch; Dispatcher can manage orders and routes; Driver sees assigned orders and can update their delivery status.

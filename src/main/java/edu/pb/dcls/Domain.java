@@ -174,7 +174,20 @@ public final class Domain {
     }
     public record MaintenanceRecord(String id, String vehicleId, LocalDate date, double mileageKm, String description, double cost) { }
     public record FuelRecord(String id, String vehicleId, LocalDate date, double mileageKm, double litres, double cost) { }
-    public record TrackingPoint(String id, String vehicleId, String shipmentId, double x, double y, int etaMinutes, LocalDateTime recordedAt) { }
+    public enum FixType {
+        GPS("GPS"), WIFI("WiFi"), CELL("Cell"), NONE("No fix");
+        private final String label;
+        FixType(String label) { this.label = label; }
+        public String label() { return label; }
+        @Override public String toString() { return label; }
+    }
+
+    public record TrackingPoint(String id, String vehicleId, String shipmentId, double x, double y, int etaMinutes, LocalDateTime recordedAt,
+                                double speedKmh, Double headingDeg, Double accuracyM, FixType fixType, String source) {
+        public TrackingPoint(String id, String vehicleId, String shipmentId, double x, double y, int etaMinutes, LocalDateTime recordedAt) {
+            this(id, vehicleId, shipmentId, x, y, etaMinutes, recordedAt, 0, null, null, FixType.GPS, "nmea");
+        }
+    }
 
     public interface Repository extends AutoCloseable {
         List<User> users();
