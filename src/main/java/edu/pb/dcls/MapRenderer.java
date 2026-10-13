@@ -19,6 +19,7 @@ import java.net.SocketAddress;
 import java.net.URI;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
@@ -42,10 +43,10 @@ import static edu.pb.dcls.Domain.Stop;
 import static edu.pb.dcls.Domain.TrackingPoint;
 
 /**
- * Real-map rendering over live Google-style tiles (CARTO Voyager @2x retina, zoom 0-20,
- * free key via DCLS_CARTO_KEY). Online-only: the disk tile cache covers previously
- * visited areas when offline. Stateless per call except the shared tile cache: every
- * method takes what it draws, so there is no shared state between screens.
+ * Real-map rendering over live tiles (OSM Standard default, no key; CARTO Voyager @2x
+ * retina when DCLS_CARTO_KEY is set, zoom 0-20). WiFi-first: the disk tile cache covers
+ * transient blips. Stateless per call except the shared tile cache: every method takes
+ * what it draws, so there is no shared state between screens.
  * Stop.x()/y() carry longitude/latitude (WGS84 degrees).
  */
 final class MapRenderer {
@@ -61,11 +62,33 @@ final class MapRenderer {
     // ---- Live Google-style tiles (CARTO Voyager, free with attribution) ----
     static final int TILE_SIZE = 256, LIVE_MIN_Z = 3, LIVE_MAX_Z = 20, LIVE_MAX_TILES = 64;
     private static final String[] TILE_HOSTS = {"a", "b", "c", "d"};
-    /** Free CARTO key (no billing, no account): set DCLS_CARTO_KEY, else keyless attempt. */
-    private static final String CARTO_KEY = System.getenv().getOrDefault("DCLS_CARTO_KEY", "").trim();
+    /** Free CARTO key (no billing, no account): set DCLS_CARTO_KEY. When empty the app
+     *  uses OSM Standard automatically and never requests CARTO (CARTO now serves
+     *  "API KEY REQUIRED" watermark tiles to keyless callers). */
+    static final String CARTO_KEY = System.getenv().getOrDefault("DCLS_CARTO_KEY", "").trim();
 
     static {
-        System.out.println("[dcls-tiles] key configured: " + (CARTO_KEY.isEmpty() ? "no" : "yes"));
+        System.out.println("[dcls-tiles] key configured: " + (CARTO_KEY.isEmpty() ? "no → OSM Standard default" : "yes"));
+        purgePoisonedKeylessCache();
+    }
+
+    /** One-time cleanup: delete watermark tiles cached from keyless CARTO requests. */
+    private static void purgePoisonedKeylessCache() {
+        if (!CARTO_KEY.isEmpty()) return;
+        try {
+            Path poisoned = Path.of(System.getProperty("user.home"), ".dcls", "tiles", "keyless");
+            if (Files.isDirectory(poisoned)) {
+                // Only remove the voyager subtree; keep osm/ entries.
+                Path voyager = poisoned.resolve("voyager");
+                if (Files.isDirectory(voyager)) {
+                    try (var walk = Files.walk(voyager)) {
+                        walk.sorted(java.util.Comparator.reverseOrder())
+                                .forEach(p -> { try { Files.deleteIfExists(p); } catch (Exception ignored) { } });
+                    }
+                    System.out.println("[dcls-tiles] purged poisoned keyless CARTO cache");
+                }
+            }
+        } catch (Exception ignored) { }
     }
 
     /** Tile zoom whose pixels best match the screen resolution for the given span. */
@@ -94,10 +117,19 @@ final class MapRenderer {
         return tileUrlShifted(z, x, y, 0);
     }
 
+    static String osmUrl(int z, int x, int y, int hostShift) {
+        String[] osm = {"a", "b", "c"};
+        String host = osm[Math.floorMod(x + y + hostShift, osm.length)];
+        return "https://" + host + ".tile.openstreetmap.org/" + z + "/" + x + "/" + y + ".png";
+    }
+
     private static String tileUrlShifted(int z, int x, int y, int hostShift) {
+        if (basemap == Basemap.OSM_STANDARD) return osmUrl(z, x, y, hostShift);
+        // Never request CARTO without a key: it returns HTTP 200 watermark tiles
+        // ("API KEY REQUIRED") which would otherwise be cached as good tiles.
+        if (CARTO_KEY.isEmpty()) return osmUrl(z, x, y, hostShift);
         String host = TILE_HOSTS[Math.floorMod(x + y + hostShift, TILE_HOSTS.length)];
-        String url = "https://" + host + ".basemaps.cartocdn.com/rastertiles/voyager/" + z + "/" + x + "/" + y + "@2x.png";
-        return CARTO_KEY.isEmpty() ? url : url + "?key=" + CARTO_KEY;
+        return "https://" + host + ".basemaps.cartocdn.com/rastertiles/voyager/" + z + "/" + x + "/" + y + "@2x.png?key=" + CARTO_KEY;
     }
 
     private static final Map<String, Image> TILE_MEM = Collections.synchronizedMap(new LinkedHashMap<>(256, 0.75f, true) {
@@ -109,7 +141,10 @@ final class MapRenderer {
     private static final Map<String, Long> TILE_FAILED = new ConcurrentHashMap<>();
     /** Tiles the server confirms do not exist (404): never retried within a session. */
     private static final Set<String> TILE_GONE = ConcurrentHashMap.newKeySet();
-    private static final ExecutorService TILE_IO = Executors.newFixedThreadPool(1, runnable -> {
+    /** Free basemap style: OSM Standard (no-key default) or CARTO Voyager (key required). */
+    enum Basemap { VOYAGER, OSM_STANDARD }
+    static volatile Basemap basemap = CARTO_KEY.isEmpty() ? Basemap.OSM_STANDARD : Basemap.VOYAGER;
+    private static final ExecutorService TILE_IO = Executors.newFixedThreadPool(3, runnable -> {
         Thread thread = new Thread(runnable, "dcls-tiles"); thread.setDaemon(true); return thread;
     });
     private static final java.net.http.HttpClient TILE_HTTP = java.net.http.HttpClient.newBuilder()
@@ -138,10 +173,13 @@ final class MapRenderer {
     }
 
     private static Path tileDiskPath(String key) {
-        // Scope the cache by key state so watermark tiles fetched keyless can never
-        // masquerade as good tiles once a key is configured (tag is a hash, never the key).
-        String scope = CARTO_KEY.isEmpty() ? "keyless" : "k" + Integer.toHexString(CARTO_KEY.hashCode());
-        return Path.of(System.getProperty("user.home"), ".dcls", "tiles", scope, key + ".png");
+        // v2 scope: old "keyless/voyager/*" entries hold "API KEY REQUIRED" watermark
+        // tiles (served HTTP 200) and must never be reused.
+        boolean osm = basemap == Basemap.OSM_STANDARD || CARTO_KEY.isEmpty();
+        String scope = (osm ? "osm-v2-" : "")
+                + (CARTO_KEY.isEmpty() ? "keyless-v2" : "k" + Integer.toHexString(CARTO_KEY.hashCode()));
+        String cacheKey = (osm ? "osm/" : "voyager/") + key;
+        return Path.of(System.getProperty("user.home"), ".dcls", "tiles", scope, cacheKey + ".png");
     }
 
     /** Cached tile image, or null on a miss (queues one background fetch). Failures
@@ -168,8 +206,9 @@ final class MapRenderer {
 
     private static void fetchTile(String key, int z, int x, int y) {
         if (TILE_URL_LOGGED.compareAndSet(false, true)) {
-            System.out.println("[dcls-tiles] url shape: https://<a-d>.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png"
-                    + (CARTO_KEY.isEmpty() ? " (keyless)" : "?key=****"));
+            boolean osm = basemap == Basemap.OSM_STANDARD || CARTO_KEY.isEmpty();
+            System.out.println("[dcls-tiles] provider: " + (osm ? "OSM Standard (no key)"
+                    : "CARTO Voyager (?key=****)"));
         }
         paceFetches();
         try {
@@ -551,7 +590,7 @@ final class MapRenderer {
             } else {
                 String problem = tileProblem == null ? "" : tileProblem;
                 reason = switch (problem) {
-                    case "denied" -> "Tile server rejected the request (HTTP 401/403) — set DCLS_CARTO_KEY.";
+                    case "denied" -> "CARTO needs an API key — using OSM Standard (free, no key).";
                     case "throttled" -> "Tile server is rate-limiting us — retrying automatically.";
                     case "offline" -> "Connect to the internet.";
                     default -> "A network error occurred — retrying automatically.";
@@ -563,7 +602,7 @@ final class MapRenderer {
             g.fillText("Previously visited areas load from the tile cache.", 14, h / 2 + 18);
         }
         g.setFill(Color.web("#657487")); g.setFont(Font.font("Segoe UI", 11));
-        g.fillText("Brunei Darussalam  ·  simulated phone GPS @ 35 km/h", 14, 20);
+        g.fillText("Brunei Darussalam  ·  Live GPS" + (basemap == Basemap.OSM_STANDARD ? " · OSM" : " · CARTO"), 14, 20);
         g.setFont(Font.font("Segoe UI", 9));
         g.fillText("© OSM contributors © CARTO", w - 172, h - 8);
         drawScaleBar(g, w, h, view);
@@ -784,6 +823,152 @@ final class MapRenderer {
     static Canvas activityChart() {
         Canvas canvas = new Canvas(224, 74); GraphicsContext g = canvas.getGraphicsContext2D(); double[] values = {.34,.43,.39,.55,.74,.86,.69,.92,.84,.94,.82,1};
         for(int i=0;i<values.length;i++){double x=4+i*18,bar=values[i]*56;g.setFill(i==values.length-1?Color.web("#315cf5"):Color.web("#e5ebff"));g.fillRoundRect(x,58-bar,14,bar,4,4);} return canvas;
+    }
+
+    /** Free Nominatim search for Brunei (WiFi). Ranked rooftop-first. */
+    record PlaceHit(double lon, double lat, String name, String displayName, double importance, int placeRank, String type) {
+        PlaceHit(double lon, double lat, String name) { this(lon, lat, name, name, 0, 0, ""); }
+    }
+
+    /** Whole-Brunei acceptance window (wider than the Bandar map viewport). */
+    static final double GEO_LON_MIN = 114.0, GEO_LON_MAX = 115.5, GEO_LAT_MIN = 4.0, GEO_LAT_MAX = 5.4;
+
+    /** Progressive search over normalized query levels; returns hits + winning level. */
+    record LevelHits(List<PlaceHit> hits, int level, String queryUsed) { }
+
+    static LevelHits searchLevels(List<String> levels) {
+        if (levels == null) return new LevelHits(List.of(), -1, "");
+        for (int i = 0; i < levels.size(); i++) {
+            String q = levels.get(i);
+            if (q == null || q.isBlank()) continue;
+            List<PlaceHit> hits = fetchNominatim(q);
+            if (!hits.isEmpty()) return new LevelHits(hits, i, q);
+        }
+        return new LevelHits(List.of(), -1, "");
+    }
+
+    static List<PlaceHit> searchPlaces(String query) {
+        List<PlaceHit> out = new ArrayList<>();
+        if (query == null || query.isBlank()) return out;
+        String q = query.trim();
+        // Disk cache first (instant + offline-tolerant).
+        try {
+            Path cache = Path.of(System.getProperty("user.home"), ".dcls", "geocode",
+                    Integer.toHexString(("bn|" + q.toLowerCase(java.util.Locale.ROOT)).hashCode()) + ".json");
+            if (Files.isRegularFile(cache)
+                    && System.currentTimeMillis() - Files.getLastModifiedTime(cache).toMillis() < 30L * 24 * 3600 * 1000) {
+                List<PlaceHit> cached = parseNominatim(Files.readString(cache), q);
+                if (!cached.isEmpty()) return cached;
+            }
+        } catch (Exception ignored) { }
+        // Two attempts: full address, then shortened (house numbers can confuse the first pass).
+        List<PlaceHit> hits = fetchNominatim(q);
+        if (hits.isEmpty()) {
+            String shortQ = q.replaceAll("(?i)\\b(no\\.?|lot|unit|spg|simpang)\\s*\\d+[\\w-]*,?", "").replaceAll("\\s+", " ").trim();
+            if (!shortQ.equalsIgnoreCase(q) && !shortQ.isBlank()) hits = fetchNominatim(shortQ);
+        }
+        return hits;
+    }
+
+    private static List<PlaceHit> fetchNominatim(String q) {
+        try {
+            String url = "https://nominatim.openstreetmap.org/search?q="
+                    + java.net.URLEncoder.encode(q + ", Brunei", StandardCharsets.UTF_8)
+                    + "&format=jsonv2&addressdetails=1&extratags=0&limit=8&countrycodes=bn"
+                    + "&viewbox=114.0,5.4,115.5,4.0";
+            var req = java.net.http.HttpRequest.newBuilder(URI.create(url))
+                    .timeout(Duration.ofSeconds(8)).header("User-Agent", "DCLS classroom demo").GET().build();
+            var res = TILE_HTTP.send(req, java.net.http.HttpResponse.BodyHandlers.ofString());
+            if (res.statusCode() != 200) return List.of();
+            List<PlaceHit> parsed = parseNominatim(res.body(), q);
+            if (!parsed.isEmpty()) {
+                try {
+                    Path cache = Path.of(System.getProperty("user.home"), ".dcls", "geocode",
+                            Integer.toHexString(("bn|" + q.toLowerCase(java.util.Locale.ROOT)).hashCode()) + ".json");
+                    Files.createDirectories(cache.getParent());
+                    Files.writeString(cache, res.body());
+                } catch (Exception ignored) { }
+            }
+            return parsed;
+        } catch (Exception ignored) { }
+        return List.of();
+    }
+
+    /** Parse Nominatim jsonv2 array; handles quoted or numeric lat/lon in any order. */
+    static List<PlaceHit> parseNominatim(String json, String fallbackName) {
+        List<ScoredHit> scored = new ArrayList<>();
+        if (json == null || json.isBlank()) return List.of();
+        for (String o : splitObjects(json)) {
+            try {
+                Double lat = numOrQuoted(o, "lat"), lon = numOrQuoted(o, "lon");
+                if (lat == null || lon == null) continue;
+                boolean inBrunei = lon >= GEO_LON_MIN && lon <= GEO_LON_MAX && lat >= GEO_LAT_MIN && lat <= GEO_LAT_MAX;
+                String display = strField(o, "display_name");
+                String name = display == null ? fallbackName : display.split(",")[0].trim();
+                if (name.isBlank()) name = fallbackName;
+                Double importance = numOrQuoted(o, "importance");
+                int rank = intField(o, "place_rank", 0);
+                String type = strField(o, "type");
+                if (type == null) type = strField(o, "class");
+                if (type == null) type = "";
+                double score = scoreHit(rank, importance == null ? 0 : importance, type, inBrunei, lon, lat);
+                scored.add(new ScoredHit(new PlaceHit(lon, lat, name, display == null ? name : display,
+                        importance == null ? 0 : importance, rank, type), score));
+            } catch (Exception ignored) { }
+        }
+        scored.sort((a, b) -> Double.compare(b.score(), a.score()));
+        return scored.stream().limit(5).map(ScoredHit::hit).toList();
+    }
+
+    private record ScoredHit(PlaceHit hit, double score) { }
+
+    private static double scoreHit(int rank, double importance, String type, boolean inBrunei, double lon, double lat) {
+        double s = 0;
+        // Rooftop/building first.
+        if (rank >= 26) s += 40;
+        else if (rank >= 20) s += 25;
+        else if (rank >= 16) s += 12;
+        String t = type.toLowerCase(java.util.Locale.ROOT);
+        if (t.contains("house") || t.contains("building") || t.contains("amenity") || t.contains("shop")) s += 15;
+        else if (t.contains("road") || t.contains("street") || t.contains("residential")) s += 8;
+        s += Math.min(20, importance * 30);
+        if (!inBrunei) s -= 60;
+        // Sanity: far from Bandar core is suspicious but not fatal.
+        double dCore = Math.hypot(lon - 114.94, lat - 4.90) * 111;
+        if (dCore > 60) s -= 20;
+        return s;
+    }
+
+    private static List<String> splitObjects(String json) {
+        List<String> out = new ArrayList<>();
+        int depth = 0, start = -1;
+        boolean inStr = false;
+        for (int i = 0; i < json.length(); i++) {
+            char c = json.charAt(i);
+            if (c == '"' && (i == 0 || json.charAt(i - 1) != '\\')) inStr = !inStr;
+            if (inStr) continue;
+            if (c == '{') { if (depth == 0) start = i; depth++; }
+            else if (c == '}') { depth--; if (depth == 0 && start >= 0) { out.add(json.substring(start, i + 1)); start = -1; } }
+        }
+        return out;
+    }
+
+    private static Double numOrQuoted(String o, String key) {
+        var m = java.util.regex.Pattern.compile("\"" + key + "\"\\s*:\\s*\"?(-?[\\d.]+)\"?").matcher(o);
+        if (!m.find()) return null;
+        try { return Double.parseDouble(m.group(1)); } catch (NumberFormatException e) { return null; }
+    }
+
+    private static String strField(String o, String key) {
+        var m = java.util.regex.Pattern.compile("\"" + key + "\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"").matcher(o);
+        if (!m.find()) return null;
+        return m.group(1).replace("\\\"", "\"").trim();
+    }
+
+    private static int intField(String o, String key, int def) {
+        var m = java.util.regex.Pattern.compile("\"" + key + "\"\\s*:\\s*\"?(\\d+)\"?").matcher(o);
+        if (!m.find()) return def;
+        try { return Integer.parseInt(m.group(1)); } catch (NumberFormatException e) { return def; }
     }
 
     private static ViewBounds autoView(List<Stop> stops, TrackingPoint moving, double aspect) {

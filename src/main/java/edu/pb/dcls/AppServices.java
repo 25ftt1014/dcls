@@ -806,9 +806,32 @@ final class AppServices {
             return Math.max(1, (int) Math.ceil(km / BruneiPlaces.AVG_SPEED_KMH * 60));
         }
 
-        Stop geocode(String address) { return BruneiPlaces.geocodeAddress(address, places); }
+        Stop geocode(String address) {
+            // Search-first over normalized levels (buyer-typo tolerant); district last resort.
+            if (address != null && !address.isBlank()) {
+                try {
+                    MapRenderer.LevelHits lh = MapRenderer.searchLevels(AddressNormalizer.levels(address).inOrder());
+                    if (!lh.hits().isEmpty()) {
+                        MapRenderer.PlaceHit h = lh.hits().get(0);
+                        return new Stop("geo-" + Math.abs((h.displayName() + h.lon()).hashCode()),
+                                h.name(), h.lon(), h.lat());
+                    }
+                } catch (Exception ignored) { }
+            }
+            return BruneiPlaces.geocodeAddress(address, places);
+        }
 
         Stop depot() { return BruneiPlaces.DEPOT; }
+
+        /** Same route plus return-to-depot leg (for round-trip estimates). */
+        public RoutePlan withReturnToDepot(RoutePlan plan) {
+            if (plan.stops().size() < 2) return plan;
+            List<Stop> loop = new ArrayList<>(plan.stops());
+            loop.add(BruneiPlaces.DEPOT);
+            double km = totalKm(loop);
+            return new RoutePlan(plan.id(), plan.name() + " · return", plan.driverId(), loop,
+                    round(km), etaMinutes(km), plan.completed(), plan.createdAt());
+        }
 
         private double distance(Stop first, Stop second) {
             Double road = RoadNetwork.roadKm(first.x(), first.y(), second.x(), second.y());
@@ -827,127 +850,249 @@ final class AppServices {
         }
     }
 
-    /** Simulated driver's-phone GPS feed. Each vehicle carries a virtual tracker that
-     *  advances along its active route at {@link BruneiPlaces#AVG_SPEED_KMH}, compressed so
-     *  one live tick equals {@link BruneiPlaces#SIM_MINUTES_PER_TICK} of driving. */
-    static final class PhoneGpsProvider {
-        private final Map<String, GpsState> states = new HashMap<>();
-        private final Map<String, Boolean> fixLost = new HashMap<>();
+    /** Live GPS state per vehicle: last real fix, no simulation. A vehicle is STALE
+     *  when no fix has arrived for {@link #STALE_AFTER_SECONDS}. */
+    static final class LiveGpsState {
+        static final long STALE_AFTER_SECONDS = 15;
+        private final Map<String, TrackingPoint> lastByVehicle = new HashMap<>();
 
-        record Fix(double lon, double lat, double remainingKm, boolean hasFix) { }
+        void note(TrackingPoint p) { lastByVehicle.put(p.vehicleId(), p); }
+        void reset(String vehicleId) { lastByVehicle.remove(vehicleId); }
 
-        private static final class GpsState {
-            String routeId;
-            List<double[]> points;
-            double[] cumulativeKm;
-            double totalKm;
-            double travelledKm;
+        // Back-compat for callers that toggled a simulated fix flag: no-op now.
+        void setFixLost(String vehicleId, boolean lost) { if (!lost) lastByVehicle.remove(vehicleId); }
+        boolean isFixLost(String vehicleId) { return isStale(vehicleId); }
+
+        boolean isStale(String vehicleId) { return ageSeconds(vehicleId) > STALE_AFTER_SECONDS; }
+
+        long ageSeconds(String vehicleId) {
+            TrackingPoint p = lastByVehicle.get(vehicleId);
+            if (p == null) return Long.MAX_VALUE;
+            return Math.max(0, java.time.Duration.between(p.recordedAt(), LocalDateTime.now()).getSeconds());
         }
-
-        Fix poll(String vehicleId, RoutePlan route, TrackingPoint lastKnown) {
-            if (route == null || route.stops().size() < 2) return null;
-            GpsState state = states.get(vehicleId);
-            if (state == null || !state.routeId.equals(route.id())) {
-                state = buildState(route);
-                if (lastKnown != null) state.travelledKm = nearestDistance(state, lastKnown.x(), lastKnown.y());
-                states.put(vehicleId, state);
-            }
-            if (Boolean.TRUE.equals(fixLost.get(vehicleId)) && lastKnown != null) {
-                return new Fix(lastKnown.x(), lastKnown.y(), Math.max(0, state.totalKm - state.travelledKm), false);
-            }
-            double stepKm = BruneiPlaces.AVG_SPEED_KMH / 60d * BruneiPlaces.SIM_MINUTES_PER_TICK;
-            state.travelledKm = Math.min(state.totalKm, state.travelledKm + stepKm);
-            double[] pos = positionAt(state, state.travelledKm);
-            return new Fix(pos[0], pos[1], Math.max(0, state.totalKm - state.travelledKm), true);
-        }
-
-        /** Flatten every road leg into one driving path with cumulative km. */
-        private GpsState buildState(RoutePlan route) {
-            GpsState state = new GpsState();
-            state.routeId = route.id();
-            List<double[]> points = new ArrayList<>();
-            List<Stop> stops = route.stops();
-            for (int i = 0; i < stops.size() - 1; i++) {
-                List<double[]> leg = RouteService.legPath(stops.get(i), stops.get(i + 1));
-                for (int j = 0; j < leg.size(); j++) {
-                    if (i > 0 && j == 0) continue;
-                    points.add(leg.get(j));
-                }
-            }
-            if (points.isEmpty()) {
-                for (Stop stop : stops) points.add(new double[] {stop.x(), stop.y()});
-            }
-            state.points = points;
-            state.cumulativeKm = new double[points.size()];
-            double total = 0;
-            for (int i = 1; i < points.size(); i++) {
-                total += BruneiPlaces.haversineKm(points.get(i - 1)[0], points.get(i - 1)[1], points.get(i)[0], points.get(i)[1]);
-                state.cumulativeKm[i] = total;
-            }
-            state.totalKm = total;
-            state.travelledKm = 0;
-            return state;
-        }
-
-        private double nearestDistance(GpsState state, double lon, double lat) {
-            double best = Double.MAX_VALUE;
-            int index = 0;
-            for (int i = 0; i < state.points.size(); i++) {
-                double d = BruneiPlaces.haversineKm(state.points.get(i)[0], state.points.get(i)[1], lon, lat);
-                if (d < best) { best = d; index = i; }
-            }
-            return state.cumulativeKm[index];
-        }
-
-        private double[] positionAt(GpsState state, double travelled) {
-            List<double[]> points = state.points;
-            if (travelled <= 0) return points.get(0);
-            if (travelled >= state.totalKm) return points.get(points.size() - 1);
-            int segment = 1;
-            while (segment < state.cumulativeKm.length - 1 && state.cumulativeKm[segment] < travelled) segment++;
-            double segStart = state.cumulativeKm[segment - 1];
-            double segLen = Math.max(1e-9, state.cumulativeKm[segment] - segStart);
-            double local = Math.min(1, (travelled - segStart) / segLen);
-            double[] a = points.get(segment - 1), b = points.get(segment);
-            return new double[] {a[0] + (b[0] - a[0]) * local, a[1] + (b[1] - a[1]) * local};
-        }
-
-        void reset(String vehicleId) { states.remove(vehicleId); }
-        void setFixLost(String vehicleId, boolean lost) { fixLost.put(vehicleId, lost); }
-        boolean isFixLost(String vehicleId) { return Boolean.TRUE.equals(fixLost.get(vehicleId)); }
     }
 
     static final class TrackingService {
         private final Repository repository;
-        private final PhoneGpsProvider gps = new PhoneGpsProvider();
+        private final LiveGpsState gps = new LiveGpsState();
+        private String feedSource = "nmea";
         TrackingService(Repository repository) { this.repository = repository; }
-        TrackingPoint advance(Shipment shipment) {
-            if (shipment.vehicleId() == null) return null;
-            Optional<RoutePlan> route = repository.routes().stream()
-                    .filter(item -> item.id().equals(shipment.routeId())).findFirst();
-            if (route.isEmpty() || route.get().stops().size() < 2) return null;
-            TrackingPoint last = latestForVehicle(shipment.vehicleId());
-            PhoneGpsProvider.Fix fix = gps.poll(shipment.vehicleId(), route.get(), last);
-            if (fix == null) return null;
-            int eta = Math.max(1, (int) Math.ceil(fix.remainingKm() / BruneiPlaces.AVG_SPEED_KMH * 60));
-            if (fix.remainingKm() <= 1e-9) eta = 0;
-            TrackingPoint point = new TrackingPoint(id(), shipment.vehicleId(), shipment.id(),
-                    fix.lon(), fix.lat(), eta, LocalDateTime.now());
+
+        /** Ingest one real fix (NMEA / mobile / GPX). Validates, computes remaining
+         *  distance along the vehicle's active route, persists, returns the point. */
+        TrackingPoint ingest(String vehicleId, String shipmentId, double lon, double lat,
+                             double speedKmh, Double headingDeg, Double accuracyM,
+                             Domain.FixType fixType, String source, LocalDateTime at) {
+            if (vehicleId == null) throw new AppException("Choose a vehicle for this GPS fix.");
+            if (!Double.isFinite(lon) || !Double.isFinite(lat)) throw new AppException("Invalid GPS coordinates.");
+            if (lon < MapRenderer.MAP_LON_MIN || lon > MapRenderer.MAP_LON_MAX
+                    || lat < MapRenderer.MAP_LAT_MIN || lat > MapRenderer.MAP_LAT_MAX) {
+                throw new AppException("Fix is outside the Brunei service area — ignored.");
+            }
+            if (fixType == Domain.FixType.NONE) return null;
+            // Deduplicate: ignore fixes older than the latest stored fix.
+            TrackingPoint latest = latestForVehicle(vehicleId);
+            LocalDateTime ts = at == null ? LocalDateTime.now() : at;
+            if (latest != null && !ts.isAfter(latest.recordedAt())) return latest;
+            String ship = shipmentId;
+            if (ship == null) {
+                ship = repository.shipments().stream()
+                        .filter(s -> vehicleId.equals(s.vehicleId())
+                                && (s.status() == OrderStatus.IN_TRANSIT || s.status() == OrderStatus.ASSIGNED))
+                        .map(Domain.Shipment::id).findFirst().orElse(null);
+            }
+            double remainingKm = remainingAlongRoute(vehicleId, ship, lon, lat);
+            double refSpeed = speedKmh > 1 ? speedKmh : BruneiPlaces.AVG_SPEED_KMH;
+            int eta = remainingKm <= 0.05 ? 0 : Math.max(1, (int) Math.ceil(remainingKm / refSpeed * 60));
+            TrackingPoint point = new TrackingPoint(id(), vehicleId, ship, lon, lat, eta, ts,
+                    Math.max(0, speedKmh), headingDeg, accuracyM,
+                    fixType == null ? Domain.FixType.GPS : fixType,
+                    source == null ? feedSource : source);
             repository.saveTrackingPoint(point);
+            gps.note(point);
             return point;
         }
+
+        TrackingPoint ingest(GpsFeed.GpsFix fix, String shipmentId) {
+            return ingest(fix.vehicleId(), shipmentId, fix.lon(), fix.lat(), fix.speedKmh(),
+                    fix.headingDeg(), fix.accuracyM(), fix.fixType(), fix.source(),
+                    GpsFeed.toLocal(fix.time()));
+        }
+
+        private double remainingAlongRoute(String vehicleId, String shipmentId, double lon, double lat) {
+            Optional<RoutePlan> route = Optional.empty();
+            if (shipmentId != null) {
+                Optional<Shipment> s = repository.shipment(shipmentId);
+                if (s.isPresent() && s.get().routeId() != null) {
+                    route = repository.routes().stream().filter(r -> r.id().equals(s.get().routeId())).findFirst();
+                }
+            }
+            if (route.isEmpty()) {
+                route = repository.routes().stream()
+                        .filter(r -> vehicleId.equals(r.driverId()) || r.name().contains(vehicleId))
+                        .max(Comparator.comparing(RoutePlan::createdAt));
+            }
+            if (route.isEmpty()) {
+                route = repository.shipments().stream().filter(s -> vehicleId.equals(s.vehicleId()))
+                        .map(Shipment::routeId).filter(java.util.Objects::nonNull)
+                        .flatMap(rid -> repository.routes().stream().filter(r -> r.id().equals(rid)))
+                        .findFirst();
+            }
+            if (route.isEmpty() || route.get().stops().size() < 2) {
+                // No route: distance to destination geocode as fallback.
+                return 0;
+            }
+            List<Stop> stops = route.get().stops();
+            // Find nearest leg index, sum remaining legs + partial.
+            double best = Double.MAX_VALUE;
+            int bestLeg = 0;
+            double bestAlong = 0;
+            for (int i = 1; i < stops.size(); i++) {
+                Stop a = stops.get(i - 1), b = stops.get(i);
+                List<double[]> path = RouteService.legPath(a, b);
+                for (int j = 1; j < path.size(); j++) {
+                    double[] p = path.get(j - 1), q = path.get(j);
+                    double[] proj = projectOnto(p, q, lon, lat);
+                    double d = BruneiPlaces.haversineKm(proj[0], proj[1], lon, lat);
+                    if (d < best) { best = d; bestLeg = i; bestAlong = proj[2]; }
+                }
+            }
+            double remaining = 0;
+            for (int i = bestLeg + 1; i < stops.size(); i++) {
+                remaining += legKm(stops.get(i - 1), stops.get(i));
+            }
+            // Partial remainder of current leg.
+            Stop a = stops.get(bestLeg - 1), b = stops.get(bestLeg);
+            double legTotal = legKm(a, b);
+            remaining += legTotal * (1 - Math.min(1, Math.max(0, bestAlong)));
+            return remaining;
+        }
+
+        private double legKm(Stop a, Stop b) {
+            Double road = RoadNetwork.roadKm(a.x(), a.y(), b.x(), b.y());
+            if (road != null) return road;
+            Double cached = OsrmRouter.cachedKm(a.x(), a.y(), b.x(), b.y());
+            if (cached != null) return cached;
+            return BruneiPlaces.haversineKm(a, b);
+        }
+
+        private double[] projectOnto(double[] p, double[] q, double lon, double lat) {
+            double dx = q[0] - p[0], dy = q[1] - p[1];
+            double len2 = dx * dx + dy * dy;
+            double t = len2 < 1e-12 ? 0 : ((lon - p[0]) * dx + (lat - p[1]) * dy) / len2;
+            t = Math.min(1, Math.max(0, t));
+            return new double[] {p[0] + t * dx, p[1] + t * dy, t};
+        }
+
+        /** Distance of a fix from its active route (km) — for off-route alerts. */
+        public double deviationKm(String vehicleId, double lon, double lat) {
+            TrackingPoint latest = latestForVehicle(vehicleId);
+            String ship = latest == null ? null : latest.shipmentId();
+            Optional<RoutePlan> route = repository.shipments().stream()
+                    .filter(s -> vehicleId.equals(s.vehicleId())).map(Shipment::routeId)
+                    .filter(java.util.Objects::nonNull)
+                    .flatMap(rid -> repository.routes().stream().filter(r -> r.id().equals(rid))).findFirst();
+            if (route.isEmpty()) return 0;
+            double best = Double.MAX_VALUE;
+            for (int i = 1; i < route.get().stops().size(); i++) {
+                for (double[] pt : RouteService.legPath(route.get().stops().get(i - 1), route.get().stops().get(i))) {
+                    best = Math.min(best, BruneiPlaces.haversineKm(pt[0], pt[1], lon, lat));
+                }
+            }
+            return best == Double.MAX_VALUE ? 0 : best;
+        }
+
+        /** True when the vehicle is within arrivalRadiusKm of the final stop. */
+        public boolean arrivedAtDestination(String vehicleId, double arrivalRadiusKm) {
+            TrackingPoint latest = latestForVehicle(vehicleId);
+            if (latest == null) return false;
+            Optional<RoutePlan> route = repository.shipments().stream()
+                    .filter(s -> vehicleId.equals(s.vehicleId())).map(Shipment::routeId)
+                    .filter(java.util.Objects::nonNull)
+                    .flatMap(rid -> repository.routes().stream().filter(r -> r.id().equals(rid))).findFirst();
+            if (route.isEmpty() || route.get().stops().isEmpty()) return false;
+            Stop dest = route.get().stops().get(route.get().stops().size() - 1);
+            return BruneiPlaces.haversineKm(dest.x(), dest.y(), latest.x(), latest.y()) <= arrivalRadiusKm;
+        }
+
         TrackingPoint latestFor(String shipmentId) {
+            if (shipmentId == null) return null;
             return repository.trackingHistory().stream().filter(point -> shipmentId.equals(point.shipmentId()))
                     .max(Comparator.comparing(TrackingPoint::recordedAt)).orElse(null);
         }
         TrackingPoint latestForVehicle(String vehicleId) {
-            return repository.trackingHistory().stream().filter(point -> vehicleId.equals(point.vehicleId()))
+            TrackingPoint mem = gps.lastByVehicle.get(vehicleId);
+            TrackingPoint stored = repository.trackingHistory().stream().filter(point -> vehicleId.equals(point.vehicleId()))
                     .max(Comparator.comparing(TrackingPoint::recordedAt)).orElse(null);
+            if (mem == null) return stored;
+            if (stored == null) return mem;
+            return stored.recordedAt().isAfter(mem.recordedAt()) ? stored : mem;
         }
         String gpsStatus(String vehicleId) {
-            return gps.isFixLost(vehicleId) ? "SIM FIX LOST" : "SIM FIX · phone";
+            TrackingPoint p = latestForVehicle(vehicleId);
+            if (p == null) return "NO FIX";
+            long age = Math.max(0, java.time.Duration.between(p.recordedAt(), LocalDateTime.now()).getSeconds());
+            if (age > LiveGpsState.STALE_AFTER_SECONDS) return "LOST · " + age + "s ago";
+            String acc = p.accuracyM() == null ? "" : "·±" + Math.round(p.accuracyM()) + "m";
+            String spd = p.speedKmh() > 0.5 ? "·" + Math.round(p.speedKmh()) + "km/h" : "";
+            return (p.fixType() == null ? "GPS" : p.fixType().label()) + acc + spd;
         }
-        PhoneGpsProvider gps() { return gps; }
+        LiveGpsState gps() { return gps; }
+        String feedSource() { return feedSource; }
+        void feedSource(String s) { feedSource = s; }
+
+        /** One optimized multi-stop tour for a vehicle: live fix → remaining destinations. */
+        public record VehicleTour(List<Stop> ordered, int progressIndex, double remainingKm) { }
+
+        public VehicleTour tourForVehicle(String vehicleId) {
+            List<Shipment> group = repository.shipments().stream()
+                    .filter(s -> vehicleId.equals(s.vehicleId()))
+                    .filter(s -> s.status() == OrderStatus.IN_TRANSIT || s.status() == OrderStatus.ASSIGNED)
+                    .toList();
+            if (group.isEmpty()) return new VehicleTour(List.of(), 0, 0);
+            TrackingPoint live = latestForVehicle(vehicleId);
+            RouteService rs = new RouteService(repository);
+            Stop start = live == null ? rs.depot()
+                    : new Stop("live-" + vehicleId, "Live position", live.x(), live.y());
+            List<Shipment> prioritized = new ArrayList<>(group);
+            prioritized.sort(Comparator.comparingInt(s -> switch (s.priority()) {
+                case URGENT -> 0; case HIGH -> 1; case NORMAL -> 2; case LOW -> 3; }));
+            List<Stop> dests = new ArrayList<>();
+            for (Shipment s : prioritized) {
+                Stop geo = rs.geocode(s.address());
+                dests.add(new Stop("stop-" + s.id(), geo.name() + " · " + s.id(), geo.x(), geo.y()));
+            }
+            // Fastest order without network in the render path (cached road km only).
+            // Full OSRM table ordering happens in Route Planning / AutoRouteService.
+            List<Stop> ordered;
+            try {
+                ordered = rs.orderFrom(start, dests);
+            } catch (Exception e) {
+                ordered = new ArrayList<>();
+                ordered.add(start);
+                ordered.addAll(dests);
+            }
+            // Progress: nearest ordered stop to live fix.
+            int progress = 0;
+            double remaining = 0;
+            if (live != null && ordered.size() >= 2) {
+                double best = Double.MAX_VALUE;
+                for (int i = 1; i < ordered.size(); i++) {
+                    double d = BruneiPlaces.haversineKm(ordered.get(i).x(), ordered.get(i).y(), live.x(), live.y());
+                    if (d < best) { best = d; progress = Math.max(0, i - 1); }
+                }
+                for (int i = progress + 1; i < ordered.size(); i++) {
+                    Stop a = ordered.get(i - 1), b = ordered.get(i);
+                    Double road = RoadNetwork.roadKm(a.x(), a.y(), b.x(), b.y());
+                    remaining += road != null ? road : BruneiPlaces.haversineKm(a, b);
+                }
+            } else {
+                for (int i = 1; i < ordered.size(); i++) {
+                    remaining += BruneiPlaces.haversineKm(ordered.get(i - 1), ordered.get(i));
+                }
+            }
+            return new VehicleTour(List.copyOf(ordered), progress, remaining);
+        }
     }
 
     /** Builds one fastest route per vehicle across all of its ready orders.

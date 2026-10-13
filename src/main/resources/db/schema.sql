@@ -118,9 +118,20 @@ CREATE TABLE IF NOT EXISTS tracking_history (
     y_coord DECIMAL(8,5) NOT NULL,
     eta_minutes INT NOT NULL,
     recorded_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    speed_kmh DECIMAL(6,2) NOT NULL DEFAULT 0,
+    heading_deg DECIMAL(5,1) NULL,
+    accuracy_m DECIMAL(6,1) NULL,
+    fix_type VARCHAR(8) NOT NULL DEFAULT 'GPS',
+    source VARCHAR(16) NOT NULL DEFAULT 'nmea',
     CONSTRAINT fk_tracking_vehicle FOREIGN KEY (vehicle_id) REFERENCES vehicles(id) ON DELETE CASCADE,
     CONSTRAINT fk_tracking_shipment FOREIGN KEY (shipment_id) REFERENCES shipments(id) ON DELETE CASCADE
 );
+
+ALTER TABLE tracking_history ADD COLUMN IF NOT EXISTS speed_kmh DECIMAL(6,2) NOT NULL DEFAULT 0;
+ALTER TABLE tracking_history ADD COLUMN IF NOT EXISTS heading_deg DECIMAL(5,1) NULL;
+ALTER TABLE tracking_history ADD COLUMN IF NOT EXISTS accuracy_m DECIMAL(6,1) NULL;
+ALTER TABLE tracking_history ADD COLUMN IF NOT EXISTS fix_type VARCHAR(8) NOT NULL DEFAULT 'GPS';
+ALTER TABLE tracking_history ADD COLUMN IF NOT EXISTS source VARCHAR(16) NOT NULL DEFAULT 'nmea';
 
 INSERT IGNORE INTO roles(role_code, display_name) VALUES
 ('ADMIN', 'Administrator'), ('MANAGER', 'Manager'), ('DISPATCHER', 'Dispatcher'), ('DRIVER', 'Driver');
@@ -129,7 +140,7 @@ INSERT IGNORE INTO permissions(permission_code, display_name) VALUES
 ('VIEW_DASHBOARD', 'View dashboard'), ('MANAGE_USERS', 'Manage users and roles'),
 ('MANAGE_FLEET', 'Manage vehicles and service records'), ('MANAGE_ORDERS', 'Create and manage shipments'),
 ('DISPATCH', 'Assign deliveries and routes'), ('PLAN_ROUTES', 'Plan and optimize routes'),
-('VIEW_TRACKING', 'View simulated tracking'), ('UPDATE_ASSIGNED_DELIVERY', 'Update assigned delivery status'),
+('VIEW_TRACKING', 'View live tracking'), ('UPDATE_ASSIGNED_DELIVERY', 'Update assigned delivery status'),
 ('EDIT_PROFILE', 'Edit own profile and password');
 
 INSERT IGNORE INTO role_permissions(role_code, permission_code) VALUES

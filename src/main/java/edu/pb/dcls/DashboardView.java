@@ -70,7 +70,7 @@ final class DashboardView {
             Optional<Vehicle> vehicle = app.repository.vehicle(entry.getKey());
             if (vehicle.isEmpty()) continue;
             TrackingPoint fix = app.tracking.latestForVehicle(entry.getKey());
-            boolean stale = app.tracking.gps().isFixLost(entry.getKey());
+            boolean stale = app.tracking.gps().isStale(entry.getKey());
             plots.add(new VehiclePlot(
                     fix != null ? fix.x() : DEPOT.x(),
                     fix != null ? fix.y() : DEPOT.y(),
@@ -121,7 +121,7 @@ final class DashboardView {
             if (duty != null) details.append("\nStatus: ").append(duty.status().label()).append(" · ").append(duty.address());
             details.append("\nGPS: ").append(app.tracking.gpsStatus(vehicleId));
             if (fix != null) details.append("\nETA about ").append(fix.etaMinutes()).append(" min · updated ").append(fix.recordedAt().format(DclsApp.DATE_TIME));
-            else details.append("\nNo simulated fix yet — shown at depot.");
+            else details.append("\nNo live fix yet — shown at depot.");
             opsTip.setText(details.toString());
             if (!opsTip.isShowing()) opsTip.show(map, event.getScreenX() + 12, event.getScreenY() + 12);
         });

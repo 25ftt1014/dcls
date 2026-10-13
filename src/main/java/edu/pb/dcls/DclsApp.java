@@ -99,6 +99,14 @@ public final class DclsApp extends Application {
     VBox trackingLegend;
     VBox focusChipBox;
     String focusedShipmentId;
+    String focusedVehicleId;
+    List<String> pendingRouteShipmentIds = List.of();
+    final Map<String, Double> routeStopConfidence = new java.util.HashMap<>();
+    final java.util.Set<String> routeStopConfirmed = new java.util.HashSet<>();
+    boolean followSelected = true;
+    Label feedStatusLabel;
+    String feedStatus = "Feed idle — import GPX/NMEA or poll mobile feed.";
+    String lastRerouteKey = "";
     private Timeline signInRipple;
     private Runnable pendingSignIn;
     private String loginNotice;
@@ -359,8 +367,26 @@ public final class DclsApp extends Application {
 
     MenuItem menu(String title, Runnable action) { MenuItem item = new MenuItem(title); item.setOnAction(event -> action.run()); return item; }
 
+    /** Order → Route handoff: prefill route planning with these shipments. */
+    void planRouteForShipments(List<String> shipmentIds) {
+        pendingRouteShipmentIds = shipmentIds == null ? List.of() : List.copyOf(shipmentIds);
+        focusedVehicleId = null;
+        showPage("routes");
+    }
+
+    /** Vehicle → Tracking handoff: focus one vehicle's optimized tour. */
+    void focusVehicleTour(String vehicleId, String shipmentId) {
+        focusedVehicleId = vehicleId;
+        focusedShipmentId = shipmentId;
+        showPage("tracking");
+    }
+
     void showPage(String page) {
         if (!access.canOpen(currentUser.role(), page)) page = "dashboard";
+        // Route page is always blank unless arriving via planRouteForShipments.
+        if (!"routes".equals(page)) {
+            if (pendingRouteShipmentIds == null) pendingRouteShipmentIds = List.of();
+        }
         activePage = page;
         if (shell == null) return;
         if (nav != null) { shell.setLeft(buildNav()); nav = (VBox) shell.getLeft(); }
@@ -402,7 +428,8 @@ public final class DclsApp extends Application {
 
     void drawTracking() {
         if (trackingMaps == null) return;
-        List<Shipment> active = visibleShipments().stream().filter(s -> s.status() == OrderStatus.IN_TRANSIT).toList();
+        List<Shipment> active = visibleShipments().stream()
+                .filter(s -> s.status() == OrderStatus.IN_TRANSIT || s.status() == OrderStatus.ASSIGNED).toList();
         Map<String, List<Shipment>> byVehicle = active.stream()
                 .filter(s -> s.vehicleId() != null)
                 .collect(Collectors.groupingBy(Shipment::vehicleId, LinkedHashMap::new, Collectors.toList()));
@@ -410,27 +437,50 @@ public final class DclsApp extends Application {
         trackingRoutes.clear();
         trackingTrails.clear();
         for (Map.Entry<String, List<Shipment>> entry : byVehicle.entrySet()) {
-            entry.getValue().stream().map(Shipment::routeId).filter(java.util.Objects::nonNull).findFirst()
-                    .flatMap(routeId -> repository.routes().stream().filter(r -> r.id().equals(routeId)).findFirst())
-                    .ifPresent(route -> {
-                        trackingRoutes.put(entry.getKey(), route);
-                        for (Stop stop : route.stops()) frame.add(ll(stop.x(), stop.y()));
-                    });
+            // One optimized tour per vehicle (live fix → remaining stops), not N per-order lines.
+            // Risky per-routeId stitching removed: tourForVehicle is the single source of truth.
+            try {
+                var tour = tracking.tourForVehicle(entry.getKey());
+                if (!tour.ordered().isEmpty()) {
+                    RoutePlan asRoute = new RoutePlan("tour-" + entry.getKey(), "Tour · " + vehiclePlate(entry.getKey()),
+                            null, tour.ordered(), Math.round(tour.remainingKm() * 10d) / 10d,
+                            routeService.etaMinutes(tour.remainingKm()), false, LocalDateTime.now());
+                    trackingRoutes.put(entry.getKey(), asRoute);
+                    for (Stop stop : tour.ordered()) frame.add(ll(stop.x(), stop.y()));
+                }
+            } catch (RuntimeException ignored) {
+                entry.getValue().stream().map(Shipment::routeId).filter(java.util.Objects::nonNull).findFirst()
+                        .flatMap(routeId -> repository.routes().stream().filter(r -> r.id().equals(routeId)).findFirst())
+                        .ifPresent(route -> {
+                            trackingRoutes.put(entry.getKey(), route);
+                            for (Stop stop : route.stops()) frame.add(ll(stop.x(), stop.y()));
+                        });
+            }
             List<TrackingPoint> trail = repository.trackingHistory().stream()
                     .filter(p -> entry.getKey().equals(p.vehicleId()))
                     .sorted(Comparator.comparing(TrackingPoint::recordedAt))
                     .toList();
-            List<TrackingPoint> recent = trail.subList(Math.max(0, trail.size() - 40), trail.size());
+            // Full trail capped at 500 for rendering; age-fade handled in paintTracking.
+            List<TrackingPoint> recent = trail.subList(Math.max(0, trail.size() - 500), trail.size());
             trackingTrails.put(entry.getKey(), recent);
             for (TrackingPoint p : recent) frame.add(ll(p.x(), p.y()));
         }
         trackingFrame = frame;
-        if (focusedShipmentId != null && trackingMaps != null) {
-            Shipment focused = focusedShipment();
-            TrackingFocus focus = focused == null ? null : trackingFocusFor(focused);
-            if (focus != null && !focus.points().isEmpty()) {
+        if (followSelected && trackingMaps != null && (focusedShipmentId != null || focusedVehicleId != null)) {
+            List<double[]> focusPts = new ArrayList<>();
+            if (focusedVehicleId != null) {
+                RoutePlan tour = trackingRoutes.get(focusedVehicleId);
+                if (tour != null) for (Stop s : tour.stops()) focusPts.add(ll(s.x(), s.y()));
+                TrackingPoint fix = tracking.latestForVehicle(focusedVehicleId);
+                if (fix != null) focusPts.add(ll(fix.x(), fix.y()));
+            } else {
+                Shipment focused = focusedShipment();
+                TrackingFocus focus = focused == null ? null : trackingFocusFor(focused);
+                if (focus != null) focusPts.addAll(focus.points());
+            }
+            if (!focusPts.isEmpty()) {
                 double aspect = trackingMaps.canvas.getWidth() / trackingMaps.canvas.getHeight();
-                trackingMaps.manual = fitAspect(fitBounds(focus.points(), aspect), aspect);
+                trackingMaps.manual = fitAspect(fitBounds(focusPts, aspect), aspect);
             }
         }
         trackingMaps.redraw();
@@ -466,6 +516,7 @@ public final class DclsApp extends Application {
 
     void focusShipment(Shipment shipment) {
         focusedShipmentId = shipment == null ? null : shipment.id();
+        if (shipment != null && shipment.vehicleId() != null) focusedVehicleId = shipment.vehicleId();
         drawTracking();
         refreshFocusChip();
         showEta(shipment);
@@ -473,6 +524,7 @@ public final class DclsApp extends Application {
 
     void clearTrackingFocus() {
         focusedShipmentId = null;
+        focusedVehicleId = null;
         if (trackingMaps != null) trackingMaps.manual = null;
         drawTracking();
         refreshFocusChip();
@@ -482,9 +534,22 @@ public final class DclsApp extends Application {
         if (focusChipBox == null) return;
         focusChipBox.getChildren().clear();
         Shipment focused = focusedShipment();
-        if (focused == null) return;
-        TrackingFocus focus = trackingFocusFor(focused);
-        Label text = new Label("Following " + focused.id() + (focus == null ? "" : " · " + focus.label()));
+        String vehicleFocus = focusedVehicleId;
+        if (focused == null && vehicleFocus == null) return;
+        // Build label safely (tour size, not route object).
+        String tourInfo = "";
+        if (vehicleFocus != null) {
+            try {
+                var tour = tracking.tourForVehicle(vehicleFocus);
+                tourInfo = "Tour " + vehiclePlate(vehicleFocus) + " · " + (tour.ordered().size() - 1) + " stops · "
+                        + String.format("%.1f km left", tour.remainingKm());
+            } catch (RuntimeException ignored) {
+                tourInfo = "Tour " + vehiclePlate(vehicleFocus);
+            }
+        }
+        TrackingFocus focus = focused == null ? null : trackingFocusFor(focused);
+        Label text = new Label(vehicleFocus != null ? tourInfo + (focused == null ? "" : " · " + focused.id())
+                : ("Following " + focused.id() + (focus == null ? "" : " · " + focus.label())));
         text.getStyleClass().add("muted");
         javafx.scene.control.Button clear = new javafx.scene.control.Button("Clear");
         clear.getStyleClass().add("link-button");
@@ -497,24 +562,37 @@ public final class DclsApp extends Application {
 
     void paintTracking(GraphicsContext g, double w, double h, ViewBounds view) {
         Shipment focused = focusedShipment();
-        String focusVehicle = focused == null ? null : focused.vehicleId();
+        String focusVehicle = focusedVehicleId != null ? focusedVehicleId
+                : (focused == null ? null : focused.vehicleId());
         for (String vehicleId : trackingTrails.keySet()) {
             boolean dimmed = focusVehicle != null && !focusVehicle.equals(vehicleId);
             g.setGlobalAlpha(dimmed ? 0.45 : 1.0);
             String color = vehicleColor(vehicleId);
             RoutePlan route = trackingRoutes.get(vehicleId);
-            if (route != null) drawRouteOn(g, w, h, route.stops(), null, color, view);
+            boolean assignedOnly = trackingTrails.getOrDefault(vehicleId, List.of()).isEmpty();
+            if (route != null && !assignedOnly) drawRouteOn(g, w, h, route.stops(), null, color, view);
+            if (route != null && assignedOnly) {
+                // Assigned but no fix yet: dashed planned route.
+                g.save();
+                g.setLineDashes(6, 5);
+                drawRouteOn(g, w, h, route.stops(), null, color, view);
+                g.restore();
+            }
             List<TrackingPoint> recent = trackingTrails.getOrDefault(vehicleId, List.of());
-            g.setStroke(javafx.scene.paint.Color.web(color));
-            g.setLineWidth(dimmed ? 2.5 : 3.5);
+            // Age-faded trail: older segments more transparent.
             for (int i = 1; i < recent.size(); i++) {
+                double ageFrac = recent.size() <= 1 ? 1 : (double) i / recent.size();
+                g.setGlobalAlpha((dimmed ? 0.45 : 1.0) * (0.25 + 0.75 * ageFrac));
+                g.setStroke(javafx.scene.paint.Color.web(color));
+                g.setLineWidth(dimmed ? 2.5 : 3.5);
                 double[] a = projectRaw(recent.get(i - 1).x(), recent.get(i - 1).y(), w, h, view);
                 double[] b = projectRaw(recent.get(i).x(), recent.get(i).y(), w, h, view);
                 strokeClippedLine(g, a[0], a[1], b[0], b[1], w, h);
             }
+            g.setGlobalAlpha(dimmed ? 0.45 : 1.0);
             TrackingPoint latest = recent.isEmpty() ? tracking.latestForVehicle(vehicleId) : recent.get(recent.size() - 1);
             if (latest != null) {
-                boolean stale = tracking.gps().isFixLost(vehicleId);
+                boolean stale = tracking.gps().isStale(vehicleId);
                 drawVehicleMarker(g, w, h, latest.x(), latest.y(), vehiclePlate(vehicleId), stale ? "#8a94a6" : color, stale, view);
             } else if (route != null) {
                 Stop depot = route.stops().get(0);
@@ -551,7 +629,7 @@ public final class DclsApp extends Application {
                 legendSwatch("#17613f", "Depot / route start"),
                 legendSwatch("#176df6", "District stop · blue route"),
                 legendSwatch("#7c3aed", "Custom map pin (click-added)"),
-                legendSwatch("#8a94a6", "STALE — simulated GPS fix lost"));
+                legendSwatch("#8a94a6", "STALE — no live fix >15s"));
         Label title = new Label("Legend"); title.getStyleClass().add("eyebrow");
         VBox box = new VBox(4, title, legend);
         box.setPadding(new Insets(4, 0, 0, 0));
@@ -580,9 +658,15 @@ public final class DclsApp extends Application {
         trackingLegend.getChildren().add(title);
         for (Map.Entry<String, List<Shipment>> entry : byVehicle.entrySet()) {
             String vehicleId = entry.getKey();
-            boolean stale = tracking.gps().isFixLost(vehicleId);
+            boolean stale = tracking.gps().isStale(vehicleId);
+            TrackingPoint latest = tracking.latestForVehicle(vehicleId);
+            String extra = "";
+            if (latest != null) {
+                long age = Math.max(0, java.time.Duration.between(latest.recordedAt(), LocalDateTime.now()).getSeconds());
+                extra = " · " + tracking.gpsStatus(vehicleId) + " · " + age + "s ago";
+            }
             trackingLegend.getChildren().add(legendSwatch(stale ? "#8a94a6" : vehicleColor(vehicleId),
-                    vehiclePlate(vehicleId) + " · " + entry.getValue().size() + " order(s)" + (stale ? " · STALE" : "")));
+                    vehiclePlate(vehicleId) + " · " + entry.getValue().size() + " order(s)" + extra));
         }
     }
 
@@ -680,6 +764,14 @@ public final class DclsApp extends Application {
             double latMin = Math.min(Math.max(view.latMin(), MAP_LAT_MIN), MAP_LAT_MAX - latSpan);
             return new ViewBounds(lonMin, lonMin + lonSpan, latMin, latMin + latSpan);
         }
+
+        void zoomTo(double lon, double lat) {
+            double span = 0.02;
+            double aspect = canvas.getWidth() / canvas.getHeight();
+            ViewBounds v = fitAspect(new ViewBounds(lon - span / 2, lon + span / 2, lat - span / 2 / aspect, lat + span / 2 / aspect), aspect);
+            manual = clamp(v);
+            redraw();
+        }
     }
 
     private static double mercToLat(double merc) {
@@ -688,18 +780,76 @@ public final class DclsApp extends Application {
 
     void showEta(Shipment shipment) {
         if (shipment == null || trackingEta == null) return;
-        TrackingPoint point = tracking.latestFor(shipment.id());
-        if (point == null) { trackingEta.setText("No simulated fix yet for " + vehiclePlate(shipment.vehicleId()) + "."); return; }
+        TrackingPoint point = shipment.vehicleId() == null ? null : tracking.latestForVehicle(shipment.vehicleId());
+        if (point == null) point = tracking.latestFor(shipment.id());
+        if (point == null) { trackingEta.setText("No live fix yet for " + vehiclePlate(shipment.vehicleId()) + " — waiting for NMEA / mobile / GPX."); return; }
         long ordersOnVehicle = shipment.vehicleId() == null ? 0 : visibleShipments().stream()
-                .filter(s -> shipment.vehicleId().equals(s.vehicleId()) && s.status() == OrderStatus.IN_TRANSIT).count();
+                .filter(s -> shipment.vehicleId().equals(s.vehicleId())
+                        && (s.status() == OrderStatus.IN_TRANSIT || s.status() == OrderStatus.ASSIGNED)).count();
         String gps = shipment.vehicleId() == null ? "—" : tracking.gpsStatus(shipment.vehicleId());
-        trackingEta.setText(vehiclePlate(shipment.vehicleId()) + " · " + gps + " · " + ordersOnVehicle + " order(s) aboard"
-                + "  ·  ETA about " + point.etaMinutes() + " min  ·  updated " + point.recordedAt().format(DATE_TIME));
+        long age = Math.max(0, java.time.Duration.between(point.recordedAt(), LocalDateTime.now()).getSeconds());
+        double dev = shipment.vehicleId() == null ? 0 : tracking.deviationKm(shipment.vehicleId(), point.x(), point.y());
+        String alert = "";
+        if (age > 15) alert += " · STALE " + age + "s";
+        if (dev > 0.2) alert += " · OFF-ROUTE " + String.format("%.2f km", dev);
+        if (tracking.arrivedAtDestination(shipment.vehicleId(), 0.15)) alert += " · ARRIVED — confirm delivery";
+        trackingEta.setText(vehiclePlate(shipment.vehicleId()) + " · " + gps + " · " + ordersOnVehicle + " order(s)"
+                + "  ·  ETA about " + point.etaMinutes() + " min  ·  updated " + point.recordedAt().format(DATE_TIME) + alert);
     }
 
-    /** Export simulated phone-GPS fixes as a GPX 1.1 track: the selected delivery's vehicle,
-     *  or every active vehicle when nothing is selected. Opens in real tracker apps. */
-    void exportGpx(Shipment selected) {
+    String feedStatusText() { return feedStatus + " (src=" + (tracking == null ? "nmea" : tracking.feedSource()) + ")"; }
+    void setFeedStatus(String s) { feedStatus = s; if (feedStatusLabel != null) feedStatusLabel.setText(feedStatusText()); }
+
+    /** Poll driver mobile feed once (WiFi). URL from DCLS_MOBILE_FEED_URL. */
+    void pollMobileFeed() {
+        String url = System.getenv().getOrDefault("DCLS_MOBILE_FEED_URL", "").trim();
+        if (url.isEmpty()) {
+            alert(Alert.AlertType.INFORMATION, "No mobile feed configured",
+                    "Set DCLS_MOBILE_FEED_URL to a JSON endpoint, or use Import GPX/NMEA instead.");
+            return;
+        }
+        new Thread(() -> {
+            try {
+                List<GpsFeed.GpsFix> fixes = GpsFeed.pollMobileFeed(url);
+                int n = 0;
+                for (GpsFeed.GpsFix f : fixes) {
+                    try { tracking.ingest(f, null); n++; } catch (RuntimeException ignored) { }
+                }
+                int count = n;
+                javafx.application.Platform.runLater(() -> {
+                    setFeedStatus("Mobile: " + count + " fixes polled");
+                    toast("Mobile feed: " + count + " fixes");
+                    drawTracking();
+                    checkReroute();
+                });
+            } catch (Exception ex) {
+                javafx.application.Platform.runLater(() -> showError("Mobile feed failed: " + ex.getMessage()));
+            }
+        }, "dcls-mobile-feed").start();
+    }
+
+    /** Off-route watchdog: suggest re-route when deviation persists. */
+    void checkReroute() {
+        for (Shipment s : visibleShipments()) {
+            if (s.status() != OrderStatus.IN_TRANSIT || s.vehicleId() == null) continue;
+            TrackingPoint p = tracking.latestForVehicle(s.vehicleId());
+            if (p == null) continue;
+            double dev = tracking.deviationKm(s.vehicleId(), p.x(), p.y());
+            String key = s.vehicleId() + "@" + p.recordedAt();
+            if (dev > 0.3 && !key.equals(lastRerouteKey)) {
+                lastRerouteKey = key;
+                setFeedStatus("Off-route " + String.format("%.2f km", dev) + " — rebuilding route for " + vehiclePlate(s.vehicleId()));
+                try { autoRoutes.buildForVehicle(s.vehicleId()); } catch (RuntimeException ignored) { }
+                drawTracking();
+            }
+            if (tracking.arrivedAtDestination(s.vehicleId(), 0.15)) {
+                setFeedStatus(vehiclePlate(s.vehicleId()) + " arrived — confirm delivery for " + s.id());
+            }
+        }
+    }
+
+    /** Export live GPS track: GPX / CSV / KML. */
+    void exportTrack(Shipment selected) {
         Map<String, List<TrackingPoint>> trails = new LinkedHashMap<>();
         if (selected != null && selected.vehicleId() != null) {
             List<TrackingPoint> trail = repository.trackingHistory().stream()
@@ -708,7 +858,8 @@ public final class DclsApp extends Application {
             if (!trail.isEmpty()) trails.put(selected.vehicleId(), trail);
         } else {
             for (Shipment s : visibleShipments()) {
-                if (s.status() != OrderStatus.IN_TRANSIT || s.vehicleId() == null || trails.containsKey(s.vehicleId())) continue;
+                if ((s.status() != OrderStatus.IN_TRANSIT && s.status() != OrderStatus.ASSIGNED)
+                        || s.vehicleId() == null || trails.containsKey(s.vehicleId())) continue;
                 List<TrackingPoint> trail = repository.trackingHistory().stream()
                         .filter(p -> s.vehicleId().equals(p.vehicleId()))
                         .sorted(Comparator.comparing(TrackingPoint::recordedAt)).toList();
@@ -716,48 +867,72 @@ public final class DclsApp extends Application {
             }
         }
         if (trails.isEmpty()) {
-            alert(Alert.AlertType.INFORMATION, "Nothing to export", "No simulated GPS fixes recorded yet. Open Live tracking and let a delivery move first.");
+            alert(Alert.AlertType.INFORMATION, "Nothing to export", "No live GPS fixes recorded yet. Connect a feed or import GPX/NMEA first.");
             return;
         }
         FileChooser chooser = new FileChooser();
-        chooser.setTitle("Export GPX track");
+        chooser.setTitle("Export track");
         chooser.setInitialFileName("dcls-track.gpx");
-        chooser.getExtensionFilters().add(new FileChooser.ExtensionFilter("GPX files", "*.gpx"));
+        chooser.getExtensionFilters().addAll(
+                new FileChooser.ExtensionFilter("GPX files", "*.gpx"),
+                new FileChooser.ExtensionFilter("CSV files", "*.csv"),
+                new FileChooser.ExtensionFilter("KML files", "*.kml"));
         File file = chooser.showSaveDialog(stage);
         if (file == null) return;
         try {
-            StringBuilder gpx = new StringBuilder("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
-                    + "<gpx version=\"1.1\" creator=\"DCLS\" xmlns=\"http://www.topografix.com/GPX/1/1\">\n");
-            for (Map.Entry<String, List<TrackingPoint>> entry : trails.entrySet()) {
-                gpx.append("  <trk><name>").append(gpxEscape(vehiclePlate(entry.getKey()))).append("</name>")
-                   .append("<desc>Simulated driver phone GPS @ 35 km/h · Brunei Darussalam</desc><trkseg>\n");
-                for (TrackingPoint p : entry.getValue()) {
-                    String time = p.recordedAt().atZone(java.time.ZoneId.systemDefault()).format(DateTimeFormatter.ISO_OFFSET_DATE_TIME);
-                    gpx.append("    <trkpt lat=\"").append(p.y()).append("\" lon=\"").append(p.x()).append("\">")
-                       .append("<time>").append(time).append("</time></trkpt>\n");
+            String name = file.getName().toLowerCase();
+            if (name.endsWith(".csv")) {
+                StringBuilder csv = new StringBuilder("vehicle,lat,lon,speed_kmh,heading,accuracy_m,fix,source,time\n");
+                for (var e : trails.entrySet()) for (TrackingPoint p : e.getValue()) {
+                    csv.append(vehiclePlate(e.getKey())).append(",").append(p.y()).append(",").append(p.x()).append(",")
+                       .append(p.speedKmh()).append(",").append(p.headingDeg() == null ? "" : p.headingDeg()).append(",")
+                       .append(p.accuracyM() == null ? "" : p.accuracyM()).append(",")
+                       .append(p.fixType() == null ? "" : p.fixType().name()).append(",")
+                       .append(p.source() == null ? "" : p.source()).append(",").append(p.recordedAt()).append("\n");
                 }
-                gpx.append("  </trkseg></trk>\n");
+                java.nio.file.Files.writeString(file.toPath(), csv.toString(), java.nio.charset.StandardCharsets.UTF_8);
+            } else if (name.endsWith(".kml")) {
+                StringBuilder kml = new StringBuilder("<?xml version=\"1.0\"?>\n<kml xmlns=\"http://www.opengis.net/kml/2.2\"><Document>\n");
+                for (var e : trails.entrySet()) {
+                    kml.append("<Placemark><name>").append(vehiclePlate(e.getKey())).append("</name><LineString><coordinates>");
+                    for (TrackingPoint p : e.getValue()) kml.append(p.x()).append(",").append(p.y()).append(" ");
+                    kml.append("</coordinates></LineString></Placemark>\n");
+                }
+                kml.append("</Document></kml>\n");
+                java.nio.file.Files.writeString(file.toPath(), kml.toString(), java.nio.charset.StandardCharsets.UTF_8);
+            } else {
+                StringBuilder gpx = new StringBuilder();
+                boolean first = true;
+                for (var e : trails.entrySet()) {
+                    String one = GpsFeed.toGpx(vehiclePlate(e.getKey()), e.getValue());
+                    if (first) gpx.append(one);
+                    else {
+                        // Merge additional tracks into first document.
+                        int ins = gpx.lastIndexOf("</gpx>");
+                        String inner = one.substring(one.indexOf("<trk>"), one.indexOf("</gpx>"));
+                        gpx.insert(ins, inner);
+                    }
+                    first = false;
+                }
+                java.nio.file.Files.writeString(file.toPath(), gpx.toString(), java.nio.charset.StandardCharsets.UTF_8);
             }
-            gpx.append("</gpx>\n");
-            java.nio.file.Files.writeString(file.toPath(), gpx.toString(), java.nio.charset.StandardCharsets.UTF_8);
-            toast("GPX exported: " + file.getName() + " (" + trails.size() + " vehicle(s)).");
+            toast("Track exported: " + file.getName() + " (" + trails.size() + " vehicle(s)).");
         } catch (Exception exception) {
-            showError("Could not write the GPX file: " + readable(exception));
+            showError("Could not write the track file: " + readable(exception));
         }
     }
 
-    private String gpxEscape(String text) {
-        if (text == null) return "";
-        return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
-    }
+    /** Back-compat alias. */
+    void exportGpx(Shipment selected) { exportTrack(selected); }
 
     void startTracking() {
         if (trackingTimer != null) trackingTimer.stop();
         trackingTimer = new Timeline(new KeyFrame(Duration.seconds(1), event -> {
-            for (Shipment shipment : visibleShipments()) if (shipment.status() == OrderStatus.IN_TRANSIT) {
-                try { tracking.advance(shipment); } catch (RuntimeException exception) { stopTracking(); showError(exception.getMessage()); break; }
-            }
+            // No simulation: just refresh ages, stale flags, arrival/off-route watchdog.
             drawTracking();
+            checkReroute();
+            Shipment focused = focusedShipment();
+            if (focused != null) showEta(focused);
             if (activePage.equals("dashboard")) showPage("dashboard");
         }));
         trackingTimer.setCycleCount(Timeline.INDEFINITE); trackingTimer.play();
