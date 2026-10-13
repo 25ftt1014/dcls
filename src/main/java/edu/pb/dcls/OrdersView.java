@@ -128,6 +128,7 @@ final class OrdersView {
         page.getChildren().addAll(tools, scroll); VBox.setVgrow(scroll, ALWAYS); return page;
     }
 
+<<<<<<< HEAD
     private static boolean isAssigned(Shipment shipment) { return shipment.status() == OrderStatus.ASSIGNED || shipment.status() == OrderStatus.IN_TRANSIT; }
 
     private static Shipment byId(List<Shipment> rows, String id) { return rows.stream().filter(row -> row.id().equals(id)).findFirst().orElse(null); }
@@ -212,6 +213,21 @@ final class OrdersView {
         table.getColumns().add(textCol("Destination", Shipment::address, 260));
         table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY);
         return table;
+=======
+    private void showShipmentDetails(VBox panel, Shipment shipment) {
+        while (panel.getChildren().size() > 1) panel.getChildren().removeLast();
+        if (shipment == null) { panel.getChildren().add(new Label("Select an order to see its details.")); return; }
+        Label orderId=new Label(shipment.id()); orderId.setStyle("-fx-font-size:16px;-fx-font-weight:700;");
+        panel.getChildren().addAll(orderId, detailField("Customer", shipment.customerName()), detailField("Phone", shipment.customerContact()),
+                detailField("Driver / vehicle", app.driverName(shipment.driverId())+" · "+app.vehiclePlate(shipment.vehicleId())),
+                detailField("Shipment", shipment.quantity()+" packages · "+shipment.weightKg()+" kg"), detailField("Status", shipment.status().label()));
+        Button trackingButton=button("Open tracking", "primary-button"); trackingButton.setMaxWidth(Double.MAX_VALUE);
+        boolean trackable = (shipment.status() == OrderStatus.ASSIGNED || shipment.status() == OrderStatus.IN_TRANSIT)
+                && shipment.vehicleId() != null;
+        trackingButton.setDisable(!trackable);
+        if (!trackable) trackingButton.setTooltip(new javafx.scene.control.Tooltip("Assign a driver and vehicle first"));
+        trackingButton.setOnAction(event -> { app.focusedShipmentId = shipment.id(); app.showPage("tracking"); }); panel.getChildren().add(trackingButton);
+>>>>>>> origin/Sam-part
     }
 
     private TableView<Shipment> shipmentTable() {

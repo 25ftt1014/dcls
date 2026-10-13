@@ -35,7 +35,8 @@ final class TrackingView {
         app.trackingCanvas = app.trackingMaps.canvas;
         VBox map = panel(new Label("Fleet map  ·  Brunei Darussalam — scroll to zoom, drag to pan")); ((Label) map.getChildren().get(0)).getStyleClass().add("section-title");
         app.trackingLegend = new VBox(3);
-        map.getChildren().addAll(app.trackingCanvas, app.trackingMaps.zoomBar, app.legendBox(), app.trackingLegend);
+        app.focusChipBox = new VBox(2);
+        map.getChildren().addAll(app.trackingCanvas, app.trackingMaps.zoomBar, app.focusChipBox, app.legendBox(), app.trackingLegend);
         VBox active = panel(new Label("Active deliveries")); ((Label) active.getChildren().get(0)).getStyleClass().add("section-title");
         app.trackingEta = new Label("Select a delivery to view its latest estimate."); app.trackingEta.getStyleClass().add("muted"); app.trackingEta.setWrapText(true);
         TableView<Shipment> table = new TableView<>(); table.setPlaceholder(new Label("No active deliveries."));
@@ -47,7 +48,7 @@ final class TrackingView {
         table.getColumns().add(textCol("Status", s -> s.status().label(), 80));
         List<Shipment> activeShipments = app.visibleShipments().stream().filter(s -> s.status() == OrderStatus.IN_TRANSIT).toList();
         table.setItems(FXCollections.observableArrayList(activeShipments)); table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY); table.setPrefHeight(240);
-        table.getSelectionModel().selectedItemProperty().addListener((o, old, selected) -> app.showEta(selected));
+        table.getSelectionModel().selectedItemProperty().addListener((o, old, selected) -> app.focusShipment(selected));
         javafx.scene.control.Button gpsToggle = new javafx.scene.control.Button("Simulate GPS fix lost / restore");
         gpsToggle.setMaxWidth(Double.MAX_VALUE);
         gpsToggle.setOnAction(event -> {
@@ -69,6 +70,11 @@ final class TrackingView {
         active.getChildren().addAll(table, gpsToggle, gpxExport, app.trackingEta);
         HBox content = new HBox(12, map, active); HBox.setHgrow(map, ALWAYS); active.setPrefWidth(230); active.setMinWidth(220);
         page.getChildren().add(content);
+        if (app.focusedShipmentId != null) {
+            table.getItems().stream().filter(s -> app.focusedShipmentId.equals(s.id())).findFirst()
+                    .ifPresent(s -> table.getSelectionModel().select(s));
+        }
+        app.refreshFocusChip();
         app.drawTracking();
         return page;
     }

@@ -234,6 +234,24 @@
 .app-dialog .button-bar .button:default:hover { -fx-background-color: -accent-hover; -fx-border-color: -accent-hover; }
 .form-error { -fx-text-fill: #a6281d; -fx-background-color: #fdecea; -fx-background-radius: 8; -fx-padding: 9 12; -fx-font-size: 12px; -fx-font-weight: 600; }
 
+/* ---- route stepper -------------------------------------------- */
+.step-header { -fx-padding: 8 0 0 0; }
+.step-badge {
+    -fx-background-color: -accent; -fx-text-fill: #ffffff;
+    -fx-font-weight: 800; -fx-font-size: 12px;
+    -fx-min-width: 22; -fx-min-height: 22; -fx-max-width: 22; -fx-max-height: 22;
+    -fx-alignment: center; -fx-background-radius: 11;
+}
+.mini-button {
+    -fx-background-color: transparent; -fx-text-fill: -ink-soft;
+    -fx-font-weight: 800; -fx-font-size: 12px;
+    -fx-padding: 2 7; -fx-background-radius: 7; -fx-cursor: hand;
+}
+.mini-button:hover { -fx-background-color: -accent-soft; -fx-text-fill: -accent-hover; }
+.mini-button:disabled { -fx-opacity: 0.35; }
+.leg-row { -fx-padding: 5 8; -fx-background-radius: 7; -fx-font-size: 12px; -fx-text-fill: -ink-soft; }
+.leg-row:hover { -fx-background-color: -accent-soft; -fx-text-fill: -accent-hover; }
+
 /* ---- map & misc ---------------------------------------------- */
 .map-canvas { -fx-border-color: -line; -fx-border-radius: 10; -fx-background-radius: 10; }
 

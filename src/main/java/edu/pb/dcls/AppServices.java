@@ -1,10 +1,17 @@
 package edu.pb.dcls;
 
 import java.io.InputStream;
+import java.net.URI;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -12,7 +19,9 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static edu.pb.dcls.Domain.*;
 
@@ -357,6 +366,406 @@ final class AppServices {
         }
     }
 
+    /** Live road routing via OSRM (demo server, no key): true road-following legs for
+     *  arbitrary points. Memory + disk cache, paced serial fetches; layered fallbacks
+     *  (bundled pair, district-snap, straight) keep routing working offline. */
+    static final class OsrmRouter {
+        private OsrmRouter() { }
+
+        record LegResult(List<double[]> path, double km, boolean roadQuality) { }
+
+        private static final String OSRM_BASE = System.getenv()
+                .getOrDefault("DCLS_OSRM_URL", "https://router.project-osrm.org").trim().replaceAll("/$", "");
+        private static final Map<String, Stop> DISTRICTS = BruneiPlaces.places();
+        private static final Map<String, LegResult> OMEM = Collections.synchronizedMap(new LinkedHashMap<>(128, 0.75f, true) {
+            @Override protected boolean removeEldestEntry(Map.Entry<String, LegResult> entry) { return size() > 200; }
+        });
+        private static final Map<String, double[]> NEAR = Collections.synchronizedMap(new LinkedHashMap<>(128, 0.75f, true) {
+            @Override protected boolean removeEldestEntry(Map.Entry<String, double[]> entry) { return size() > 200; }
+        });
+        private static final Set<String> OSM_IN_FLIGHT = Collections.synchronizedSet(new java.util.HashSet<>());
+        private static final java.net.http.HttpClient OSRM_HTTP = java.net.http.HttpClient.newBuilder()
+                .version(java.net.http.HttpClient.Version.HTTP_1_1)
+                .connectTimeout(Duration.ofSeconds(5)).proxy(MapRenderer.tileProxy()).build();
+        private static final AtomicLong NEXT_OSRM_AT = new AtomicLong();
+
+        static String osrmUrl(double lonA, double latA, double lonB, double latB) {
+            return OSRM_BASE + "/route/v1/driving/" + f6(lonA) + "," + f6(latA) + ";" + f6(lonB) + "," + f6(latB)
+                    + "?overview=full&geometries=geojson";
+        }
+
+        private static String f6(double value) { return String.format(Locale.US, "%.6f", value); }
+
+        private static String okey(double lonA, double latA, double lonB, double latB) {
+            return "osrm:" + r4(lonA) + "," + r4(latA) + ">" + r4(lonB) + "," + r4(latB);
+        }
+
+        private static double r4(double value) { return Math.round(value * 1e4) / 1e4; }
+
+        private static Path osrmDiskPath(String okey) {
+            return Path.of(System.getProperty("user.home"), ".dcls", "osrm", Integer.toHexString(okey.hashCode()) + ".json");
+        }
+
+        /** Cached leg (bundled pair or prior OSRM result), or null when a fetch is needed. */
+        static LegResult leg(double lonA, double latA, double lonB, double latB) {
+            List<double[]> exact = RoadNetwork.PATHS.get(RoadNetwork.key(lonA, latA, lonB, latB));
+            Double exactKm = RoadNetwork.KM.get(RoadNetwork.key(lonA, latA, lonB, latB));
+            if (exact != null && exactKm != null) return new LegResult(exact, exactKm, true);
+            String okey = okey(lonA, latA, lonB, latB);
+            LegResult hit = OMEM.get(okey);
+            if (hit != null) return hit;
+            try {
+                Path disk = osrmDiskPath(okey);
+                if (Files.isRegularFile(disk)) {
+                    LegResult parsed = parseOsrm(new String(Files.readAllBytes(disk), StandardCharsets.UTF_8));
+                    if (parsed != null) { OMEM.put(okey, parsed); return parsed; }
+                }
+            } catch (Exception ignored) { }
+            return null;
+        }
+
+        /** Cached OSRM km without fetching (for instant ordering); null when unknown. */
+        static Double cachedKm(double lonA, double latA, double lonB, double latB) {
+            LegResult cached = leg(lonA, latA, lonB, latB);
+            return cached == null ? null : cached.km();
+        }
+
+        /** Full resolution: cache, then one network fetch, then district-snap fallback. */
+        static LegResult resolve(double lonA, double latA, double lonB, double latB) {
+            LegResult cached = leg(lonA, latA, lonB, latB);
+            if (cached != null) return cached;
+            LegResult fetched = fetchLeg(lonA, latA, lonB, latB);
+            if (fetched != null) return fetched;
+            return snapLeg(lonA, latA, lonB, latB);
+        }
+
+        static LegResult fetchLeg(double lonA, double latA, double lonB, double latB) {
+            String okey = okey(lonA, latA, lonB, latB);
+            if (!OSM_IN_FLIGHT.add(okey)) return null;
+            try {
+                paceOsrm();
+                HttpRequest request = HttpRequest.newBuilder(URI.create(osrmUrl(lonA, latA, lonB, latB)))
+                        .timeout(Duration.ofSeconds(12))
+                        .header("User-Agent", "DCLS classroom demo")
+                        .GET().build();
+                HttpResponse<String> response = OSRM_HTTP.send(request, HttpResponse.BodyHandlers.ofString());
+                if (response.statusCode() == 200) {
+                    LegResult parsed = parseOsrm(response.body());
+                    if (parsed != null) {
+                        OMEM.put(okey, parsed);
+                        try {
+                            Path disk = osrmDiskPath(okey);
+                            Files.createDirectories(disk.getParent());
+                            Files.writeString(disk, response.body(), StandardCharsets.UTF_8);
+                        } catch (Exception ignored) { }
+                        return parsed;
+                    }
+                    System.out.println("[dcls-osrm] " + shortKey(lonA, latA, lonB, latB) + " -> unparseable");
+                } else {
+                    System.out.println("[dcls-osrm] " + shortKey(lonA, latA, lonB, latB) + " -> HTTP " + response.statusCode());
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            } catch (Exception e) {
+                System.out.println("[dcls-osrm] " + shortKey(lonA, latA, lonB, latB) + " -> " + e.getClass().getSimpleName());
+            } finally {
+                OSM_IN_FLIGHT.remove(okey);
+            }
+            return null;
+        }
+
+        /** Snap a point to the nearest road via OSRM /nearest (r6 coords), or null. */
+        static double[] snapToRoad(double lon, double lat) {
+            String key = "nr:" + r4(lon) + "," + r4(lat);
+            double[] hit = NEAR.get(key);
+            if (hit != null) return hit;
+            Path disk = Path.of(System.getProperty("user.home"), ".dcls", "osrm",
+                    "nearest-" + Integer.toHexString(key.hashCode()) + ".txt");
+            try {
+                if (Files.isRegularFile(disk)) {
+                    String[] parts = Files.readString(disk, StandardCharsets.UTF_8).trim().split(",");
+                    if (parts.length == 2) {
+                        double[] coords = {Double.parseDouble(parts[0]), Double.parseDouble(parts[1])};
+                        NEAR.put(key, coords);
+                        return coords;
+                    }
+                }
+            } catch (Exception ignored) { }
+            paceOsrm();
+            try {
+                String url = OSRM_BASE + "/nearest/v1/driving/" + f6(lon) + "," + f6(lat) + ".json?number=1";
+                HttpRequest request = HttpRequest.newBuilder(URI.create(url))
+                        .timeout(Duration.ofSeconds(12))
+                        .header("User-Agent", "DCLS classroom demo")
+                        .GET().build();
+                HttpResponse<String> response = OSRM_HTTP.send(request, HttpResponse.BodyHandlers.ofString());
+                if (response.statusCode() == 200) {
+                    java.util.regex.Matcher location = java.util.regex.Pattern
+                            .compile("\"location\":\\[(-?[\\d.]+),(-?[\\d.]+)\\]").matcher(response.body());
+                    if (location.find()) {
+                        double[] coords = {Double.parseDouble(location.group(1)), Double.parseDouble(location.group(2))};
+                        NEAR.put(key, coords);
+                        try {
+                            Files.createDirectories(disk.getParent());
+                            Files.writeString(disk, coords[0] + "," + coords[1], StandardCharsets.UTF_8);
+                        } catch (Exception ignored) { }
+                        return coords;
+                    }
+                } else {
+                    System.out.println("[dcls-osrm] nearest " + shortKey(lon, lat, lon, lat) + " -> HTTP " + response.statusCode());
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            } catch (Exception e) {
+                System.out.println("[dcls-osrm] nearest " + shortKey(lon, lat, lon, lat) + " -> " + e.getClass().getSimpleName());
+            }
+            return null;
+        }
+
+        /** One-shot distance matrix (km) via OSRM /table, or null offline. Depot-agnostic. */
+        static double[][] tableKm(List<Stop> stops) {
+            if (stops == null || stops.size() < 2 || stops.size() > 100) return null;
+            StringBuilder coords = new StringBuilder();
+            for (Stop stop : stops) {
+                if (coords.length() > 0) coords.append(';');
+                coords.append(f6(stop.x())).append(',').append(f6(stop.y()));
+            }
+            paceOsrm();
+            try {
+                String url = OSRM_BASE + "/table/v1/driving/" + coords + "?annotations=distance";
+                HttpRequest request = HttpRequest.newBuilder(URI.create(url))
+                        .timeout(Duration.ofSeconds(15))
+                        .header("User-Agent", "DCLS classroom demo")
+                        .GET().build();
+                HttpResponse<String> response = OSRM_HTTP.send(request, HttpResponse.BodyHandlers.ofString());
+                if (response.statusCode() == 200) {
+                    double[][] matrix = parseTable(response.body());
+                    if (matrix != null && matrix.length == stops.size()) return matrix;
+                    System.out.println("[dcls-osrm] table -> unparseable");
+                } else {
+                    System.out.println("[dcls-osrm] table -> HTTP " + response.statusCode());
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            } catch (Exception e) {
+                System.out.println("[dcls-osrm] table -> " + e.getClass().getSimpleName());
+            }
+            return null;
+        }
+
+        /** Parse an OSRM /table response into a square km matrix, or null. */
+        static double[][] parseTable(String json) {
+            int d = json.indexOf("\"distances\"");
+            if (d < 0) return null;
+            int start = json.indexOf('[', d + 12);
+            if (start < 0) return null;
+            List<List<Double>> rows = new ArrayList<>();
+            List<Double> current = null;
+            int depth = 0;
+            StringBuilder num = new StringBuilder();
+            for (int i = start; i < json.length(); i++) {
+                char c = json.charAt(i);
+                if (c == '[') {
+                    depth++;
+                    if (depth == 2) current = new ArrayList<>();
+                } else if (c == ']') {
+                    flushNumber(num, current);
+                    if (depth == 2 && current != null) { rows.add(current); current = null; }
+                    depth--;
+                    if (depth == 0) break;
+                } else if (current != null && (Character.isDigit(c) || c == '.' || c == '-' || c == '+' || c == 'e' || c == 'E')) {
+                    num.append(c);
+                } else {
+                    flushNumber(num, current);
+                }
+            }
+            if (rows.size() < 2) return null;
+            for (List<Double> row : rows) if (row.size() != rows.size()) return null;
+            double[][] matrix = new double[rows.size()][rows.size()];
+            for (int i = 0; i < rows.size(); i++) {
+                if (rows.get(i).contains(null)) return null;
+                for (int j = 0; j < rows.size(); j++) matrix[i][j] = rows.get(i).get(j) / 1000d;
+            }
+            return matrix;
+        }
+
+        private static void flushNumber(StringBuilder num, List<Double> current) {
+            if (num.length() == 0 || current == null) { num.setLength(0); return; }
+            try {
+                current.add(Double.valueOf(num.toString()));
+            } catch (NumberFormatException ignored) {
+                current.add(null);
+            }
+            num.setLength(0);
+        }
+
+        /** Fastest visiting order over a km matrix, first stop anchored.
+         *  Exact brute force up to 8 movable stops, greedy + 2-opt beyond. */
+        static List<Stop> orderByMatrix(List<Stop> stops, double[][] matrix) {
+            int n = stops.size();
+            if (n <= 2 || matrix == null || matrix.length != n) return new ArrayList<>(stops);
+            int m = n - 1;
+            int[] best;
+            if (m <= 8) {
+                int[] perm = new int[m];
+                for (int i = 0; i < m; i++) perm[i] = i + 1;
+                best = perm.clone();
+                double bestCost = tourCost(perm, matrix);
+                while (nextPermutation(perm)) {
+                    double cost = tourCost(perm, matrix);
+                    if (cost < bestCost) { bestCost = cost; best = perm.clone(); }
+                }
+            } else {
+                best = twoOptIndices(matrix);
+            }
+            List<Stop> ordered = new ArrayList<>(n);
+            ordered.add(stops.get(0));
+            for (int idx : best) ordered.add(stops.get(idx));
+            return ordered;
+        }
+
+        private static double tourCost(int[] perm, double[][] matrix) {
+            double cost = matrix[0][perm[0]];
+            for (int i = 1; i < perm.length; i++) cost += matrix[perm[i - 1]][perm[i]];
+            return cost;
+        }
+
+        private static boolean nextPermutation(int[] perm) {
+            int i = perm.length - 2;
+            while (i >= 0 && perm[i] >= perm[i + 1]) i--;
+            if (i < 0) return false;
+            int j = perm.length - 1;
+            while (perm[j] <= perm[i]) j--;
+            int swap = perm[i]; perm[i] = perm[j]; perm[j] = swap;
+            for (int a = i + 1, b = perm.length - 1; a < b; a++, b--) {
+                swap = perm[a]; perm[a] = perm[b]; perm[b] = swap;
+            }
+            return true;
+        }
+
+        private static int[] twoOptIndices(double[][] matrix) {
+            int n = matrix.length;
+            boolean[] used = new boolean[n];
+            int[] order = new int[n - 1];
+            used[0] = true;
+            int current = 0;
+            for (int k = 0; k < n - 1; k++) {
+                int next = -1; double best = Double.MAX_VALUE;
+                for (int j = 1; j < n; j++) {
+                    if (!used[j] && matrix[current][j] < best) { best = matrix[current][j]; next = j; }
+                }
+                order[k] = next; used[next] = true; current = next;
+            }
+            boolean improved = true;
+            while (improved) {
+                improved = false;
+                for (int i = 0; i < order.length - 1; i++) {
+                    for (int j = i + 1; j < order.length; j++) {
+                        int a = i == 0 ? 0 : order[i - 1];
+                        int b = order[i], c = order[j];
+                        double before = matrix[a][b] + (j + 1 < order.length ? matrix[c][order[j + 1]] : 0);
+                        double after = matrix[a][c] + (j + 1 < order.length ? matrix[order[i]][order[j + 1]] : 0);
+                        if (after < before - 1e-9) {
+                            for (int x = i, y = j; x < y; x++, y--) {
+                                int swap = order[x]; order[x] = order[y]; order[y] = swap;
+                            }
+                            improved = true;
+                        }
+                    }
+                }
+            }
+            return order;
+        }
+
+        private static void paceOsrm() {
+            long waitUntil = NEXT_OSRM_AT.get();
+            long now = System.currentTimeMillis();
+            if (waitUntil > now) {
+                try {
+                    Thread.sleep(waitUntil - now);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+            NEXT_OSRM_AT.set(Math.max(System.currentTimeMillis(), waitUntil) + 200);
+        }
+
+        private static String shortKey(double lonA, double latA, double lonB, double latB) {
+            return f6(lonA) + "," + f6(latA) + ">" + f6(lonB) + "," + f6(latB);
+        }
+
+        /** Parse an OSRM route response (GeoJSON geometry): road path + km, or null. */
+        static LegResult parseOsrm(String json) {
+            int routes = json.indexOf("\"routes\"");
+            if (routes < 0) return null;
+            double km = -1;
+            java.util.regex.Matcher distance = java.util.regex.Pattern.compile("\"distance\":([\\d.]+)").matcher(json);
+            if (distance.find(routes)) {
+                try { km = Double.parseDouble(distance.group(1)) / 1000d; } catch (NumberFormatException ignored) { }
+            }
+            int coords = json.indexOf("\"coordinates\"", routes);
+            if (coords < 0 || km < 0) return null;
+            int arrStart = json.indexOf('[', coords + 14);
+            if (arrStart < 0) return null;
+            int depth = 0, end = arrStart;
+            for (; end < json.length(); end++) {
+                char c = json.charAt(end);
+                if (c == '[') depth++;
+                else if (c == ']') { depth--; if (depth == 0) break; }
+            }
+            java.util.regex.Matcher numbers = java.util.regex.Pattern.compile("-?[\\d.]+")
+                    .matcher(json.substring(arrStart, Math.min(end + 1, json.length())));
+            List<double[]> path = new ArrayList<>();
+            List<Double> values = new ArrayList<>();
+            while (numbers.find()) {
+                try { values.add(Double.parseDouble(numbers.group())); } catch (NumberFormatException ignored) { }
+            }
+            for (int i = 0; i + 1 < values.size(); i += 2) {
+                path.add(new double[] {values.get(i), values.get(i + 1)});
+            }
+            if (path.size() < 2) return null;
+            return new LegResult(List.copyOf(path), km, true);
+        }
+
+        private static Stop nearestPlace(double lon, double lat) {
+            Stop best = BruneiPlaces.DEPOT;
+            double bestKm = Double.MAX_VALUE;
+            for (Stop stop : DISTRICTS.values()) {
+                double d = BruneiPlaces.haversineKm(lon, lat, stop.x(), stop.y());
+                if (d < bestKm) { bestKm = d; best = stop; }
+            }
+            return best;
+        }
+
+        /** Road distance estimate without network: stored pair km or district-snap math. */
+        static double snapKm(double lonA, double latA, double lonB, double latB) {
+            Stop snapA = nearestPlace(lonA, latA), snapB = nearestPlace(lonB, latB);
+            Double midKm = RoadNetwork.KM.get(RoadNetwork.key(snapA.x(), snapA.y(), snapB.x(), snapB.y()));
+            if (midKm == null) return BruneiPlaces.haversineKm(lonA, latA, lonB, latB);
+            return BruneiPlaces.haversineKm(lonA, latA, snapA.x(), snapA.y())
+                    + midKm + BruneiPlaces.haversineKm(snapB.x(), snapB.y(), lonB, latB);
+        }
+
+        /** Offline-approximate leg: stub to nearest districts, stored road path between. */
+        static LegResult snapLeg(double lonA, double latA, double lonB, double latB) {
+            Stop snapA = nearestPlace(lonA, latA), snapB = nearestPlace(lonB, latB);
+            String pairKey = RoadNetwork.key(snapA.x(), snapA.y(), snapB.x(), snapB.y());
+            List<double[]> mid = RoadNetwork.PATHS.get(pairKey);
+            Double midKm = RoadNetwork.KM.get(pairKey);
+            if (mid == null || midKm == null || mid.size() < 2) {
+                double km = BruneiPlaces.haversineKm(lonA, latA, lonB, latB);
+                return new LegResult(List.of(new double[] {lonA, latA}, new double[] {lonB, latB}), km, false);
+            }
+            List<double[]> path = new ArrayList<>();
+            path.add(new double[] {lonA, latA});
+            path.addAll(mid);
+            path.add(new double[] {lonB, latB});
+            double km = BruneiPlaces.haversineKm(lonA, latA, snapA.x(), snapA.y())
+                    + midKm + BruneiPlaces.haversineKm(snapB.x(), snapB.y(), lonB, latB);
+            return new LegResult(List.copyOf(path), km, false);
+        }
+    }
+
     static final class RouteService {
         private final Map<String, Stop> places = BruneiPlaces.places();
         private final Repository repository;
@@ -375,6 +784,7 @@ final class AppServices {
             return optimizeStops(routeName, stops, driver);
         }
 
+<<<<<<< HEAD
         /** Optimize a mixed list of district and map-clicked custom stops. */
         RoutePlan optimizeStops(String routeName, List<Stop> stops, User driver) {
             RoutePlan route = calculateStops(routeName, stops, driver);
@@ -383,12 +793,18 @@ final class AppServices {
         }
 
         RoutePlan calculateStops(String routeName, List<Stop> stops, User driver) {
+=======
+        /** Preview-only calculation: visiting order + metrics without persisting.
+         *  Safe for debounced auto-calc; only Save &amp; assign writes history. */
+        RoutePlan computeRoute(String routeName, List<Stop> stops) {
+>>>>>>> origin/Sam-part
             if (stops == null || stops.size() < 2) throw new AppException("Add a depot and at least one stop.");
             List<Stop> ordered = nearestNeighbor(new ArrayList<>(stops));
             twoOpt(ordered);
             double km = totalKm(ordered);
             int minutes = Math.max(1, (int) Math.ceil(km / BruneiPlaces.AVG_SPEED_KMH * 60));
             return new RoutePlan(id(), routeName == null || routeName.isBlank() ? "Delivery route" : routeName.trim(),
+<<<<<<< HEAD
                     driver == null ? null : driver.id(), ordered, round(km), minutes, false, LocalDateTime.now());
         }
 
@@ -398,6 +814,19 @@ final class AppServices {
                 throw new AppException("This route is assigned to an order. Reassign the order before deleting the route.");
             }
             repository.deleteRoute(route.id());
+=======
+                    null, ordered, round(km), minutes, false, LocalDateTime.now());
+        }
+
+        /** Optimize a mixed list of district and map-clicked custom stops (persists). */
+        RoutePlan optimizeStops(String routeName, List<Stop> stops, User driver) {
+            RoutePlan preview = computeRoute(routeName, stops);
+            RoutePlan route = new RoutePlan(preview.id(), preview.name(),
+                    driver == null ? null : driver.id(), preview.stops(),
+                    preview.distanceKm(), preview.estimatedMinutes(), preview.completed(), preview.createdAt());
+            repository.saveRoute(route);
+            return route;
+>>>>>>> origin/Sam-part
         }
 
         /** Cumulative arrival minutes per stop along the given order (road km @ demo speed). */
@@ -473,12 +902,18 @@ final class AppServices {
 
         private double distance(Stop first, Stop second) {
             Double road = RoadNetwork.roadKm(first.x(), first.y(), second.x(), second.y());
-            return road != null ? road : BruneiPlaces.haversineKm(first, second);
+            if (road != null) return road;
+            Double cached = OsrmRouter.cachedKm(first.x(), first.y(), second.x(), second.y());
+            if (cached != null) return cached;
+            return OsrmRouter.snapKm(first.x(), first.y(), second.x(), second.y());
         }
 
-        /** Road-following polyline between two stops (straight fallback when unknown). */
+        /** Road-following polyline between two stops (OSRM cache, district-snap,
+         *  then straight fallback when unknown). */
         static List<double[]> legPath(Stop first, Stop second) {
-            return RoadNetwork.roadPath(first.x(), first.y(), second.x(), second.y());
+            OsrmRouter.LegResult cached = OsrmRouter.leg(first.x(), first.y(), second.x(), second.y());
+            if (cached != null) return cached.path();
+            return OsrmRouter.snapLeg(first.x(), first.y(), second.x(), second.y()).path();
         }
     }
 
