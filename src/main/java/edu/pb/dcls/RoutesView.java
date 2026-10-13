@@ -289,55 +289,10 @@ final class RoutesView {
             }
         });
         if (app.routeStopsDraft.isEmpty()) app.routeStopsDraft.add(AppServices.BruneiPlaces.DEPOT);
-<<<<<<< HEAD
-        ComboBox<User> driver = app.driverCombo(); driver.setPromptText("Assign driver (optional)");
-        Button optimize = button("Optimize route", "secondary-button");
-        Button saveAssign = button("Save & assign", "primary-button");
-        Button clickToggle = button("Map clicks: add stops ON", "secondary-button");
-        Label routeResult = new Label("Add at least one delivery stop after the depot."); routeResult.getStyleClass().add("muted"); routeResult.setWrapText(true);
-        VBox etaBreakdown = new VBox(2);
-        DclsApp.MapController previewMap = app.new MapController(430, 330);
-        previewMap.content = () -> app.previewStops.stream().map(s -> new double[] {s.x(), s.y()}).toList();
-        previewMap.painter = (g, v) -> {
-            if (!app.previewStops.isEmpty()) MapRenderer.drawRouteOn(g, previewMap.canvas.getWidth(), previewMap.canvas.getHeight(), app.previewStops, null, "#176df6", v);
-        };
-        final Runnable[] optimizeRouteRef = new Runnable[1];
-        previewMap.clickAction = lonLat -> {
-            Stop pin = new Stop("custom-" + AppServices.id(), "Custom pin " + (++app.customPinCount), lonLat[0], lonLat[1]);
-            app.routeStopsDraft.add(pin);
-            if (optimizeRouteRef[0] != null) optimizeRouteRef[0].run();
-        };
-        final RoutePlan[] planned = {null};
         final RoutePlan[] editing = {null};
-        final boolean[] saved = {false};
-        Runnable optimizeRoute = () -> {
-            String routeName = name.getText();
-            List<Stop> stops = new ArrayList<>(app.routeStopsDraft);
-            User selectedDriver = driver.getValue();
-            RoutePlan currentEdit = editing[0];
-            optimize.setDisable(true);
-            optimize.setText("Optimizing…");
-            app.runAsync(() -> {
-                RoutePlan calculated = app.routeService.calculateStops(routeName, stops, selectedDriver);
-                planned[0] = currentEdit == null ? calculated : new RoutePlan(currentEdit.id(), calculated.name(), calculated.driverId(),
-                        calculated.stops(), calculated.distanceKm(), calculated.estimatedMinutes(), currentEdit.completed(), currentEdit.createdAt());
-                saved[0] = false;
-            }, () -> {
-                optimize.setDisable(false); optimize.setText("Optimize route");
-                RoutePlan plan = planned[0];
-                app.previewStops = plan.stops();
-                routeResult.setText(String.format("%s  ·  %.1f km  ·  about %d minutes", plan.name(), plan.distanceKm(), plan.estimatedMinutes()));
-                app.showEtaBreakdown(etaBreakdown, plan);
-                previewMap.redraw();
-            }, exception -> { optimize.setDisable(false); optimize.setText("Optimize route"); app.showError(app.readable(exception)); });
-        };
-        optimizeRouteRef[0] = optimizeRoute;
-        optimize.setOnAction(event -> optimizeRoute.run());
-=======
         previewMap.clickAction = lonLat -> placePinAt(lonLat[0], lonLat[1], markDirty);
         optimize.setOnAction(event -> { debounce.stop(); runCalcRef[0].accept(true); });
         optimizeToggle.setOnAction(event -> markDirty.run());
->>>>>>> origin/Sam-part
         clickToggle.setOnAction(event -> {
             if (previewMap.clickAction != null) {
                 previewMap.clickAction = null;
