@@ -69,7 +69,7 @@ final class DashboardView {
         for (Map.Entry<String, Shipment> entry : activeByVehicle.entrySet()) {
             Optional<Vehicle> vehicle = app.repository.vehicle(entry.getKey());
             if (vehicle.isEmpty()) continue;
-            TrackingPoint fix = app.tracking.latestForVehicle(entry.getKey());
+            TrackingPoint fix = app.tracking.latestPlausibleForVehicle(entry.getKey());
             boolean stale = app.tracking.gps().isStale(entry.getKey());
             plots.add(new VehiclePlot(
                     fix != null ? fix.x() : DEPOT.x(),
@@ -92,7 +92,7 @@ final class DashboardView {
             for (int i = 0; i < plots.size(); i++) {
                 String vehicleId = plotVehicles.get(i);
                 Shipment duty = activeByVehicle.get(vehicleId);
-                TrackingPoint fix = app.tracking.latestForVehicle(vehicleId);
+                TrackingPoint fix = app.tracking.latestPlausibleForVehicle(vehicleId);
                 dotList.getChildren().add(app.legendSwatch(plots.get(i).color(),
                         plots.get(i).label() + " · " + duty.status().label()
                                 + " · " + app.tracking.gpsStatus(vehicleId)
@@ -114,7 +114,7 @@ final class DashboardView {
             String vehicleId = plotVehicles.get(hit);
             Optional<Vehicle> vehicle = app.repository.vehicle(vehicleId);
             Shipment duty = activeByVehicle.get(vehicleId);
-            TrackingPoint fix = app.tracking.latestForVehicle(vehicleId);
+            TrackingPoint fix = app.tracking.latestPlausibleForVehicle(vehicleId);
             StringBuilder details = new StringBuilder(app.vehiclePlate(vehicleId));
             if (vehicle.isPresent()) details.append(" · ").append(vehicle.get().model());
             details.append("\nDriver: ").append(vehicle.isPresent() ? app.driverName(vehicle.get().driverId()) : "—");

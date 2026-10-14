@@ -107,6 +107,15 @@ final class CachedRepository implements Repository {
     }
     @Override public void deleteFuel(String id) { delegate.deleteFuel(id); synchronized (this) { snapshot = new Snapshot(snapshot.users(), snapshot.vehicles(), snapshot.shipments(), snapshot.routes(), snapshot.maintenance(), snapshot.fuel().stream().filter(record -> !record.id().equals(id)).toList(), snapshot.tracking()); } }
 
+    @Override public void deleteTrackingForVehicle(String vehicleId) {
+        delegate.deleteTrackingForVehicle(vehicleId);
+        synchronized (this) {
+            snapshot = new Snapshot(snapshot.users(), snapshot.vehicles(), snapshot.shipments(), snapshot.routes(),
+                    snapshot.maintenance(), snapshot.fuel(),
+                    snapshot.tracking().stream().filter(p -> !vehicleId.equals(p.vehicleId())).toList());
+        }
+    }
+
     @Override public List<TrackingPoint> trackingHistory() { return new ArrayList<>(snapshot.tracking()); }
     @Override public void saveTrackingPoint(TrackingPoint point) {
         delegate.saveTrackingPoint(point);

@@ -964,9 +964,25 @@ final class AppServices {
     }
 
     static final class TrackingService {
+        /** Max distance from the active route for a fix to steer the map. */
+        static final double PLAUSIBLE_ROUTE_KM = 2.0;
+        /** Max believable travel speed between consecutive fixes. */
+        static final double PLAUSIBLE_JUMP_KMH = 120.0;
+        /** Legs longer than this are corrupt data (all of Brunei fits in ~150 km),
+         *  never a road to measure against. */
+        static final double MAX_SANE_LEG_KM = 300.0;
+
+        /** Pure leg sanity check: corrupt legs must not legitimize fixes. */
+        static boolean saneLeg(Domain.Stop a, Domain.Stop b) {
+            return BruneiPlaces.haversineKm(a, b) <= MAX_SANE_LEG_KM;
+        }
         private final Repository repository;
         private final LiveGpsState gps = new LiveGpsState();
         private String feedSource = "nmea";
+        /** Implausible (sea/noise) fixes: stored for audit, excluded from tours/maps. */
+        private final java.util.Set<String> quarantinedIds = java.util.concurrent.ConcurrentHashMap.newKeySet();
+        private final Map<String, Boolean> quarantineVerdicts = new java.util.concurrent.ConcurrentHashMap<>();
+        private final Map<String, Integer> quarantineCount = new java.util.concurrent.ConcurrentHashMap<>();
         TrackingService(Repository repository) { this.repository = repository; }
 
         /** Ingest one real fix (NMEA / mobile / GPX). Validates, computes remaining
@@ -999,8 +1015,15 @@ final class AppServices {
                     Math.max(0, speedKmh), headingDeg, accuracyM,
                     fixType == null ? Domain.FixType.GPS : fixType,
                     source == null ? feedSource : source);
+            boolean plausible = isPlausibleFix(vehicleId, lon, lat, ts);
             repository.saveTrackingPoint(point);
-            gps.note(point);
+            quarantineVerdicts.put(point.id(), plausible);
+            if (plausible) {
+                gps.note(point);
+            } else {
+                quarantinedIds.add(point.id());
+                quarantineCount.merge(vehicleId, 1, Integer::sum);
+            }
             return point;
         }
 
@@ -1086,17 +1109,82 @@ final class AppServices {
         }
 
         /** Distance of a fix from its active route (km) — for off-route alerts. */
-        public double deviationKm(String vehicleId, double lon, double lat) {
-            TrackingPoint latest = latestForVehicle(vehicleId);
-            String ship = latest == null ? null : latest.shipmentId();
-            Optional<RoutePlan> route = repository.shipments().stream()
+        /** The vehicle's active route (first linked shipment route), if any. */
+        Optional<RoutePlan> activeRouteFor(String vehicleId) {
+            return repository.shipments().stream()
                     .filter(s -> vehicleId.equals(s.vehicleId())).map(Shipment::routeId)
                     .filter(java.util.Objects::nonNull)
                     .flatMap(rid -> repository.routes().stream().filter(r -> r.id().equals(rid))).findFirst();
+        }
+
+        /** Pure geometric plausibility: near the active route, or no teleport without one. */
+        boolean isPlausibleFix(String vehicleId, double lon, double lat, LocalDateTime at) {
+            Optional<RoutePlan> route = activeRouteFor(vehicleId);
+            if (route.isPresent() && route.get().stops().size() >= 2) {
+                List<Stop> stops = route.get().stops();
+                boolean usableLeg = false;
+                for (int i = 1; i < stops.size(); i++) {
+                    Stop a = stops.get(i - 1), b = stops.get(i);
+                    if (!saneLeg(a, b)) continue; // corrupt leg
+                    usableLeg = true;
+                    for (double[] pt : RouteService.legPath(a, b)) {
+                        if (BruneiPlaces.haversineKm(pt[0], pt[1], lon, lat) <= PLAUSIBLE_ROUTE_KM) return true;
+                    }
+                }
+                // A route made only of corrupt legs judges nothing: fall through to
+                // the teleport guard below instead of blessing sea fixes.
+                if (usableLeg) return false;
+            }
+            TrackingPoint last = repository.trackingHistory().stream()
+                    .filter(p -> vehicleId.equals(p.vehicleId()) && !quarantinedIds.contains(p.id()))
+                    .max(Comparator.comparing(TrackingPoint::recordedAt)).orElse(null);
+            if (last == null || at == null || !at.isAfter(last.recordedAt())) return true;
+            double hours = Math.max(java.time.Duration.between(last.recordedAt(), at).toSeconds() / 3600.0, 1 / 3600.0);
+            double dist = BruneiPlaces.haversineKm(last.x(), last.y(), lon, lat);
+            return dist <= PLAUSIBLE_JUMP_KMH * hours + 0.5;
+        }
+
+        /** Quarantined (sea/noise) fixes: stored for audit, excluded from tours and maps. */
+        boolean isQuarantined(TrackingPoint p) {
+            if (p == null) return true;
+            Boolean verdict = quarantineVerdicts.get(p.id());
+            if (verdict != null) return !verdict;
+            boolean plausible = isPlausibleFix(p.vehicleId(), p.x(), p.y(), p.recordedAt());
+            if (quarantineVerdicts.size() > 5000) quarantineVerdicts.clear();
+            quarantineVerdicts.put(p.id(), plausible);
+            if (!plausible) quarantinedIds.add(p.id());
+            return !plausible;
+        }
+
+        TrackingPoint latestPlausibleForVehicle(String vehicleId) {
+            if (vehicleId == null) return null;
+            return repository.trackingHistory().stream()
+                    .filter(p -> vehicleId.equals(p.vehicleId()))
+                    .filter(p -> !isQuarantined(p))
+                    .max(Comparator.comparing(TrackingPoint::recordedAt)).orElse(null);
+        }
+
+        int quarantinedCount(String vehicleId) {
+            return quarantineCount.getOrDefault(vehicleId, 0);
+        }
+
+        /** Forget cached state (tour, quarantine) — e.g. after clearing history. */
+        void forgetVehicle(String vehicleId) {
+            tourCache.remove(vehicleId);
+            gps.reset(vehicleId);
+            quarantineCount.remove(vehicleId);
+            quarantinedIds.removeIf(id -> repository.trackingHistory().stream()
+                    .noneMatch(p -> p.id().equals(id) && vehicleId.equals(p.vehicleId())));
+        }
+
+        public double deviationKm(String vehicleId, double lon, double lat) {
+            Optional<RoutePlan> route = activeRouteFor(vehicleId);
             if (route.isEmpty()) return 0;
             double best = Double.MAX_VALUE;
             for (int i = 1; i < route.get().stops().size(); i++) {
-                for (double[] pt : RouteService.legPath(route.get().stops().get(i - 1), route.get().stops().get(i))) {
+                Stop a = route.get().stops().get(i - 1), b = route.get().stops().get(i);
+                if (!saneLeg(a, b)) continue; // corrupt leg
+                for (double[] pt : RouteService.legPath(a, b)) {
                     best = Math.min(best, BruneiPlaces.haversineKm(pt[0], pt[1], lon, lat));
                 }
             }
@@ -1105,12 +1193,9 @@ final class AppServices {
 
         /** True when the vehicle is within arrivalRadiusKm of the final stop. */
         public boolean arrivedAtDestination(String vehicleId, double arrivalRadiusKm) {
-            TrackingPoint latest = latestForVehicle(vehicleId);
+            TrackingPoint latest = latestPlausibleForVehicle(vehicleId);
             if (latest == null) return false;
-            Optional<RoutePlan> route = repository.shipments().stream()
-                    .filter(s -> vehicleId.equals(s.vehicleId())).map(Shipment::routeId)
-                    .filter(java.util.Objects::nonNull)
-                    .flatMap(rid -> repository.routes().stream().filter(r -> r.id().equals(rid))).findFirst();
+            Optional<RoutePlan> route = activeRouteFor(vehicleId);
             if (route.isEmpty() || route.get().stops().isEmpty()) return false;
             Stop dest = route.get().stops().get(route.get().stops().size() - 1);
             return BruneiPlaces.haversineKm(dest.x(), dest.y(), latest.x(), latest.y()) <= arrivalRadiusKm;
@@ -1131,7 +1216,7 @@ final class AppServices {
             return stored.recordedAt().isAfter(mem.recordedAt()) ? stored : mem;
         }
         String gpsStatus(String vehicleId) {
-            TrackingPoint p = latestForVehicle(vehicleId);
+            TrackingPoint p = latestPlausibleForVehicle(vehicleId);
             if (p == null) return "NO FIX";
             long age = Math.max(0, java.time.Duration.between(p.recordedAt(), LocalDateTime.now()).getSeconds());
             if (age > LiveGpsState.STALE_AFTER_SECONDS) return "LOST · " + age + "s ago";
@@ -1155,7 +1240,7 @@ final class AppServices {
                     .filter(s -> s.status() == OrderStatus.IN_TRANSIT || s.status() == OrderStatus.ASSIGNED)
                     .toList();
             if (group.isEmpty()) { tourCache.remove(vehicleId); return new VehicleTour(List.of(), 0, 0); }
-            TrackingPoint live = latestForVehicle(vehicleId);
+            TrackingPoint live = latestPlausibleForVehicle(vehicleId);
             // Reuse the cached tour unless the order set or the live fix changed —
             // geocoding every address on every 1-second tick is what froze the UI.
             String sig = tourSignature(group, live);
@@ -1245,7 +1330,7 @@ final class AppServices {
                 throw new AppException("Combined order weight (" + totalWeight + " kg) exceeds "
                         + vehicle.plate() + " capacity (" + vehicle.capacityKg() + " kg).");
             }
-            TrackingPoint live = tracking.latestForVehicle(vehicleId);
+            TrackingPoint live = tracking.latestPlausibleForVehicle(vehicleId);
             Stop start = live == null ? routes.depot()
                     : new Stop("live-" + vehicleId, "Live position", live.x(), live.y());
             List<Shipment> prioritized = new ArrayList<>(group);
@@ -1284,4 +1369,15 @@ final class AppServices {
 
     static String id() { return UUID.randomUUID().toString(); }
     private static double round(double value) { return Math.round(value * 10d) / 10d; }
+
+    /** Repository-level guard: no 0.xx/NaN/swapped coordinate may ever be persisted.
+     *  Window matches MapRenderer.GEO_* (whole Brunei, wider than the map viewport). */
+    static void requireServiceArea(double lon, double lat, String what) {
+        if (!Double.isFinite(lon) || !Double.isFinite(lat)
+                || lon < MapRenderer.GEO_LON_MIN || lon > MapRenderer.GEO_LON_MAX
+                || lat < MapRenderer.GEO_LAT_MIN || lat > MapRenderer.GEO_LAT_MAX) {
+            throw new AppException(what + " is outside the Brunei service area ("
+                    + lon + ", " + lat + ") — not saved.");
+        }
+    }
 }

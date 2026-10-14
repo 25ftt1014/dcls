@@ -217,6 +217,7 @@ public final class Domain {
         void deleteFuel(String id);
         List<TrackingPoint> trackingHistory();
         void saveTrackingPoint(TrackingPoint point);
+        void deleteTrackingForVehicle(String vehicleId);
         boolean persistent();
         @Override default void close() { }
     }

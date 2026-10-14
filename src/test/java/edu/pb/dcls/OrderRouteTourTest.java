@@ -62,6 +62,25 @@ class OrderRouteTourTest {
     }
 
     @Test
+    void pendingOrderIdsListsOnlyUnconfirmed() {
+        var draft = new java.util.ArrayList<Domain.Stop>();
+        draft.add(new Domain.Stop("depot", "DCLS Depot", 114.94, 4.89));
+        draft.add(new Domain.Stop("order-A", "Kiulap · A", 114.916, 4.902));
+        draft.add(new Domain.Stop("order-B", "X · B", 114.928, 4.908));
+        draft.add(new Domain.Stop("custom-1", "Custom pin 1", 114.93, 4.91));
+        var confidence = new java.util.HashMap<String, Double>();
+        confidence.put("order-A", 0.9);
+        confidence.put("order-B", 0.4);
+        var confirmed = new java.util.HashSet<String>(java.util.Set.of("order-A"));
+        // A confirmed, custom pins never block.
+        assertEquals(java.util.List.of("B"),
+                RoutesView.pendingOrderIds(draft, confirmed, confidence));
+        // Confirming B clears the gate.
+        confirmed.add("order-B");
+        assertTrue(RoutesView.pendingOrderIds(draft, confirmed, confidence).isEmpty());
+    }
+
+    @Test
     void tourWithNoOrdersIsEmpty() {
         MockRepository repo = new MockRepository();
         AppServices.TrackingService tracking = new AppServices.TrackingService(repo);

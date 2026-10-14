@@ -229,6 +229,10 @@ public final class JdbcRepository implements Repository {
         });
     }
     @Override public void saveRoute(RoutePlan route) {
+        // Validate BEFORE the transaction: a failure must not wipe the existing stops.
+        for (Stop stop : route.stops()) {
+            AppServices.requireServiceArea(stop.x(), stop.y(), "Route stop '" + stop.name() + "'");
+        }
         transaction(connection -> {
             try (PreparedStatement statement = connection.prepareStatement("""
                     INSERT INTO routes(id, route_name, driver_id, distance_km, estimated_minutes, completed, created_at)
@@ -336,6 +340,7 @@ private TrackingPoint trackingFrom(ResultSet rows, LocalDateTime recorded) throw
     }
 
     @Override public void saveTrackingPoint(TrackingPoint point) { write(connection -> {
+        AppServices.requireServiceArea(point.x(), point.y(), "Tracking fix");
         try {
             try (PreparedStatement statement = connection.prepareStatement("INSERT INTO tracking_history(vehicle_id,shipment_id,x_coord,y_coord,eta_minutes,recorded_at,speed_kmh,heading_deg,accuracy_m,fix_type,source) VALUES(?,?,?,?,?,?,?,?,?,?,?)")) {
                 statement.setString(1, point.vehicleId()); statement.setString(2, point.shipmentId()); statement.setDouble(3, point.x()); statement.setDouble(4, point.y()); statement.setInt(5, point.etaMinutes()); statement.setTimestamp(6, Timestamp.valueOf(point.recordedAt()));
@@ -365,6 +370,11 @@ private TrackingPoint trackingFrom(ResultSet rows, LocalDateTime recorded) throw
         try (PreparedStatement statement = connection.prepareStatement("DELETE FROM tracking_history WHERE recorded_at < ?")) {
             statement.setTimestamp(1, Timestamp.valueOf(cutoff)); statement.executeUpdate();
         }
+        return null;
+    }); }
+
+    @Override public void deleteTrackingForVehicle(String vehicleId) { write(connection -> {
+        execute(connection, "DELETE FROM tracking_history WHERE vehicle_id=?", vehicleId);
         return null;
     }); }
 

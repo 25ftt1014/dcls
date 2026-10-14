@@ -85,7 +85,16 @@ final class TrackingView {
         follow.setOnAction(e -> app.followSelected = follow.isSelected());
         HBox mapTools = new HBox(8, basemap, search, follow);
         map.getChildren().addAll(app.trackingCanvas, app.trackingMaps.zoomBar, mapTools, app.focusChipBox, app.legendBox(), app.trackingLegend);
-        VBox active = panel(new Label("Active deliveries")); ((Label) active.getChildren().get(0)).getStyleClass().add("section-title");
+        VBox active = panel(new javafx.scene.layout.HBox());
+        javafx.scene.layout.HBox activeHeader = (javafx.scene.layout.HBox) active.getChildren().get(0);
+        Label activeTitle = new Label("Active deliveries");
+        activeTitle.getStyleClass().add("section-title");
+        javafx.scene.layout.Region activeGap = new javafx.scene.layout.Region();
+        javafx.scene.layout.HBox.setHgrow(activeGap, ALWAYS);
+        javafx.scene.control.Button collapseBtn = new javafx.scene.control.Button(app.trackingPanelCollapsed ? "«" : "»");
+        collapseBtn.getStyleClass().add("link-button");
+        activeHeader.setAlignment(javafx.geometry.Pos.CENTER_LEFT);
+        activeHeader.getChildren().addAll(activeTitle, activeGap, collapseBtn);
         app.trackingEta = new Label("Select a delivery to view its latest estimate."); app.trackingEta.getStyleClass().add("muted"); app.trackingEta.setWrapText(true);
         TableView<Shipment> table = new TableView<>(); table.setPlaceholder(new Label("No active deliveries — assign an order first."));
         table.getColumns().add(textCol("Order", Shipment::id, 90));
@@ -113,6 +122,15 @@ final class TrackingView {
         Button gpxExport = new Button("Export track (GPX/CSV/KML)");
         gpxExport.setMaxWidth(Double.MAX_VALUE);
         gpxExport.setOnAction(event -> app.exportTrack(table.getSelectionModel().getSelectedItem()));
+        Button clearHistory = new Button("Clear vehicle history…");
+        clearHistory.setMaxWidth(Double.MAX_VALUE);
+        clearHistory.setOnAction(event -> {
+            Shipment selected = table.getSelectionModel().getSelectedItem();
+            if (selected != null && selected.vehicleId() != null) {
+                app.clearVehicleHistory(selected.vehicleId());
+                table.refresh();
+            } else app.toast("Select a delivery with a vehicle first.");
+        });
         Button viewTour = new Button("View vehicle tour (fastest)");
         viewTour.setMaxWidth(Double.MAX_VALUE);
         viewTour.setOnAction(event -> {
@@ -122,8 +140,40 @@ final class TrackingView {
             } else app.toast("Select a delivery with a vehicle first.");
         });
         app.feedStatusLabel = new Label(app.feedStatusText()); app.feedStatusLabel.getStyleClass().add("muted"); app.feedStatusLabel.setWrapText(true);
-        active.getChildren().addAll(table, viewTour, new Label("GPS feed"), feed, importGpx, importNmea, pollMobile, gpxExport, app.feedStatusLabel, app.trackingEta);
-        HBox content = new HBox(12, map, active); HBox.setHgrow(map, ALWAYS); active.setPrefWidth(250); active.setMinWidth(235);
+        active.getChildren().addAll(table, viewTour, new Label("GPS feed"), feed, importGpx, importNmea, pollMobile, gpxExport, clearHistory, app.feedStatusLabel, app.trackingEta);
+        map.setMinWidth(280);
+        active.setMinWidth(235);
+        // Map canvas follows the panel width so the divider actually resizes the map.
+        app.trackingCanvas.widthProperty().bind(map.widthProperty().subtract(24));
+        map.widthProperty().addListener((o, a, b) -> { if (app.trackingMaps != null) app.trackingMaps.redraw(); });
+        javafx.scene.control.SplitPane split = new javafx.scene.control.SplitPane(map, active);
+        split.setDividerPositions(app.trackingPanelCollapsed ? 1.0 : app.trackingDividerPos);
+        javafx.scene.control.SplitPane.setResizableWithParent(map, Boolean.TRUE);
+        javafx.scene.control.SplitPane.setResizableWithParent(active, Boolean.TRUE);
+        split.getDividers().get(0).positionProperty().addListener((o, old, pos) -> {
+            double p = pos.doubleValue();
+            if (p < 1.0) {
+                app.trackingDividerPos = p;
+                app.trackingPanelCollapsed = false;
+                collapseBtn.setText("»");
+            }
+            if (app.trackingMaps != null) app.trackingMaps.redraw();
+        });
+        collapseBtn.setOnAction(e -> {
+            if (app.trackingPanelCollapsed) {
+                app.trackingPanelCollapsed = false;
+                split.setDividerPositions(app.trackingDividerPos);
+                collapseBtn.setText("»");
+            } else {
+                app.trackingDividerPos = split.getDividerPositions()[0];
+                app.trackingPanelCollapsed = true;
+                split.setDividerPositions(1.0);
+                collapseBtn.setText("«");
+            }
+            if (app.trackingMaps != null) app.trackingMaps.redraw();
+        });
+        VBox content = new VBox(split);
+        VBox.setVgrow(split, ALWAYS);
         page.getChildren().add(content);
         if (app.focusedVehicleId != null) {
             table.getItems().stream().filter(s -> app.focusedVehicleId.equals(s.vehicleId())).findFirst()

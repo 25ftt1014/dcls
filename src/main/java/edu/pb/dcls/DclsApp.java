@@ -112,10 +112,11 @@ public final class DclsApp extends Application {
     boolean followSelected = false;
     /** One-shot reframe on explicit "View vehicle tour" (not on every tick). */
     boolean frameTourOnce = false;
-    /** Spotlight rendering: non-focused tours stay clearly visible. */
-    static final double TRACK_DIM_ALPHA = 0.85;
-    static final double TRACK_DIM_WIDTH = 3.0;
+    /** Focused-tour trail width. */
     static final double TRACK_FOCUS_WIDTH = 3.5;
+    /** Tracking SplitPane divider (map fraction) + collapsed state, kept across redraws. */
+    double trackingDividerPos = 0.72;
+    boolean trackingPanelCollapsed = false;
     Label feedStatusLabel;
     String feedStatus = "Feed idle — import GPX/NMEA or poll mobile feed.";
     String lastRerouteKey = "";
@@ -500,8 +501,10 @@ public final class DclsApp extends Application {
                             for (Stop stop : route.stops()) frame.add(ll(stop.x(), stop.y()));
                         });
             }
+            // Quarantined (sea/noise) fixes never enter the trail or the frame.
             List<TrackingPoint> trail = repository.trackingHistory().stream()
                     .filter(p -> entry.getKey().equals(p.vehicleId()))
+                    .filter(p -> !tracking.isQuarantined(p))
                     .sorted(Comparator.comparing(TrackingPoint::recordedAt))
                     .toList();
             // Full trail capped at 500 for rendering; age-fade handled in paintTracking.
@@ -520,7 +523,7 @@ public final class DclsApp extends Application {
             if (focusedVehicleId != null) {
                 RoutePlan tour = trackingRoutes.get(focusedVehicleId);
                 if (tour != null) for (Stop s : tour.stops()) focusPts.add(ll(s.x(), s.y()));
-                TrackingPoint fix = tracking.latestForVehicle(focusedVehicleId);
+                TrackingPoint fix = tracking.latestPlausibleForVehicle(focusedVehicleId);
                 if (fix != null) focusPts.add(ll(fix.x(), fix.y()));
             } else {
                 Shipment focused = focusedShipment();
@@ -528,7 +531,7 @@ public final class DclsApp extends Application {
                 if (focus != null) focusPts.addAll(focus.points());
             }
             if (!focusPts.isEmpty()) {
-                double aspect = trackingMaps.canvas.getWidth() / trackingMaps.canvas.getHeight();
+                double aspect = drawableAspect(trackingMaps.canvas.getWidth(), trackingMaps.canvas.getHeight());
                 trackingMaps.manual = fitAspect(fitBounds(focusPts, aspect), aspect);
             }
         }
@@ -607,68 +610,35 @@ public final class DclsApp extends Application {
         row.setAlignment(Pos.CENTER_LEFT);
         HBox.setHgrow(row.getChildren().get(1), ALWAYS);
         focusChipBox.getChildren().add(row);
-        // Off-screen hint: other active vehicles outside the current viewport.
-        if (vehicleFocus != null && trackingMaps != null) {
-            List<String> hidden = offscreenVehicles();
-            if (!hidden.isEmpty()) {
-                Label off = new Label("+" + hidden.size() + " more vehicle(s) off-screen");
-                off.getStyleClass().add("muted");
-                javafx.scene.control.Button fit = new javafx.scene.control.Button("Fit all");
-                fit.getStyleClass().add("link-button");
-                fit.setOnAction(event -> {
-                    if (trackingMaps != null) trackingMaps.manual = null;
-                    drawTracking();
-                });
-                HBox offRow = new HBox(8, off, new Region(), fit);
-                offRow.setAlignment(Pos.CENTER_LEFT);
-                HBox.setHgrow(offRow.getChildren().get(1), ALWAYS);
-                focusChipBox.getChildren().add(offRow);
-            }
+        // Solo-mode exit: only the focused tour is on the map.
+        if (vehicleFocus != null) {
+            Label solo = new Label("Showing only " + vehiclePlate(vehicleFocus));
+            solo.getStyleClass().add("muted");
+            javafx.scene.control.Button showAll = new javafx.scene.control.Button("Show all");
+            showAll.getStyleClass().add("link-button");
+            showAll.setOnAction(event -> clearTrackingFocus());
+            HBox soloRow = new HBox(8, solo, new Region(), showAll);
+            soloRow.setAlignment(Pos.CENTER_LEFT);
+            HBox.setHgrow(soloRow.getChildren().get(1), ALWAYS);
+            focusChipBox.getChildren().add(soloRow);
         }
     }
 
-    /** Active vehicles (besides the focused one) whose marker is outside the view. */
-    List<String> offscreenVehicles() {
-        if (trackingMaps == null) return List.of();
-        Map<String, double[]> positions = new LinkedHashMap<>();
-        for (String vid : trackingRoutes.keySet()) {
-            TrackingPoint fix = tracking.latestForVehicle(vid);
-            if (fix != null) positions.put(vid, new double[] {fix.x(), fix.y()});
-            else {
-                RoutePlan r = trackingRoutes.get(vid);
-                if (r != null && !r.stops().isEmpty()) {
-                    positions.put(vid, new double[] {r.stops().get(0).x(), r.stops().get(0).y()});
-                }
-            }
-        }
-        return offscreenIds(trackingMaps.currentView(),
-                trackingMaps.canvas.getWidth(), trackingMaps.canvas.getHeight(),
-                positions, focusedVehicleId);
-    }
-
-    /** Pure, headless-testable off-screen computation. */
-    static List<String> offscreenIds(ViewBounds view, double w, double h,
-                                     Map<String, double[]> lonLatByVehicle, String focusedId) {
-        List<String> out = new ArrayList<>();
-        if (view == null || lonLatByVehicle == null) return out;
-        for (Map.Entry<String, double[]> e : lonLatByVehicle.entrySet()) {
-            if (e.getKey().equals(focusedId)) continue;
-            double[] p = e.getValue();
-            if (p == null || p.length < 2
-                    || MapRenderer.projectIfVisible(p[0], p[1], w, h, view) == null) {
-                out.add(e.getKey());
-            }
-        }
-        return out;
+    /** Vehicles drawn on the map: solo focused tour, or the whole fleet.
+     *  Pure and headless-testable. Unknown focus falls back to show-all. */
+    static List<String> visibleVehicles(String focusedId, java.util.Set<String> vehicleIds) {
+        if (vehicleIds == null) return List.of();
+        if (focusedId == null || !vehicleIds.contains(focusedId)) return new ArrayList<>(vehicleIds);
+        return List.of(focusedId);
     }
 
     void paintTracking(GraphicsContext g, double w, double h, ViewBounds view) {
         Shipment focused = focusedShipment();
         String focusVehicle = focusedVehicleId != null ? focusedVehicleId
                 : (focused == null ? null : focused.vehicleId());
-        for (String vehicleId : trackingTrails.keySet()) {
-            boolean dimmed = focusVehicle != null && !focusVehicle.equals(vehicleId);
-            g.setGlobalAlpha(dimmed ? TRACK_DIM_ALPHA : 1.0);
+        // Solo mode: a focused delivery shows only its own tour, trail and marker.
+        for (String vehicleId : visibleVehicles(focusVehicle, trackingTrails.keySet())) {
+            g.setGlobalAlpha(1.0);
             String color = vehicleColor(vehicleId);
             RoutePlan route = trackingRoutes.get(vehicleId);
             boolean assignedOnly = trackingTrails.getOrDefault(vehicleId, List.of()).isEmpty();
@@ -684,15 +654,15 @@ public final class DclsApp extends Application {
             // Age-faded trail: older segments more transparent.
             for (int i = 1; i < recent.size(); i++) {
                 double ageFrac = recent.size() <= 1 ? 1 : (double) i / recent.size();
-                g.setGlobalAlpha((dimmed ? TRACK_DIM_ALPHA : 1.0) * (0.25 + 0.75 * ageFrac));
+                g.setGlobalAlpha(0.25 + 0.75 * ageFrac);
                 g.setStroke(javafx.scene.paint.Color.web(color));
-                g.setLineWidth(dimmed ? TRACK_DIM_WIDTH : TRACK_FOCUS_WIDTH);
+                g.setLineWidth(TRACK_FOCUS_WIDTH);
                 double[] a = projectRaw(recent.get(i - 1).x(), recent.get(i - 1).y(), w, h, view);
                 double[] b = projectRaw(recent.get(i).x(), recent.get(i).y(), w, h, view);
                 strokeClippedLine(g, a[0], a[1], b[0], b[1], w, h);
             }
-            g.setGlobalAlpha(dimmed ? TRACK_DIM_ALPHA : 1.0);
-            TrackingPoint latest = recent.isEmpty() ? tracking.latestForVehicle(vehicleId) : recent.get(recent.size() - 1);
+            g.setGlobalAlpha(1.0);
+            TrackingPoint latest = recent.isEmpty() ? tracking.latestPlausibleForVehicle(vehicleId) : recent.get(recent.size() - 1);
             if (latest != null) {
                 boolean stale = tracking.gps().isStale(vehicleId);
                 drawVehicleMarker(g, w, h, latest.x(), latest.y(), vehiclePlate(vehicleId), stale ? "#8a94a6" : color, stale, view);
@@ -702,9 +672,9 @@ public final class DclsApp extends Application {
             }
             g.setGlobalAlpha(1.0);
         }
-        // Focused order with no live fix yet: pin its preset destination.
+        // Focused order with no usable fix yet: pin its preset destination.
         if (focused != null && (focused.vehicleId() == null
-                || (tracking.latestForVehicle(focused.vehicleId()) == null && tracking.latestFor(focused.id()) == null))) {
+                || (tracking.latestPlausibleForVehicle(focused.vehicleId()) == null && tracking.latestFor(focused.id()) == null))) {
             Stop dest = routeService.geocode(focused.address());
             drawVehicleMarker(g, w, h, dest.x(), dest.y(), "To: " + focused.address(), "#7c3aed", false, view);
         }
@@ -756,12 +726,13 @@ public final class DclsApp extends Application {
             trackingLegend.getChildren().add(none);
             return;
         }
-        Label title = new Label("On the road"); title.getStyleClass().add("eyebrow");
+        Label title = new Label(focusedVehicleId != null ? "Showing" : "On the road"); title.getStyleClass().add("eyebrow");
         trackingLegend.getChildren().add(title);
         for (Map.Entry<String, List<Shipment>> entry : byVehicle.entrySet()) {
             String vehicleId = entry.getKey();
+            if (focusedVehicleId != null && !focusedVehicleId.equals(vehicleId)) continue;
             boolean stale = tracking.gps().isStale(vehicleId);
-            TrackingPoint latest = tracking.latestForVehicle(vehicleId);
+            TrackingPoint latest = tracking.latestPlausibleForVehicle(vehicleId);
             String extra = "";
             if (latest != null) {
                 long age = Math.max(0, java.time.Duration.between(latest.recordedAt(), LocalDateTime.now()).getSeconds());
@@ -814,7 +785,7 @@ public final class DclsApp extends Application {
         ViewBounds currentView() { return manual != null ? manual : lastAuto; }
 
         void redraw() {
-            double aspect = canvas.getWidth() / canvas.getHeight();
+            double aspect = drawableAspect(canvas.getWidth(), canvas.getHeight());
             ViewBounds auto = fitAspect(fitBounds(content.get(), aspect), aspect);
             lastAuto = auto;
             if (manual != null) manual = fitAspect(manual, aspect);
@@ -832,7 +803,7 @@ public final class DclsApp extends Application {
             double lonMin = cursor[0] - (cursor[0] - base.lonMin()) / factor;
             double latTop = mercator(cursor[1]) + (mercator(base.latMax()) - mercator(cursor[1])) / factor;
             double latBottom = mercator(cursor[1]) - (mercator(cursor[1]) - mercator(base.latMin())) / factor;
-            manual = clamp(fitAspect(new ViewBounds(lonMin, lonMin + lonSpan, mercToLat(latBottom), mercToLat(latTop)), w / h));
+            manual = clamp(fitAspect(new ViewBounds(lonMin, lonMin + lonSpan, mercToLat(latBottom), mercToLat(latTop)), drawableAspect(w, h)));
             redraw();
         }
 
@@ -869,7 +840,7 @@ public final class DclsApp extends Application {
 
         void zoomTo(double lon, double lat) {
             double span = 0.02;
-            double aspect = canvas.getWidth() / canvas.getHeight();
+            double aspect = drawableAspect(canvas.getWidth(), canvas.getHeight());
             ViewBounds v = fitAspect(new ViewBounds(lon - span / 2, lon + span / 2, lat - span / 2 / aspect, lat + span / 2 / aspect), aspect);
             manual = clamp(v);
             redraw();
@@ -882,8 +853,9 @@ public final class DclsApp extends Application {
 
     void showEta(Shipment shipment) {
         if (shipment == null || trackingEta == null) return;
-        TrackingPoint point = shipment.vehicleId() == null ? null : tracking.latestForVehicle(shipment.vehicleId());
+        TrackingPoint point = shipment.vehicleId() == null ? null : tracking.latestPlausibleForVehicle(shipment.vehicleId());
         if (point == null) point = tracking.latestFor(shipment.id());
+        if (point != null && tracking.isQuarantined(point)) point = null;
         if (point == null) { trackingEta.setText("No live fix yet for " + vehiclePlate(shipment.vehicleId()) + " — waiting for NMEA / mobile / GPX."); return; }
         long ordersOnVehicle = shipment.vehicleId() == null ? 0 : visibleShipments().stream()
                 .filter(s -> shipment.vehicleId().equals(s.vehicleId())
@@ -895,6 +867,8 @@ public final class DclsApp extends Application {
         if (age > 15) alert += " · STALE " + age + "s";
         if (dev > 0.2) alert += " · OFF-ROUTE " + String.format("%.2f km", dev);
         if (shipment.vehicleId() != null && tracking.arrivedAtDestination(shipment.vehicleId(), ARRIVAL_KM)) alert += " · ARRIVED — confirm delivery";
+        int noisy = shipment.vehicleId() == null ? 0 : tracking.quarantinedCount(shipment.vehicleId());
+        if (noisy > 0) alert += " · " + noisy + " noisy fix(es) ignored";
         trackingEta.setText(vehiclePlate(shipment.vehicleId()) + " · " + gps + " · " + ordersOnVehicle + " order(s)"
                 + "  ·  ETA about " + point.etaMinutes() + " min  ·  updated " + point.recordedAt().format(DATE_TIME) + alert);
     }
@@ -930,6 +904,18 @@ public final class DclsApp extends Application {
         }, "dcls-mobile-feed").start();
     }
 
+    /** Delete a vehicle's stored fixes (e.g. after noisy imports) and start fresh. */
+    void clearVehicleHistory(String vehicleId) {
+        if (vehicleId == null) return;
+        if (!confirm("Clear vehicle history",
+                "Delete all stored GPS fixes for " + vehiclePlate(vehicleId) + "? The vehicle restarts from its depot.")) return;
+        runAction(() -> {
+            repository.deleteTrackingForVehicle(vehicleId);
+            tracking.forgetVehicle(vehicleId);
+        }, "History cleared for " + vehiclePlate(vehicleId) + ".");
+        drawTracking();
+    }
+
     /** Off-route distance that triggers an automatic re-route suggestion. */
     static final double OFF_ROUTE_KM = 0.3;
     /** Arrival radius: close enough to the final stop to prompt delivery confirmation. */
@@ -939,7 +925,7 @@ public final class DclsApp extends Application {
     void checkReroute() {
         for (Shipment s : visibleShipments()) {
             if (s.status() != OrderStatus.IN_TRANSIT || s.vehicleId() == null) continue;
-            TrackingPoint p = tracking.latestForVehicle(s.vehicleId());
+            TrackingPoint p = tracking.latestPlausibleForVehicle(s.vehicleId());
             if (p == null) continue;
             double dev = tracking.deviationKm(s.vehicleId(), p.x(), p.y());
             String key = s.vehicleId() + "@" + p.recordedAt();

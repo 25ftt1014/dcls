@@ -78,6 +78,7 @@ final class RoutesView {
         final List<String> handoffShipmentIds = new ArrayList<>(handoff);
         final Map<String, Double> stopConfidence = app.routeStopConfidence;
         final java.util.Set<String> confirmedStops = app.routeStopConfirmed;
+        final Map<String, AddressGeocoder.GeocodedStop> lastGeocode = new java.util.HashMap<>();
         stopConfidence.clear();
         confirmedStops.clear();
         VBox page = pageHeader("Route planning", handoffShipmentIds.isEmpty()
@@ -145,21 +146,19 @@ final class RoutesView {
         runCalcRef[0] = manual -> {
             if (gen != app.routePageGen) return;
             // Confidence gate: block fastest-route calc until unsure pins are confirmed.
-            for (Stop s : app.routeStopsDraft) {
-                if (s.id().startsWith("order-") && !confirmedStops.contains(s.id())) {
-                    Double c = stopConfidence.getOrDefault(s.id(), 0.0);
-                    if (c < AddressGeocoder.CONFIRM_THRESHOLD) {
-                        app.previewStops = new ArrayList<>(app.routeStopsDraft);
-                        planned[0] = null; saved[0] = false;
-                        dirty[0] = true;
-                        routeResult.setText("Confirm the highlighted address on the map before calculating the fastest route.");
-                        setStatus(statusPill, "Needs confirmation", "status-bad");
-                        previewMap.redraw();
-                        if (manual) app.alert(Alert.AlertType.WARNING, "Confirm location",
-                                "Address confidence is low (" + Math.round(c * 100) + "%). Pick a candidate or move the pin on the map.");
-                        return;
-                    }
-                }
+            List<String> pending = pendingOrderIds(app.routeStopsDraft, confirmedStops, stopConfidence);
+            if (!pending.isEmpty()) {
+                app.previewStops = new ArrayList<>(app.routeStopsDraft);
+                planned[0] = null; saved[0] = false;
+                dirty[0] = true;
+                routeResult.setText("Confirm locations for " + String.join(", ", pending)
+                        + " in the panel before calculating the fastest route.");
+                setStatus(statusPill, "Needs confirmation", "status-bad");
+                previewMap.redraw();
+                if (manual) app.alert(Alert.AlertType.WARNING, "Confirm location",
+                        "These orders need confirmation: " + String.join(", ", pending)
+                                + ". Pick a candidate in the locations panel, confirm a pin on the map, or Confirm all.");
+                return;
             }
             if (app.routeStopsDraft.size() < 2) {
                 app.previewStops = new ArrayList<>(app.routeStopsDraft);
@@ -325,54 +324,53 @@ final class RoutesView {
             }
         });
         if (app.routeStopsDraft.isEmpty()) app.routeStopsDraft.add(AppServices.BruneiPlaces.DEPOT);
-        // Handoff prefill: depot + geocoded order addresses. Low confidence blocks calc.
+        // Handoff prefill: depot + geocoded order addresses on a worker (never the
+        // UI thread). Low confidence blocks calc until confirmed in the panel below.
+        final Thread[] prefillWorker = new Thread[1];
         Runnable prefillHandoff = () -> {
             if (handoffShipmentIds.isEmpty()) return;
             app.routeStopsDraft.clear();
             app.routeStopsDraft.add(AppServices.BruneiPlaces.DEPOT);
             stopConfidence.clear();
             confirmedStops.clear();
+            lastGeocode.clear();
             geocodeBox.getChildren().clear();
-            var places = new java.util.HashMap<String, Stop>();
-            for (String n : app.routeService.placeNames()) places.put(n, app.routeService.place(n));
-            for (String sid : handoffShipmentIds) {
-                var ship = app.repository.shipment(sid).orElse(null);
-                if (ship == null) continue;
-                AddressGeocoder.GeocodedStop g = AddressGeocoder.geocode(ship.address(), places);
-                Stop pin = new Stop("order-" + sid, g.stop().name() + " · " + sid, g.stop().x(), g.stop().y());
-                app.routeStopsDraft.add(pin);
-                stopConfidence.put(pin.id(), g.confidence());
-                if (g.confidence() >= AddressGeocoder.CONFIRM_THRESHOLD) confirmedStops.add(pin.id());
-                Label line = new Label(sid + ": " + g.note()
-                        + String.format("%n%.0f%% · %s · %.6f, %.6f", g.confidence() * 100, g.method(), g.stop().x(), g.stop().y()));
-                line.getStyleClass().add("muted"); line.setWrapText(true);
-                geocodeBox.getChildren().add(line);
-                if (g.confidence() < AddressGeocoder.CONFIRM_THRESHOLD) {
-                    for (Stop cand : g.candidates()) {
-                        Stop alt = cand;
-                        Button use = button("Use " + alt.name(), "secondary-button");
-                        use.setMaxWidth(Double.MAX_VALUE);
-                        use.setOnAction(e2 -> {
-                            int idx = indexById(app.routeStopsDraft, pin.id());
-                            Stop confirmed = new Stop(pin.id(), alt.name() + " · " + sid, alt.x(), alt.y());
-                            if (idx >= 0) app.routeStopsDraft.set(idx, confirmed);
-                            stopConfidence.put(pin.id(), 1.0);
-                            confirmedStops.add(pin.id());
-                            geocodeBox.getChildren().clear();
-                            Label ok = new Label(sid + ": " + alt.name() + " (confirmed)");
-                            ok.getStyleClass().add("muted");
-                            geocodeBox.getChildren().add(ok);
-                            markDirty.run();
-                        });
-                        geocodeBox.getChildren().add(use);
-                    }
-                    Label hint = new Label("Confirm a candidate or drag the pin on the map to calculate.");
-                    hint.getStyleClass().add("muted"); hint.setWrapText(true);
-                    geocodeBox.getChildren().add(hint);
+            Label locating = new Label("Locating addresses…");
+            locating.getStyleClass().add("muted");
+            geocodeBox.getChildren().add(locating);
+            dirty[0] = true;
+            previewMap.redraw();
+            if (prefillWorker[0] != null) prefillWorker[0].interrupt();
+            List<String> ids = new ArrayList<>(handoffShipmentIds);
+            Thread thread = new Thread(() -> {
+                var places = new java.util.HashMap<String, Stop>();
+                for (String n : app.routeService.placeNames()) places.put(n, app.routeService.place(n));
+                record Pin(String sid, Stop pin, AddressGeocoder.GeocodedStop g) { }
+                List<Pin> pins = new ArrayList<>();
+                for (String sid : ids) {
+                    if (Thread.currentThread().isInterrupted()) return;
+                    var ship = app.repository.shipment(sid).orElse(null);
+                    if (ship == null) continue;
+                    AddressGeocoder.GeocodedStop g = AddressGeocoder.geocode(ship.address(), places);
+                    pins.add(new Pin(sid,
+                            new Stop("order-" + sid, g.stop().name() + " · " + sid, g.stop().x(), g.stop().y()), g));
                 }
-            }
-            if (!app.routeStopsDraft.isEmpty() && app.routeStopsDraft.size() >= 2) markDirty.run();
-            else { dirty[0] = true; previewMap.redraw(); }
+                Platform.runLater(() -> {
+                    if (gen != app.routePageGen) return;
+                    for (Pin p : pins) {
+                        app.routeStopsDraft.add(p.pin());
+                        stopConfidence.put(p.pin().id(), p.g().confidence());
+                        if (p.g().confidence() >= AddressGeocoder.CONFIRM_THRESHOLD) confirmedStops.add(p.pin().id());
+                        lastGeocode.put(p.pin().id(), p.g());
+                    }
+                    refreshConfirmCards(geocodeBox, markDirty, stopConfidence, confirmedStops, lastGeocode);
+                    if (app.routeStopsDraft.size() >= 2) markDirty.run();
+                    else { dirty[0] = true; previewMap.redraw(); }
+                });
+            });
+            thread.setDaemon(true);
+            prefillWorker[0] = thread;
+            thread.start();
         };
         Button addNearby = button("Add nearby pending orders", "secondary-button");
         addNearby.setMaxWidth(Double.MAX_VALUE);
@@ -380,22 +378,38 @@ final class RoutesView {
             if (app.routeStopsDraft.isEmpty()) return;
             Stop anchor = app.routeStopsDraft.get(app.routeStopsDraft.size() - 1);
             var near = AddressGeocoder.nearbyPending(app.repository.shipments(), anchor.x(), anchor.y(), 5, 5);
-            int added = 0;
-            var places2 = new java.util.HashMap<String, Stop>();
-            for (String n : app.routeService.placeNames()) places2.put(n, app.routeService.place(n));
-            for (var s : near) {
-                if (handoffShipmentIds.contains(s.id())) continue;
-                if (app.routeStopsDraft.stream().anyMatch(p -> p.id().equals("order-" + s.id()))) continue;
-                AddressGeocoder.GeocodedStop g = AddressGeocoder.geocode(s.address(), places2);
-                Stop pin = new Stop("order-" + s.id(), g.stop().name() + " · " + s.id(), g.stop().x(), g.stop().y());
-                app.routeStopsDraft.add(pin);
-                stopConfidence.put(pin.id(), g.confidence());
-                if (g.confidence() >= AddressGeocoder.CONFIRM_THRESHOLD) confirmedStops.add(pin.id());
-                handoffShipmentIds.add(s.id());
-                added++;
-            }
-            if (added > 0) markDirty.run();
-            else app.toast("No additional pending orders within 5km.");
+            near.removeIf(s -> handoffShipmentIds.contains(s.id())
+                    || app.routeStopsDraft.stream().anyMatch(p -> p.id().equals("order-" + s.id())));
+            if (near.isEmpty()) { app.toast("No additional pending orders within 5km."); return; }
+            addNearby.setDisable(true);
+            Thread thread = new Thread(() -> {
+                var places2 = new java.util.HashMap<String, Stop>();
+                for (String n : app.routeService.placeNames()) places2.put(n, app.routeService.place(n));
+                record Pin(String sid, Stop pin, AddressGeocoder.GeocodedStop g) { }
+                List<Pin> pins = new ArrayList<>();
+                for (var s : near) {
+                    if (Thread.currentThread().isInterrupted()) return;
+                    AddressGeocoder.GeocodedStop g = AddressGeocoder.geocode(s.address(), places2);
+                    pins.add(new Pin(s.id(),
+                            new Stop("order-" + s.id(), g.stop().name() + " · " + s.id(), g.stop().x(), g.stop().y()), g));
+                }
+                Platform.runLater(() -> {
+                    if (gen != app.routePageGen) return;
+                    addNearby.setDisable(false);
+                    for (Pin p : pins) {
+                        if (app.routeStopsDraft.stream().anyMatch(existing -> existing.id().equals(p.pin().id()))) continue;
+                        app.routeStopsDraft.add(p.pin());
+                        stopConfidence.put(p.pin().id(), p.g().confidence());
+                        if (p.g().confidence() >= AddressGeocoder.CONFIRM_THRESHOLD) confirmedStops.add(p.pin().id());
+                        lastGeocode.put(p.pin().id(), p.g());
+                        handoffShipmentIds.add(p.sid());
+                    }
+                    refreshConfirmCards(geocodeBox, markDirty, stopConfidence, confirmedStops, lastGeocode);
+                    markDirty.run();
+                });
+            });
+            thread.setDaemon(true);
+            thread.start();
         });
         final RoutePlan[] editing = {null};
         previewMap.clickAction = lonLat -> placePinAt(lonLat[0], lonLat[1], markDirty);
@@ -538,6 +552,7 @@ RoutePlan toSave = new RoutePlan(route.id(), route.name(), driver.getValue().id(
             geocodeBox.getChildren().clear();
             stopConfidence.clear();
             confirmedStops.clear();
+            lastGeocode.clear();
             planned[0] = null; saved[0] = false;
             dirty[0] = true;
             highlightLeg[0] = -1;
@@ -552,6 +567,80 @@ RoutePlan toSave = new RoutePlan(route.id(), route.name(), driver.getValue().id(
         prefillHandoff.run();
         previewMap.redraw();
         history.getChildren().addAll(table, routeActions); page.getChildren().addAll(builder, history); return page;
+    }
+
+    /** Rebuilds the locations panel from the current draft: one status line per
+     *  order pin (with candidate buttons while unconfirmed) plus the Confirm-all
+     *  footer whenever anything is still pending. Never clears other orders. */
+    private void refreshConfirmCards(VBox geocodeBox, Runnable markDirty,
+                                     Map<String, Double> stopConfidence, java.util.Set<String> confirmedStops,
+                                     Map<String, AddressGeocoder.GeocodedStop> lastGeocode) {
+        geocodeBox.getChildren().clear();
+        for (Stop s : new ArrayList<>(app.routeStopsDraft)) {
+            if (!s.id().startsWith("order-")) continue;
+            String sid = s.id().substring("order-".length());
+            AddressGeocoder.GeocodedStop g = lastGeocode.get(s.id());
+            double c = stopConfidence.getOrDefault(s.id(), 0.0);
+            boolean ok = confirmedStops.contains(s.id());
+            Label line = new Label(sid + ": " + (g == null ? s.name() : g.note())
+                    + String.format("%n%.0f%% · %s · %.6f, %.6f%s", c * 100,
+                            g == null ? "placed" : g.method(), s.x(), s.y(), ok ? " (confirmed)" : ""));
+            line.getStyleClass().add("muted");
+            line.setWrapText(true);
+            geocodeBox.getChildren().add(line);
+            if (!ok && g != null) {
+                for (Stop cand : g.candidates()) {
+                    Stop alt = cand;
+                    Button use = button("Use " + alt.name(), "secondary-button");
+                    use.setMaxWidth(Double.MAX_VALUE);
+                    use.setOnAction(e2 -> {
+                        int idx = indexById(app.routeStopsDraft, s.id());
+                        Stop confirmed = new Stop(s.id(), alt.name() + " · " + sid, alt.x(), alt.y());
+                        if (idx >= 0) app.routeStopsDraft.set(idx, confirmed);
+                        stopConfidence.put(s.id(), 1.0);
+                        confirmedStops.add(s.id());
+                        refreshConfirmCards(geocodeBox, markDirty, stopConfidence, confirmedStops, lastGeocode);
+                        markDirty.run();
+                    });
+                    geocodeBox.getChildren().add(use);
+                }
+                Label hint = new Label("Confirm a candidate or drag the pin on the map to calculate.");
+                hint.getStyleClass().add("muted");
+                hint.setWrapText(true);
+                geocodeBox.getChildren().add(hint);
+            }
+        }
+        refreshConfirmFooter(geocodeBox, markDirty, stopConfidence, confirmedStops, lastGeocode);
+    }
+
+    /** One-click escape hatch: confirm every pending order pin as placed. */
+    private void refreshConfirmFooter(VBox geocodeBox, Runnable markDirty,
+                                      Map<String, Double> stopConfidence, java.util.Set<String> confirmedStops,
+                                      Map<String, AddressGeocoder.GeocodedStop> lastGeocode) {
+        geocodeBox.getChildren().removeIf(n -> Boolean.TRUE.equals(n.getProperties().get("confirmFooter")));
+        long pending = app.routeStopsDraft.stream()
+                .filter(s -> s.id().startsWith("order-") && !confirmedStops.contains(s.id()))
+                .count();
+        if (pending == 0) return;
+        Label label = new Label(pending + " pin(s) need confirmation — or confirm all as placed.");
+        label.getStyleClass().add("muted");
+        label.setWrapText(true);
+        label.getProperties().put("confirmFooter", Boolean.TRUE);
+        Button confirmAll = button("Confirm all " + pending + " pin(s) as placed", "primary-button");
+        confirmAll.setMaxWidth(Double.MAX_VALUE);
+        confirmAll.getProperties().put("confirmFooter", Boolean.TRUE);
+        confirmAll.setOnAction(e -> {
+            for (Stop s : app.routeStopsDraft) {
+                if (s.id().startsWith("order-")) {
+                    stopConfidence.put(s.id(), 1.0);
+                    confirmedStops.add(s.id());
+                }
+            }
+            app.toast(pending + " pin(s) confirmed as placed.");
+            refreshConfirmCards(geocodeBox, markDirty, stopConfidence, confirmedStops, lastGeocode);
+            markDirty.run();
+        });
+        geocodeBox.getChildren().addAll(label, confirmAll);
     }
 
     private void placePinAt(double lon, double lat, Runnable markDirty) {
@@ -578,6 +667,17 @@ RoutePlan toSave = new RoutePlan(route.id(), route.name(), driver.getValue().id(
         app.routeStopConfidence.put(pin.id(), 1.0);
         app.routeStopConfirmed.add(pin.id());
         markDirty.run();
+    }
+
+    /** Order ids whose pins still block route calculation. Pure and headless-testable. */
+    static List<String> pendingOrderIds(List<Stop> draft, java.util.Set<String> confirmedStops,
+                                        Map<String, Double> stopConfidence) {
+        if (draft == null) return List.of();
+        return draft.stream()
+                .filter(p -> p.id().startsWith("order-") && !confirmedStops.contains(p.id())
+                        && stopConfidence.getOrDefault(p.id(), 0.0) < AddressGeocoder.CONFIRM_THRESHOLD)
+                .map(p -> p.id().substring("order-".length()))
+                .toList();
     }
 
     private static String orderName(String routeName) {

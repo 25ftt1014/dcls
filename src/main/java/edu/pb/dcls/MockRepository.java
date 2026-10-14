@@ -96,7 +96,12 @@ public final class MockRepository implements Repository {
         tracking.removeIf(p -> id.equals(p.shipmentId())); // match ON DELETE CASCADE
     }
     @Override public List<RoutePlan> routes() { return new ArrayList<>(routes.values()); }
-    @Override public void saveRoute(RoutePlan route) { routes.put(route.id(), route); }
+    @Override public void saveRoute(RoutePlan route) {
+        for (Domain.Stop stop : route.stops()) {
+            AppServices.requireServiceArea(stop.x(), stop.y(), "Route stop '" + stop.name() + "'");
+        }
+        routes.put(route.id(), route);
+    }
     @Override public void deleteRoute(String id) {
         if (shipments.values().stream().anyMatch(s -> id.equals(s.routeId()))) {
             throw new AppServices.AppException("This record is still linked to other data such as orders, routes or history. Remove those links first, then try again.");
@@ -114,8 +119,13 @@ public final class MockRepository implements Repository {
     /** Demo memory cap: keep the latest fixes only (mirrors the JDBC prune). */
     static final int TRACKING_CAP = 2000;
 
+    @Override public void deleteTrackingForVehicle(String vehicleId) {
+        tracking.removeIf(p -> vehicleId.equals(p.vehicleId()));
+    }
+
     @Override public List<TrackingPoint> trackingHistory() { return new ArrayList<>(tracking); }
     @Override public void saveTrackingPoint(TrackingPoint point) {
+        AppServices.requireServiceArea(point.x(), point.y(), "Tracking fix");
         tracking.add(point);
         while (tracking.size() > TRACKING_CAP) tracking.removeFirst();
     }

@@ -498,48 +498,104 @@ final class MapRenderer {
         return false;
     }
 
+    /** Max distance from the cluster centroid for a point to frame the map.
+     *  Beyond this a lone noisy fix can't stretch the whole viewport. */
+    static final double FRAME_OUTLIER_KM = 10.0;
+
+    /** Drawable-area aspect: tiles and overlays map spans onto the padded area,
+     *  so balancing against full-canvas w/h stretches one axis (~7% here). */
+    static double drawableAspect(double w, double h) {
+        return (w - 28) / Math.max(h - 28, 1);
+    }
+
     /** Zoom-to-content: bounds enclosing the given lon/lat points plus margin, matched to
-     *  the canvas aspect. */
+     *  the canvas aspect. Far outliers are ignored so one bad fix can't hijack the view. */
     static ViewBounds fitBounds(List<double[]> points, double aspect) {
         if (points == null || points.isEmpty()) return FULL_MAP;
-        double lonMin = 180, lonMax = -180, latMin = 90, latMax = -90;
-        int valid = 0;
+        List<double[]> valid = new ArrayList<>();
         for (double[] p : points) {
             if (p == null || p.length < 2 || !Double.isFinite(p[0]) || !Double.isFinite(p[1])) continue;
-            valid++;
+            valid.add(p);
+        }
+        if (valid.isEmpty()) return FULL_MAP;
+        List<double[]> core = dropFarOutliers(valid, FRAME_OUTLIER_KM);
+        if (core.isEmpty()) core = valid; // genuinely spread out (e.g. two distant vehicles)
+        double lonMin = 180, lonMax = -180, latMin = 90, latMax = -90;
+        for (double[] p : core) {
             lonMin = Math.min(lonMin, p[0]); lonMax = Math.max(lonMax, p[0]);
             latMin = Math.min(latMin, p[1]); latMax = Math.max(latMax, p[1]);
         }
-        if (valid == 0) return FULL_MAP;
         double lonPad = Math.max((lonMax - lonMin) * 0.20, 0.07);
         double latPad = Math.max((latMax - latMin) * 0.20, 0.05);
         lonMin -= lonPad; lonMax += lonPad; latMin -= latPad; latMax += latPad;
-        double lonSpan = Math.max(lonMax - lonMin, 0.14), latSpan = Math.max(latMax - latMin, 0.10);
-        if (lonSpan / latSpan < aspect) lonSpan = latSpan * aspect;
-        else latSpan = lonSpan / aspect;
-        double lonMid = (lonMin + lonMax) / 2, latMid = (latMin + latMax) / 2;
-        lonMin = lonMid - lonSpan / 2; lonMax = lonMid + lonSpan / 2;
-        latMin = latMid - latSpan / 2; latMax = latMid + latSpan / 2;
-        if (lonMax - lonMin >= MAP_LON_MAX - MAP_LON_MIN || latMax - latMin >= MAP_LAT_MAX - MAP_LAT_MIN) return FULL_MAP;
-        if (lonMin < MAP_LON_MIN) { lonMax += MAP_LON_MIN - lonMin; lonMin = MAP_LON_MIN; }
-        if (lonMax > MAP_LON_MAX) { lonMin -= lonMax - MAP_LON_MAX; lonMax = MAP_LON_MAX; }
-        if (latMin < MAP_LAT_MIN) { latMax += MAP_LAT_MIN - latMin; latMin = MAP_LAT_MIN; }
-        if (latMax > MAP_LAT_MAX) { latMin -= latMax - MAP_LAT_MAX; latMax = MAP_LAT_MAX; }
-        return new ViewBounds(lonMin, lonMax, latMin, latMax);
+        if (lonMax - lonMin < 0.14) {
+            double mid = (lonMin + lonMax) / 2;
+            lonMin = mid - 0.07; lonMax = mid + 0.07;
+        }
+        if (latMax - latMin < 0.10) {
+            double mid = (latMin + latMax) / 2;
+            latMin = mid - 0.05; latMax = mid + 0.05;
+        }
+        return balanceAndClamp((lonMin + lonMax) / 2,
+                (mercator(latMax) + mercator(latMin)) / 2,
+                Math.toRadians(lonMax - lonMin), mercator(latMax) - mercator(latMin), aspect);
     }
 
-    /** Expand the smaller span so the view matches the canvas aspect (same degree
-     *  convention as fitBounds, clamped back inside the map). Keeps zoom in/out
-     *  round-trips squeeze-free: every stored view carries identical proportions. */
+    /** Points within maxKm of the cluster center (haversine). Uses the component-wise
+     *  median, not the mean, so one far outlier can't drag the center away from the
+     *  cluster and disqualify the good points. The filter only applies when a strict
+     *  majority clusters together — otherwise (e.g. two distant vehicles) everything
+     *  is kept. Pure and testable. */
+    static List<double[]> dropFarOutliers(List<double[]> points, double maxKm) {
+        List<double[]> out = new ArrayList<>();
+        if (points == null || points.isEmpty()) return out;
+        List<Double> lons = new ArrayList<>(), lats = new ArrayList<>();
+        for (double[] p : points) { lons.add(p[0]); lats.add(p[1]); }
+        lons.sort(Double::compare);
+        lats.sort(Double::compare);
+        double lonMid = lons.get(lons.size() / 2), latMid = lats.get(lats.size() / 2);
+        List<double[]> core = new ArrayList<>();
+        for (double[] p : points) {
+            if (AppServices.BruneiPlaces.haversineKm(lonMid, latMid, p[0], p[1]) <= maxKm) core.add(p);
+        }
+        if (core.size() * 2 > points.size()) return core;
+        return new ArrayList<>(points);
+    }
+
+    /** Expand the smaller span so the view matches the canvas aspect, clamped back
+     *  inside the map. Works in render units (radians lon vs mercator) so tiles
+     *  render 1:1 — matching plain degrees visibly squashes the map. Keeps zoom
+     *  in/out round-trips squeeze-free: every stored view carries identical proportions. */
     static ViewBounds fitAspect(ViewBounds view, double aspect) {
-        double lonSpan = view.lonMax() - view.lonMin(), latSpan = view.latMax() - view.latMin();
-        double lonMid = (view.lonMin() + view.lonMax()) / 2, latMid = (view.latMin() + view.latMax()) / 2;
-        if (lonSpan / latSpan < aspect) lonSpan = latSpan * aspect;
-        else latSpan = lonSpan / aspect;
-        double lonMin = lonMid - lonSpan / 2, lonMax = lonMid + lonSpan / 2;
-        double latMin = latMid - latSpan / 2, latMax = latMid + latSpan / 2;
-        if (lonMax - lonMin >= MAP_LON_MAX - MAP_LON_MIN) { lonMin = MAP_LON_MIN; lonMax = MAP_LON_MAX; }
-        if (latMax - latMin >= MAP_LAT_MAX - MAP_LAT_MIN) { latMin = MAP_LAT_MIN; latMax = MAP_LAT_MAX; }
+        double lonMid = (view.lonMin() + view.lonMax()) / 2;
+        double mercMid = (mercator(view.latMax()) + mercator(view.latMin())) / 2;
+        return balanceAndClamp(lonMid, mercMid,
+                Math.toRadians(view.lonMax() - view.lonMin()),
+                mercator(view.latMax()) - mercator(view.latMin()), aspect);
+    }
+
+    /** Largest undistorted view around (lonMidDeg, mercMid) for the requested spans,
+     *  pinned inside the map. Balancing in render units keeps Web-Mercator tiles
+     *  square; when a span hits the map edge the other span is rebalanced to it,
+     *  so clamping can never squash the view (the old degree-based clamp did). */
+    static ViewBounds balanceAndClamp(double lonMidDeg, double mercMid, double lonSpanRad, double mercSpan, double aspect) {
+        double maxLonRad = Math.toRadians(MAP_LON_MAX - MAP_LON_MIN);
+        double maxMerc = mercator(MAP_LAT_MAX) - mercator(MAP_LAT_MIN);
+        if (lonSpanRad / Math.max(mercSpan, 1e-12) < aspect) lonSpanRad = mercSpan * aspect;
+        else mercSpan = lonSpanRad / aspect;
+        if (lonSpanRad >= maxLonRad && mercSpan >= maxMerc) return FULL_MAP;
+        if (lonSpanRad >= maxLonRad) {
+            lonSpanRad = maxLonRad;
+            mercSpan = lonSpanRad / aspect;
+        }
+        if (mercSpan >= maxMerc) {
+            mercSpan = maxMerc;
+            lonSpanRad = mercSpan * aspect;
+        }
+        if (lonSpanRad >= maxLonRad && mercSpan >= maxMerc) return FULL_MAP;
+        double lonSpanDeg = Math.toDegrees(lonSpanRad);
+        double lonMin = lonMidDeg - lonSpanDeg / 2, lonMax = lonMidDeg + lonSpanDeg / 2;
+        double latMax = mercToLat(mercMid + mercSpan / 2), latMin = mercToLat(mercMid - mercSpan / 2);
         if (lonMin < MAP_LON_MIN) { lonMax += MAP_LON_MIN - lonMin; lonMin = MAP_LON_MIN; }
         if (lonMax > MAP_LON_MAX) { lonMin -= lonMax - MAP_LON_MAX; lonMax = MAP_LON_MAX; }
         if (latMin < MAP_LAT_MIN) { latMax += MAP_LAT_MIN - latMin; latMin = MAP_LAT_MIN; }
@@ -666,7 +722,7 @@ final class MapRenderer {
     /** Scale bar from the live view span (111.32 km per lon-degree, adjusted for latitude). */
     static void drawScaleBar(GraphicsContext g, double w, double h, ViewBounds view) {
         double latMid = (view.latMin() + view.latMax()) / 2;
-        double metersPerPixel = (view.lonMax() - view.lonMin()) * 111320 * Math.cos(Math.toRadians(latMid)) / w;
+        double metersPerPixel = (view.lonMax() - view.lonMin()) * 111320 * Math.cos(Math.toRadians(latMid)) / (w - 28);
         int[] steps = {5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000};
         int choice = steps[0];
         for (int step : steps) if (step / metersPerPixel <= 130) choice = step;
@@ -686,13 +742,13 @@ final class MapRenderer {
         List<double[]> points = new ArrayList<>();
         for (Stop stop : stops) points.add(new double[] {stop.x(), stop.y()});
         if (moving != null) points.add(new double[] {moving.x(), moving.y()});
-        ViewBounds view = fitBounds(points, canvas.getWidth() / canvas.getHeight());
+        ViewBounds view = fitBounds(points, drawableAspect(canvas.getWidth(), canvas.getHeight()));
         GraphicsContext g = prepareMap(canvas, view);
         drawRouteOn(g, canvas.getWidth(), canvas.getHeight(), stops, moving, "#176df6", view);
     }
 
     static void drawRouteOn(GraphicsContext g, double width, double height, List<Stop> stops, TrackingPoint moving) {
-        drawRouteOn(g, width, height, stops, moving, "#176df6", autoView(stops, moving, width / height));
+        drawRouteOn(g, width, height, stops, moving, "#176df6", autoView(stops, moving, drawableAspect(width, height)));
     }
 
     static void drawRouteOn(GraphicsContext g, double width, double height, List<Stop> stops, TrackingPoint moving, String color, ViewBounds view) {
@@ -863,7 +919,7 @@ final class MapRenderer {
         double w = canvas.getWidth(), h = canvas.getHeight();
         List<double[]> points = new ArrayList<>();
         if (plots != null) for (VehiclePlot plot : plots) points.add(new double[] {plot.lon(), plot.lat()});
-        ViewBounds view = fitBounds(points, w / h);
+        ViewBounds view = fitBounds(points, drawableAspect(w, h));
         GraphicsContext g = prepareMap(canvas, view);
         if (plots != null) for (VehiclePlot plot : plots) {
             double[] p = project(plot.lon(), plot.lat(), w, h, view);
