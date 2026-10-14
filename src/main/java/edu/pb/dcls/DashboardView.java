@@ -3,6 +3,7 @@ package edu.pb.dcls;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Node;
+import javafx.scene.control.Button;
 import javafx.scene.control.Label;
 import javafx.scene.control.ProgressBar;
 import javafx.scene.control.Tooltip;
@@ -18,7 +19,6 @@ import java.util.EnumMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.function.ToIntFunction;
 
 import static edu.pb.dcls.AppServices.BruneiPlaces.DEPOT;
@@ -60,15 +60,31 @@ final class DashboardView {
     private final VBox dotList = new VBox(3);
     private final VBox statusBars = new VBox(7);
     private final VBox deliveryRows = new VBox(0);
+    private final HBox attentionCards = new HBox(10);
     private final Label updatedAt = new Label();
     private final Label activeSummary = new Label();
+    private final Label attentionEmpty = new Label();
+    private AppServices.TrackingService.TrackingSnapshot currentTrackingSnapshot =
+            new AppServices.TrackingService.TrackingSnapshot(Map.of(), Map.of());
+    private Button ordersAttention, trackingAttention, serviceAttention;
 
     DashboardView(DclsApp app) {
         this.app = app;
         this.map = app.new MapController(430, 240);
-        this.vehiclesCard = metric("Vehicles", "0", "");
-        this.activeCard = metric("Active deliveries", "0", "");
-        this.pendingCard = metric("Pending orders", "0", "");
+        Role role = app.currentUser.role();
+        if (role == Role.DRIVER) {
+            this.vehiclesCard = metric("My deliveries", "0", "active now");
+            this.activeCard = metric("Assigned", "0", "ready to start");
+            this.pendingCard = metric("In transit", "0", "on route");
+        } else if (role == Role.DISPATCHER) {
+            this.vehiclesCard = metric("Orders to dispatch", "0", "awaiting dispatch");
+            this.activeCard = metric("Active deliveries", "0", "");
+            this.pendingCard = metric("GPS alerts", "0", "active deliveries");
+        } else {
+            this.vehiclesCard = metric("Vehicles", "0", "");
+            this.activeCard = metric("Active deliveries", "0", "");
+            this.pendingCard = metric("Orders to dispatch", "0", "awaiting dispatch");
+        }
         this.completedCard = metric("Completed today", "0", "");
     }
 
@@ -93,6 +109,19 @@ final class DashboardView {
     static long onRoad(List<Vehicle> vehicles) {
         if (vehicles == null) return 0;
         return vehicles.stream().filter(v -> v.status() == VehicleStatus.IN_DELIVERY).count();
+    }
+
+    /** In-transit deliveries without a position fix or with a fix older than the live GPS threshold. */
+    static long trackingIssueCount(List<Shipment> rows,
+                                   AppServices.TrackingService.TrackingSnapshot tracking,
+                                   LocalDateTime now) {
+        if (rows == null || tracking == null || now == null) return 0;
+        return rows.stream().filter(shipment -> shipment.status() == OrderStatus.IN_TRANSIT).filter(shipment -> {
+            if (shipment.vehicleId() == null) return true;
+            TrackingPoint point = tracking.byVehicle().get(shipment.vehicleId());
+            return point == null || java.time.Duration.between(point.recordedAt(), now).getSeconds()
+                    > AppServices.LiveGpsState.STALE_AFTER_SECONDS;
+        }).count();
     }
 
     /** Shipment count per charted status; statuses outside {@link #CHARTED} are dropped. */
@@ -124,9 +153,17 @@ final class DashboardView {
         page.setPadding(new Insets(18, 24, 20, 28));
         page.getChildren().add(0, headerRow());
 
-        HBox metrics = new HBox(18,
+        HBox metrics = new HBox(12,
                 vehiclesCard.card(), activeCard.card(), pendingCard.card(), completedCard.card());
         for (Node node : metrics.getChildren()) HBox.setHgrow(node, ALWAYS);
+
+        VBox attentionPanel = panel(new Label("Needs attention"));
+        ((Label) attentionPanel.getChildren().get(0)).getStyleClass().add("section-title");
+        attentionEmpty.getStyleClass().add("dashboard-empty");
+        attentionEmpty.setWrapText(true);
+        attentionCards.setAlignment(Pos.CENTER_LEFT);
+        createAttentionActions();
+        attentionPanel.getChildren().addAll(attentionEmpty, attentionCards);
 
         map.content = () -> plots.values().stream()
                 .map(plot -> new double[] {plot.lon(), plot.lat()}).toList();
@@ -155,13 +192,43 @@ final class DashboardView {
 
         HBox content = new HBox(14, mapPanel, rightColumn);
         HBox.setHgrow(mapPanel, ALWAYS);
-        page.getChildren().addAll(metrics, content);
+        page.getChildren().addAll(metrics, attentionPanel, content);
         refresh();
         return page;
     }
 
+    private void createAttentionActions() {
+        ordersAttention = attentionButton("Review orders", () -> app.showPage("orders"));
+        trackingAttention = attentionButton("Open live tracking", () -> app.showPage("tracking"));
+        serviceAttention = attentionButton("Review maintenance", () -> {
+            app.fleetRecordsView = "maintenance";
+            app.showPage("fleet");
+        });
+        Role role = app.currentUser.role();
+        if (role == Role.DRIVER) attentionCards.getChildren().addAll(trackingAttention, ordersAttention);
+        else if (role == Role.DISPATCHER) attentionCards.getChildren().addAll(ordersAttention, trackingAttention);
+        else attentionCards.getChildren().addAll(ordersAttention, serviceAttention, trackingAttention);
+        for (Node node : attentionCards.getChildren()) HBox.setHgrow(node, ALWAYS);
+    }
+
+    private static Button attentionButton(String accessibleText, Runnable action) {
+        Button button = new Button(accessibleText);
+        button.getStyleClass().add("dashboard-attention");
+        button.setMaxWidth(Double.MAX_VALUE);
+        button.setMinHeight(58);
+        button.setWrapText(true);
+        button.setAccessibleText(accessibleText);
+        button.setOnAction(event -> action.run());
+        return button;
+    }
+
     private HBox headerRow() {
-        Label subtitle = new Label("Live fleet and delivery status across Brunei-Muara.");
+        String subtitleText = switch (app.currentUser.role()) {
+            case DRIVER -> "Your assigned deliveries and live GPS status.";
+            case DISPATCHER -> "Orders waiting for dispatch and live delivery exceptions.";
+            default -> "Fleet readiness, service needs, and delivery exceptions.";
+        };
+        Label subtitle = new Label(subtitleText);
         subtitle.getStyleClass().add("page-subtitle");
         updatedAt.getStyleClass().add("muted");
         updatedAt.setStyle("-fx-font-size: 11px;");
@@ -201,27 +268,76 @@ final class DashboardView {
     void refresh() {
         List<Shipment> shipmentRows = app.visibleShipments();
         List<Vehicle> vehicleRows = fleetRows();
+        Map<String, Vehicle> vehiclesById = new LinkedHashMap<>();
+        for (Vehicle vehicle : vehicleRows) vehiclesById.put(vehicle.id(), vehicle);
+        currentTrackingSnapshot = app.tracking.latestSnapshot();
 
         long active = shipmentRows.stream().filter(DashboardView::isActive).count();
         long assigned = shipmentRows.stream().filter(s -> s.status() == OrderStatus.ASSIGNED).count();
+        long inTransit = shipmentRows.stream().filter(s -> s.status() == OrderStatus.IN_TRANSIT).count();
         long pending = shipmentRows.stream().filter(s -> s.status() == OrderStatus.PENDING).count();
         long road = onRoad(vehicleRows);
+        long trackingIssues = trackingIssueCount(shipmentRows, currentTrackingSnapshot, LocalDateTime.now());
 
-        vehiclesCard.value().setText(String.valueOf(vehicleRows.size()));
-        vehiclesCard.caption().setText(road + " on the road");
-        activeCard.value().setText(String.valueOf(active));
-        activeCard.caption().setText(assigned + " assigned");
-        pendingCard.value().setText(String.valueOf(pending));
-        pendingCard.caption().setText("not yet assigned");
+        if (app.currentUser.role() == Role.DRIVER) {
+            vehiclesCard.value().setText(String.valueOf(active));
+            activeCard.value().setText(String.valueOf(assigned));
+            pendingCard.value().setText(String.valueOf(inTransit));
+        } else if (app.currentUser.role() == Role.DISPATCHER) {
+            vehiclesCard.value().setText(String.valueOf(pending));
+            vehiclesCard.caption().setText("awaiting dispatch");
+            activeCard.value().setText(String.valueOf(active));
+            activeCard.caption().setText(assigned + " assigned");
+            pendingCard.value().setText(String.valueOf(trackingIssues));
+            pendingCard.caption().setText("need a live GPS fix");
+        } else {
+            vehiclesCard.value().setText(String.valueOf(vehicleRows.size()));
+            vehiclesCard.caption().setText(road + " on the road");
+            activeCard.value().setText(String.valueOf(active));
+            activeCard.caption().setText(assigned + " assigned");
+            pendingCard.value().setText(String.valueOf(pending));
+            pendingCard.caption().setText("awaiting dispatch");
+        }
         completedCard.value().setText(String.valueOf(completedToday(shipmentRows)));
         completedCard.caption().setText("since midnight");
         updatedAt.setText("Updated " + LocalDateTime.now().format(CLOCK));
         activeSummary.setText(String.valueOf(active));
 
+        refreshAttention(vehicleRows, pending, trackingIssues, active);
         paintStatusBars(statusCounts(shipmentRows));
-        refreshPlots(shipmentRows);
-        refreshVehicleList();
-        refreshDeliveries(shipmentRows);
+        refreshPlots(shipmentRows, vehiclesById, currentTrackingSnapshot);
+        refreshVehicleList(currentTrackingSnapshot);
+        refreshDeliveries(shipmentRows, currentTrackingSnapshot);
+    }
+
+    private void refreshAttention(List<Vehicle> vehicleRows, long pending, long trackingIssues, long active) {
+        long serviceDue = 0;
+        if (app.currentUser.role() == Role.DRIVER) {
+            ordersAttention.setText("My deliveries  ·  " + active + " active\nOpen My Orders");
+            ordersAttention.setAccessibleText("My deliveries: " + active + " active. Open My Orders.");
+        } else {
+            ordersAttention.setText("Orders to dispatch  ·  " + pending + "\nOpen Orders");
+            ordersAttention.setAccessibleText("Orders to dispatch: " + pending + " pending orders. Open Orders.");
+        }
+        trackingAttention.setText("Tracking needs attention  ·  " + trackingIssues + "\nOpen Live Tracking");
+        trackingAttention.setAccessibleText("Tracking needs attention for " + trackingIssues + " in-transit deliveries. Open Live Tracking.");
+        if (serviceAttention != null) {
+            long overdue = 0, dueSoon = 0;
+            for (Vehicle vehicle : vehicleRows) {
+                AppServices.FleetService.MaintenanceStatus status = app.fleet.maintenanceStatus(vehicle);
+                if (status == AppServices.FleetService.MaintenanceStatus.OVERDUE) overdue++;
+                else if (status == AppServices.FleetService.MaintenanceStatus.DUE_SOON) dueSoon++;
+            }
+            serviceDue = overdue + dueSoon;
+            serviceAttention.setText("Vehicle service  ·  " + (overdue + dueSoon) + " need attention\n"
+                    + overdue + " overdue, " + dueSoon + " due soon");
+            serviceAttention.setAccessibleText("Vehicle service: " + overdue + " overdue and "
+                    + dueSoon + " due soon. Review maintenance.");
+        }
+        boolean clear = pending == 0 && trackingIssues == 0 && serviceDue == 0;
+        attentionEmpty.setText(clear ? "No urgent work needs attention right now." : "Select an item to open its workspace.");
+        attentionEmpty.setVisible(true);
+        attentionEmpty.setManaged(true);
     }
 
     private List<Vehicle> fleetRows() {
@@ -231,7 +347,8 @@ final class DashboardView {
     }
 
     /** One marker per vehicle on an active delivery; no-fix vehicles sit at the depot. */
-    private void refreshPlots(List<Shipment> shipmentRows) {
+    private void refreshPlots(List<Shipment> shipmentRows, Map<String, Vehicle> vehiclesById,
+                              AppServices.TrackingService.TrackingSnapshot tracking) {
         activeByVehicle.clear();
         for (Shipment shipment : shipmentRows)
             if (isActive(shipment) && shipment.vehicleId() != null)
@@ -239,20 +356,21 @@ final class DashboardView {
 
         plots.clear();
         for (Map.Entry<String, Shipment> entry : activeByVehicle.entrySet()) {
-            Optional<Vehicle> vehicle = app.repository.vehicle(entry.getKey());
-            if (vehicle.isEmpty()) continue;
-            TrackingPoint fix = app.tracking.latestForVehicle(entry.getKey());
+            Vehicle vehicle = vehiclesById.get(entry.getKey());
+            if (vehicle == null) continue;
+            TrackingPoint fix = tracking.byVehicle().get(entry.getKey());
             plots.put(entry.getKey(), new VehiclePlot(
                     fix != null ? fix.x() : DEPOT.x(),
                     fix != null ? fix.y() : DEPOT.y(),
-                    vehicle.get().plate() + " · " + app.driverName(vehicle.get().driverId()),
+                    vehicle.plate() + " · " + app.driverName(vehicle.driverId()),
                     fix != null ? app.vehicleColor(entry.getKey()) : "#8a94a6",
-                    app.tracking.gps().isStale(entry.getKey())));
+                    fix == null || java.time.Duration.between(fix.recordedAt(), LocalDateTime.now()).getSeconds()
+                            > AppServices.LiveGpsState.STALE_AFTER_SECONDS));
         }
         map.redraw();
     }
 
-    private void refreshVehicleList() {
+    private void refreshVehicleList(AppServices.TrackingService.TrackingSnapshot tracking) {
         dotList.getChildren().clear();
         if (plots.isEmpty()) {
             Label none = new Label("No active vehicles on the road.");
@@ -263,19 +381,20 @@ final class DashboardView {
         for (Map.Entry<String, VehiclePlot> entry : plots.entrySet()) {
             String vehicleId = entry.getKey();
             Shipment duty = activeByVehicle.get(vehicleId);
-            TrackingPoint fix = app.tracking.latestForVehicle(vehicleId);
+            TrackingPoint fix = tracking.byVehicle().get(vehicleId);
             dotList.getChildren().add(app.legendSwatch(entry.getValue().color(),
                     entry.getValue().label() + " · " + duty.status().label()
-                            + " · " + app.tracking.gpsStatus(vehicleId)
+                            + " · " + gpsStatus(fix)
                             + " · ETA " + (fix != null ? fix.etaMinutes() + " min" : "—")));
         }
     }
 
-    private void refreshDeliveries(List<Shipment> shipmentRows) {
+    private void refreshDeliveries(List<Shipment> shipmentRows,
+                                   AppServices.TrackingService.TrackingSnapshot tracking) {
         List<Shipment> queue = shipmentRows.stream()
                 .filter(DashboardView::isActive)
                 .sorted(byEtaThenAge(id -> {
-                    TrackingPoint point = app.tracking.latestFor(id);
+                    TrackingPoint point = tracking.byShipment().get(id);
                     return point == null ? Integer.MAX_VALUE : point.etaMinutes();
                 }))
                 .limit(6)
@@ -325,14 +444,14 @@ final class DashboardView {
     }
 
     private String describe(String vehicleId) {
-        Optional<Vehicle> vehicle = app.repository.vehicle(vehicleId);
+        Vehicle vehicle = app.repository.vehicle(vehicleId).orElse(null);
         Shipment duty = activeByVehicle.get(vehicleId);
-        TrackingPoint fix = app.tracking.latestForVehicle(vehicleId);
+        TrackingPoint fix = currentTrackingSnapshot.byVehicle().get(vehicleId);
         StringBuilder details = new StringBuilder(app.vehiclePlate(vehicleId));
-        if (vehicle.isPresent()) details.append(" · ").append(vehicle.get().model());
-        details.append("\nDriver: ").append(vehicle.isPresent() ? app.driverName(vehicle.get().driverId()) : "—");
+        if (vehicle != null) details.append(" · ").append(vehicle.model());
+        details.append("\nDriver: ").append(vehicle != null ? app.driverName(vehicle.driverId()) : "—");
         if (duty != null) details.append("\nStatus: ").append(duty.status().label()).append(" · ").append(duty.address());
-        details.append("\nGPS: ").append(app.tracking.gpsStatus(vehicleId));
+        details.append("\nGPS: ").append(gpsStatus(fix));
         if (fix != null) details.append("\nETA about ").append(fix.etaMinutes()).append(" min · updated ")
                 .append(fix.recordedAt().format(DclsApp.DATE_TIME));
         else details.append("\nNo live fix yet — shown at depot.");
@@ -340,7 +459,16 @@ final class DashboardView {
     }
 
     private String etaFor(Shipment shipment) {
-        TrackingPoint point = app.tracking.latestFor(shipment.id());
+        TrackingPoint point = currentTrackingSnapshot.byShipment().get(shipment.id());
         return point == null ? "—" : point.etaMinutes() + " min";
+    }
+
+    private static String gpsStatus(TrackingPoint point) {
+        if (point == null) return "NO FIX";
+        long age = Math.max(0, java.time.Duration.between(point.recordedAt(), LocalDateTime.now()).getSeconds());
+        if (age > AppServices.LiveGpsState.STALE_AFTER_SECONDS) return "LOST · " + age + "s ago";
+        String accuracy = point.accuracyM() == null ? "" : "·±" + Math.round(point.accuracyM()) + "m";
+        String speed = point.speedKmh() > 0.5 ? "·" + Math.round(point.speedKmh()) + "km/h" : "";
+        return (point.fixType() == null ? "GPS" : point.fixType().label()) + accuracy + speed;
     }
 }

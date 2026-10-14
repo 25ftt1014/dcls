@@ -112,6 +112,46 @@ class DashboardMetricsTest {
     }
 
     @Test
+    void trackingIssueCountIncludesMissingAndStaleActiveFixesOnly() {
+        LocalDateTime now = LocalDateTime.now();
+        TrackingPoint fresh = new TrackingPoint("T-1", "v-fresh", "D-1", 114.9, 4.9,
+                8, now.minusSeconds(15));
+        TrackingPoint stale = new TrackingPoint("T-2", "v-stale", "D-2", 114.9, 4.9,
+                18, now.minusSeconds(16));
+        AppServices.TrackingService.TrackingSnapshot snapshot =
+                new AppServices.TrackingService.TrackingSnapshot(
+                        Map.of("v-fresh", fresh, "v-stale", stale), Map.of());
+        Shipment noVehicle = new Shipment("D-3", "Acme", "+673", "BSB", "Boxes", 1, 10,
+                Priority.NORMAL, OrderStatus.IN_TRANSIT, "u-driver-01", null, null,
+                LocalDateTime.now().minusDays(1), null);
+        Shipment freshDelivery = new Shipment("D-1", "Acme", "+673", "BSB", "Boxes", 1, 10,
+                Priority.NORMAL, OrderStatus.IN_TRANSIT, "u-driver-01", "v-fresh", null,
+                LocalDateTime.now().minusDays(1), null);
+
+        assertEquals(2, DashboardView.trackingIssueCount(List.of(
+                freshDelivery,
+                new Shipment("D-2", "Acme", "+673", "BSB", "Boxes", 1, 10,
+                        Priority.NORMAL, OrderStatus.IN_TRANSIT, "u-driver-01", "v-stale", null,
+                        LocalDateTime.now().minusDays(1), null),
+                noVehicle,
+                new Shipment("D-5", "Acme", "+673", "BSB", "Boxes", 1, 10,
+                        Priority.NORMAL, OrderStatus.ASSIGNED, "u-driver-01", "v-no-fix", null,
+                        LocalDateTime.now().minusDays(1), null),
+                shipment("D-4", OrderStatus.PENDING, null)), snapshot, now));
+    }
+
+    @Test
+    void dashboardDestinationsFollowExistingRoleAccess() {
+        AppServices.AccessService access = new AppServices.AccessService();
+        for (Role role : List.of(Role.ADMIN, Role.MANAGER, Role.DISPATCHER, Role.DRIVER)) {
+            assertTrue(access.canOpen(role, "dashboard"));
+            assertTrue(access.canOpen(role, "orders"));
+            assertTrue(access.canOpen(role, "tracking"));
+            assertEquals(role == Role.ADMIN || role == Role.MANAGER, access.canOpen(role, "fleet"));
+        }
+    }
+
+    @Test
     void nullCollectionsAreTolerated() {
         assertEquals(0, DashboardView.completedToday(null));
         assertEquals(0, DashboardView.onRoad(null));

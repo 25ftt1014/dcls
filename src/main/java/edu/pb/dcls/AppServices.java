@@ -1138,6 +1138,28 @@ final class AppServices {
             if (stored == null) return mem;
             return stored.recordedAt().isAfter(mem.recordedAt()) ? stored : mem;
         }
+
+        /** Latest live or persisted fixes, derived from one tracking-history read. */
+        TrackingSnapshot latestSnapshot() {
+            Map<String, TrackingPoint> byVehicle = new HashMap<>();
+            Map<String, TrackingPoint> byShipment = new HashMap<>();
+            for (TrackingPoint point : repository.trackingHistory()) {
+                if (point.vehicleId() != null) keepLatest(byVehicle, point.vehicleId(), point);
+                if (point.shipmentId() != null) keepLatest(byShipment, point.shipmentId(), point);
+            }
+            gps.lastByVehicle.forEach((vehicleId, point) -> {
+                keepLatest(byVehicle, vehicleId, point);
+                if (point.shipmentId() != null) keepLatest(byShipment, point.shipmentId(), point);
+            });
+            return new TrackingSnapshot(Map.copyOf(byVehicle), Map.copyOf(byShipment));
+        }
+
+        private static void keepLatest(Map<String, TrackingPoint> points, String key, TrackingPoint candidate) {
+            TrackingPoint current = points.get(key);
+            if (current == null || candidate.recordedAt().isAfter(current.recordedAt())) points.put(key, candidate);
+        }
+
+        record TrackingSnapshot(Map<String, TrackingPoint> byVehicle, Map<String, TrackingPoint> byShipment) { }
         String gpsStatus(String vehicleId) {
             TrackingPoint p = latestForVehicle(vehicleId);
             if (p == null) return "NO FIX";
