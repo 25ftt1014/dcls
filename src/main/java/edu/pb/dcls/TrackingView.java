@@ -136,7 +136,8 @@ final class TrackingView {
         active.setMinWidth(235);
         // Map canvas follows the panel width so the divider actually resizes the map.
         app.trackingCanvas.widthProperty().bind(map.widthProperty().subtract(24));
-        map.widthProperty().addListener((o, a, b) -> { if (app.trackingMaps != null) app.trackingMaps.redraw(); });
+        map.widthProperty().addListener((o, a, b) -> { if (app.trackingMaps != null) app.trackingMaps.requestRedraw(); });
+        map.heightProperty().addListener((o, a, b) -> { if (app.trackingMaps != null) app.trackingMaps.requestRedraw(); });
         javafx.scene.control.SplitPane split = new javafx.scene.control.SplitPane(map, active);
         split.setDividerPositions(app.trackingPanelCollapsed ? 1.0 : app.trackingDividerPos);
         javafx.scene.control.SplitPane.setResizableWithParent(map, Boolean.TRUE);
@@ -148,7 +149,7 @@ final class TrackingView {
                 app.trackingPanelCollapsed = false;
                 collapseBtn.setText("»");
             }
-            if (app.trackingMaps != null) app.trackingMaps.redraw();
+            if (app.trackingMaps != null) app.trackingMaps.requestRedraw();
         });
         collapseBtn.setOnAction(e -> {
             if (app.trackingPanelCollapsed) {
@@ -161,7 +162,7 @@ final class TrackingView {
                 split.setDividerPositions(1.0);
                 collapseBtn.setText("«");
             }
-            if (app.trackingMaps != null) app.trackingMaps.redraw();
+            if (app.trackingMaps != null) app.trackingMaps.requestRedraw();
         });
         VBox content = new VBox(split);
         VBox.setVgrow(split, ALWAYS);

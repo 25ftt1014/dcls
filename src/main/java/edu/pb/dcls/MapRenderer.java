@@ -130,11 +130,14 @@ final class MapRenderer {
         } catch (Exception ignored) { }
     }
 
-    /** Tile zoom whose pixels best match the screen resolution for the given span. */
+    /** Tile zoom whose pixels best match the screen resolution for the given span.
+     *  Capped at the current provider's max fetch zoom (Esri imagery ends at 19):
+     *  requesting deeper tiles would 404 on every frame. */
     static int zoomFor(double lonSpan, double viewPx) {
         double pxPerDeg = viewPx / Math.max(lonSpan, 1e-9);
         int z = (int) Math.ceil(Math.log(pxPerDeg * 360 / TILE_SIZE) / Math.log(2));
-        return Math.min(LIVE_MAX_Z, Math.max(LIVE_MIN_Z, z));
+        int cap = Math.min(LIVE_MAX_Z, maxFetchZoom(basemap));
+        return Math.min(cap, Math.max(LIVE_MIN_Z, z));
     }
 
     static int lonToTileX(double lon, int z) {
@@ -228,8 +231,9 @@ final class MapRenderer {
         return Path.of(System.getProperty("user.home"), ".dcls", "tiles", scope, cacheKey + ".png");
     }
 
-    /** Cached tile image, or null on a miss (queues one background fetch). Failures
-     *  are recorded with a reason (see tileProblem) and retried after a cooldown.
+    /** Cached tile image, or null on a miss (queues one background load: disk first,
+     *  then network). Memory-only on the calling thread: disk decode and fetching
+     *  never block a paint, so fast pans can't hitch on file or network I/O.
      *  All cache keys are provider-scoped and the provider is snapshotted per
      *  request, so toggling the basemap mid-fetch can never mix OSM/Esri tiles. */
     static Image requestTile(int z, int x, int y) {
@@ -238,15 +242,32 @@ final class MapRenderer {
         String skey = memKey(provider, key);
         Image hit = TILE_MEM.get(skey);
         if (hit != null) return hit;
-        Image img = decodeTileFile(tileDiskPathFor(key, provider), provider);
-        if (img != null) { TILE_MEM.put(skey, img); return img; }
-        Long failedAt = TILE_FAILED.get(skey);
-        if (failedAt != null && System.currentTimeMillis() - failedAt < 60_000) return null;
+        Long retryAt = TILE_FAILED.get(skey);
+        if (retryAt != null && System.currentTimeMillis() < retryAt) return null;
         if (TILE_IN_FLIGHT.add(skey)) {
             tileProblem = null;
-            TILE_IO.submit(() -> fetchTile(skey, key, z, x, y, provider));
+            TILE_IO.submit(() -> loadTile(skey, key, z, x, y, provider));
         }
         return null;
+    }
+
+    /** Background tile load: disk cache first, then one network fetch. Runs off the
+     *  UI thread; arrival triggers a repaint through the tile listeners. */
+    private static void loadTile(String skey, String key, int z, int x, int y, Basemap provider) {
+        try {
+            if (TILE_GONE.contains(skey)) return;
+            Image disk = decodeTileFile(tileDiskPathFor(key, provider), provider);
+            if (disk != null) {
+                TILE_MEM.put(skey, disk);
+                TILE_FAILED.remove(skey);
+                tileProblem = null;
+                Platform.runLater(MapRenderer::fireTilesUpdated);
+                return;
+            }
+            fetchTile(skey, key, z, x, y, provider);
+        } finally {
+            TILE_IN_FLIGHT.remove(skey);
+        }
     }
 
     private static void fetchTile(String skey, String key, int z, int x, int y, Basemap provider) {
@@ -533,15 +554,15 @@ final class MapRenderer {
         return count <= LIVE_MAX_TILES ? z : displayZ;
     }
 
-    /** Cached tile image without fetching (memory, then disk). No cooldown or retry
-     *  side effects: safe for fallback painting on every frame. */
+    /** Cached tile image without blocking (memory only). No cooldown or retry
+     *  side effects beyond queueing the normal background load: safe for fallback
+     *  painting on every frame, and never decodes on the calling thread. */
     static Image peekTile(int z, int x, int y) {
         String key = z + "/" + x + "/" + y;
         Basemap provider = basemap;
         Image hit = TILE_MEM.get(memKey(provider, key));
         if (hit != null && !hit.isError()) return hit;
-        Image img = decodeTileFile(tileDiskPathFor(key, provider), provider);
-        if (img != null) { TILE_MEM.put(memKey(provider, key), img); return img; }
+        requestTile(z, x, y);
         return null;
     }
 
@@ -577,6 +598,8 @@ final class MapRenderer {
                 }
                 // Missing deep tile: paint the cached parent quadrant (softer but never
                 // a gray hole); background + retry overlay only when nothing is cached.
+                // peekTile is memory-only and queues the background load, so this
+                // fallback stays free on the paint thread.
                 Image parent = z > LIVE_MIN_Z ? peekTile(z - 1, Math.floorDiv(x, 2), Math.floorDiv(y, 2)) : null;
                 if (parent != null && !parent.isError()) {
                     double pw = parent.getWidth(), ph = parent.getHeight();
@@ -588,6 +611,15 @@ final class MapRenderer {
             }
         }
         g.restore();
+        // Prefetch one ring around the viewport (cheap: memory check, background
+        // queue on miss) so the next pan step usually finds tiles already loading.
+        int maxTile = (1 << z) - 1;
+        for (int x = Math.max(x0 - 1, 0); x <= Math.min(x1 + 1, maxTile); x++) {
+            for (int y = Math.max(y0 - 1, 0); y <= Math.min(y1 + 1, maxTile); y++) {
+                if (x >= x0 && x <= x1 && y >= y0 && y <= y1) continue;
+                requestTile(z, x, y);
+            }
+        }
         return new FrameCoverage(painted, pending, failed);
     }
 
@@ -613,9 +645,11 @@ final class MapRenderer {
     static final double FRAME_OUTLIER_KM = 10.0;
 
     /** Drawable-area aspect: tiles and overlays map spans onto the padded area,
-     *  so balancing against full-canvas w/h stretches one axis (~7% here). */
+     *  so balancing against full-canvas w/h stretches one axis (~7% here).
+     *  Clamped positive: pre-layout frames (zero/negative width) must never
+     *  produce a degenerate aspect that squashes the stored view. */
     static double drawableAspect(double w, double h) {
-        return (w - 28) / Math.max(h - 28, 1);
+        return Math.max(w - 28, 1) / Math.max(h - 28, 1);
     }
 
     /** Zoom-to-content: bounds enclosing the given lon/lat points plus margin, matched to

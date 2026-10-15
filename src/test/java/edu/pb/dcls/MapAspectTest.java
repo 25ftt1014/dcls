@@ -50,4 +50,37 @@ class MapAspectTest {
         // Full-canvas w/h would be ~7% off; the drawable area is what matters.
         assertEquals((1000 - 28) / (330.0 - 28), MapRenderer.drawableAspect(1000, 330), 1e-9);
     }
+
+    @Test
+    void degenerateCanvasSizeNeverSquashesAspect() {
+        // Pre-layout frames (zero/negative canvas width) must yield a positive
+        // aspect so the stored view can never be squashed by a bad first paint.
+        assertTrue(MapRenderer.drawableAspect(0, 480) > 0);
+        assertTrue(MapRenderer.drawableAspect(-24, 480) > 0);
+        assertTrue(MapRenderer.drawableAspect(640, 0) > 0);
+    }
+
+    @Test
+    void zoomForRespectsProviderFetchMax() {
+        // Esri imagery ends at z19: deep zoom must never request z20 tiles that 404.
+        MapRenderer.Basemap prev = MapRenderer.basemap;
+        try {
+            MapRenderer.basemap = MapRenderer.Basemap.ESRI_IMAGERY;
+            assertTrue(MapRenderer.zoomFor(1e-9, 100_000) <= 19);
+            MapRenderer.basemap = MapRenderer.Basemap.OSM_STANDARD;
+            assertTrue(MapRenderer.zoomFor(1e-9, 100_000) <= 20);
+        } finally {
+            MapRenderer.basemap = prev;
+        }
+    }
+
+    @Test
+    void edgePushedViewRefitsWithoutSquash() {
+        // Panning past the map border shifts the view out of range; clamping back
+        // plus aspect re-fit (the panBy path) must stay undistorted.
+        var pushed = new MapRenderer.ViewBounds(114.0, 114.2, 4.7, 4.9);
+        double aspect = MapRenderer.drawableAspect(900, 480);
+        var refit = MapRenderer.fitAspect(pushed, aspect);
+        assertEquals(1.0, ratio(refit, 900, 480), 0.03);
+    }
 }

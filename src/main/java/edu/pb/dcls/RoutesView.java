@@ -499,7 +499,10 @@ RoutePlan toSave = new RoutePlan(route.id(), route.name(), driver.getValue().id(
         mapPanel.getChildren().addAll(previewMap.canvas, previewMap.zoomBar, app.legendBox(), statusBar);
         mapPanel.setMinWidth(320); HBox.setHgrow(mapPanel, ALWAYS);
         previewMap.canvas.widthProperty().bind(mapPanel.widthProperty().subtract(24));
-        mapPanel.widthProperty().addListener((o, a, b) -> previewMap.redraw());
+        // Coalesced repaints on layout: the first real frame waits for settled
+        // dimensions (never the degenerate pre-layout size).
+        mapPanel.widthProperty().addListener((o, a, b) -> previewMap.requestRedraw());
+        mapPanel.heightProperty().addListener((o, a, b) -> previewMap.requestRedraw());
         VBox history = panel(new Label("Route history")); ((Label) history.getChildren().get(0)).getStyleClass().add("section-title");
         history.setPrefWidth(300); history.setMinWidth(260);
         TableView<RoutePlan> table = new TableView<>(); table.setPlaceholder(new Label("No routes have been planned yet."));
@@ -571,7 +574,10 @@ RoutePlan toSave = new RoutePlan(route.id(), route.name(), driver.getValue().id(
             previewMap.redraw();
         });
         prefillHandoff.run();
-        previewMap.redraw();
+        // Deferred first paint: page() builds before scene layout, so painting now
+        // would use the degenerate pre-layout canvas size. The pulse-coalesced
+        // repaint fires once dimensions settle.
+        Platform.runLater(previewMap::requestRedraw);
         refreshNearbyVisibility(addNearby);
         builder.getChildren().addAll(controlScroll, mapPanel, history);
         history.getChildren().addAll(table, routeActions); page.getChildren().add(builder); return page;

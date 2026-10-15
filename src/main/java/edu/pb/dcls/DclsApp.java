@@ -1,5 +1,6 @@
 package edu.pb.dcls;
 
+import javafx.animation.AnimationTimer;
 import javafx.animation.KeyFrame;
 import javafx.animation.ScaleTransition;
 import javafx.animation.Timeline;
@@ -765,7 +766,10 @@ public final class DclsApp extends Application {
         return palette[Math.abs(vehicleId.hashCode()) % palette.length];
     }
 
-    /** Interactive map: auto-fit content with sticky manual zoom/pan (scroll, drag, buttons). */
+    /** Interactive map: auto-fit content with sticky manual zoom/pan (scroll, drag, buttons).
+     *  Repaints are coalesced to one per display pulse: gestures and tile arrivals only
+     *  update cheap view math and set the dirty flag, so 100+ drag events/sec paint at
+     *  most 60 frames/sec instead of hitch-painting every event. */
     final class MapController {
         final Canvas canvas;
         final HBox zoomBar;
@@ -776,14 +780,38 @@ public final class DclsApp extends Application {
         ViewBounds lastAuto = FULL_MAP;
         private double pressX, pressY;
         private boolean dragging;
-        private final Runnable tileRefresh = this::redraw;
+        private final Runnable tileRefresh = this::requestRedraw;
+        private boolean dirty;
+        private boolean paintedOnce;
+        private boolean timerRunning;
+        private int detachedPulses;
+        private final AnimationTimer repaintTimer = new AnimationTimer() {
+            @Override public void handle(long now) {
+                if (canvas.getScene() == null) {
+                    // Rebuilt pages discard their controller: stop the timer once the
+                    // canvas has painted and detached (cap the wait for never-shown ones).
+                    if (paintedOnce || ++detachedPulses > 600) { stop(); timerRunning = false; }
+                    return;
+                }
+                detachedPulses = 0;
+                if (!dirty) return;
+                dirty = false;
+                redraw();
+            }
+        };
+
+        /** Schedule a repaint on the next display pulse (coalesces drag + tile bursts). */
+        void requestRedraw() {
+            dirty = true;
+            if (!timerRunning) { timerRunning = true; repaintTimer.start(); }
+        }
 
         MapController(double width, double height) {
             canvas = mapCanvas(width, height);
             addTileListener(tileRefresh);
             Button in = button("+", "secondary-button"), out = button("−", "secondary-button"), reset = button("Reset view", "secondary-button");
-            in.setOnAction(event -> zoomAt(1.4, width / 2, height / 2));
-            out.setOnAction(event -> zoomAt(1 / 1.4, width / 2, height / 2));
+            in.setOnAction(event -> zoomAt(1.4, canvas.getWidth() / 2, canvas.getHeight() / 2));
+            out.setOnAction(event -> zoomAt(1 / 1.4, canvas.getWidth() / 2, canvas.getHeight() / 2));
             reset.setOnAction(event -> { manual = null; redraw(); });
             zoomBar = new HBox(6, in, out, reset);
             canvas.setOnScroll(event -> { zoomAt(event.getDeltaY() > 0 ? 1.25 : 0.8, event.getX(), event.getY()); event.consume(); });
@@ -801,13 +829,25 @@ public final class DclsApp extends Application {
         ViewBounds currentView() { return manual != null ? manual : lastAuto; }
 
         void redraw() {
-            double aspect = drawableAspect(canvas.getWidth(), canvas.getHeight());
-            ViewBounds auto = fitAspect(fitBounds(content.get(), aspect), aspect);
-            lastAuto = auto;
-            if (manual != null) manual = fitAspect(manual, aspect);
-            ViewBounds view = manual != null ? manual : auto;
+            double w = canvas.getWidth(), h = canvas.getHeight();
+            // Pre-layout frames (zero/negative size) paint nothing and must not
+            // store a degenerate view: the post-layout listener repaints for real.
+            if (!(w > 28 && h > 28)) return;
+            double aspect = drawableAspect(w, h);
+            ViewBounds view;
+            if (manual != null) {
+                // Panning: keep the sticky view (re-fit to live aspect only).
+                // Skips the fitBounds sort over content on every drag event.
+                manual = fitAspect(manual, aspect);
+                view = manual;
+            } else {
+                ViewBounds auto = fitAspect(fitBounds(content.get(), aspect), aspect);
+                lastAuto = auto;
+                view = auto;
+            }
             GraphicsContext g = prepareMap(canvas, view);
             painter.accept(g, view);
+            paintedOnce = true;
         }
 
         void zoomAt(double factor, double px, double py) {
@@ -820,7 +860,7 @@ public final class DclsApp extends Application {
             double latTop = mercator(cursor[1]) + (mercator(base.latMax()) - mercator(cursor[1])) / factor;
             double latBottom = mercator(cursor[1]) - (mercator(cursor[1]) - mercator(base.latMin())) / factor;
             manual = clamp(fitAspect(new ViewBounds(lonMin, lonMin + lonSpan, mercToLat(latBottom), mercToLat(latTop)), drawableAspect(w, h)));
-            redraw();
+            requestRedraw();
         }
 
         void panBy(double dxPx, double dyPx) {
@@ -831,8 +871,10 @@ public final class DclsApp extends Application {
             double dLon = dxPx / (w - pad * 2) * lonSpan;
             double dMerc = dyPx / (h - pad * 2) * mercSpan;
             double mercTop = mercator(base.latMax()) - dMerc, mercBottom = mercator(base.latMin()) - dMerc;
-            manual = clamp(new ViewBounds(base.lonMin() + dLon, base.lonMax() + dLon, mercToLat(mercBottom), mercToLat(mercTop)));
-            redraw();
+            // Re-fit aspect after the edge clamp so panning past the map border
+            // can never squash the view (plain degree clamping did).
+            manual = fitAspect(clamp(new ViewBounds(base.lonMin() + dLon, base.lonMax() + dLon, mercToLat(mercBottom), mercToLat(mercTop))), drawableAspect(w, h));
+            requestRedraw();
         }
 
         double[] unproject(double px, double py) {
