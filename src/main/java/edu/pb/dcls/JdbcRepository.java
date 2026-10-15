@@ -33,6 +33,31 @@ public final class JdbcRepository implements Repository {
             try (PreparedStatement statement = connection.prepareStatement("SELECT 1")) { statement.executeQuery(); }
             return null;
         });
+        ensureMigrations();
+    }
+
+    /** Best-effort upgrade for databases created by an older schema.sql. Fresh
+     *  databases already have the new shape; failures here are ignored so a
+     *  locked-down app account (no ALTER grant) still works after an admin
+     *  re-runs schema.sql. */
+    private void ensureMigrations() {
+        try (Connection connection = connection(); java.sql.Statement statement = connection.createStatement()) {
+            try { statement.executeUpdate("ALTER TABLE tracking_history ADD COLUMN client_id VARCHAR(48) NULL"); }
+            catch (SQLException duplicate) { /* 1060 duplicate column: already migrated */ }
+            try {
+                boolean singleIdPk = false;
+                try (ResultSet keys = connection.getMetaData().getPrimaryKeys(null, null, "route_stops")) {
+                    List<String> cols = new ArrayList<>();
+                    while (keys.next()) cols.add(keys.getString("COLUMN_NAME"));
+                    singleIdPk = cols.size() == 1 && cols.get(0).equalsIgnoreCase("id");
+                } catch (SQLException ignored) { }
+                if (singleIdPk) {
+                    statement.executeUpdate("ALTER TABLE route_stops DROP PRIMARY KEY, ADD PRIMARY KEY (route_id, stop_order)");
+                }
+                try { statement.executeUpdate("ALTER TABLE route_stops ADD KEY idx_route_stops_id (id)"); }
+                catch (SQLException duplicate) { /* duplicate key name: already migrated */ }
+            } catch (SQLException ignored) { }
+        } catch (SQLException ignored) { }
     }
 
     private Connection connection() throws SQLException { return DriverManager.getConnection(url, username, password); }
@@ -56,6 +81,15 @@ public final class JdbcRepository implements Repository {
         if (exception.getErrorCode() == 1451) {
             return new AppServices.AppException("This record is still linked to other data such as orders, routes or history. Remove those links first, then try again.", exception);
         }
+        if (exception.getErrorCode() == 1452) {
+            return new AppServices.AppException("That change refers to a vehicle, driver, order, or route that does not exist. Create it first, then try again.", exception);
+        }
+        if (exception.getErrorCode() == 1062) {
+            return new AppServices.AppException("That record already exists (duplicate email, plate number, or id). Change the identifying value, then try again.", exception);
+        }
+        if (exception.getErrorCode() == 1406 || exception.getErrorCode() == 1366) {
+            return new AppServices.AppException("One of the values is too long or invalid for the database. Shorten it, then try again.", exception);
+        }
         if (exception.getErrorCode() == 1054) {
             return new AppServices.AppException("The database is missing a column this app needs. Re-run schema.sql as an administrative account, then restart the app.", exception);
         }
@@ -68,7 +102,7 @@ public final class JdbcRepository implements Repository {
             try (PreparedStatement statement = connection.prepareStatement("SELECT * FROM users ORDER BY full_name"); ResultSet rows = statement.executeQuery()) {
                 while (rows.next()) result.add(new User(rows.getString("id"), rows.getString("full_name"), rows.getString("email"),
                         rows.getString("phone"), rows.getString("password_hash"), rows.getString("password_salt"),
-                        Role.valueOf(rows.getString("role_code")), rows.getBoolean("active"), rows.getBoolean("pending")));
+                        parseRole(rows.getString("role_code"), rows.getString("id")), rows.getBoolean("active"), rows.getBoolean("pending")));
             }
             return result;
         });
@@ -82,7 +116,7 @@ public final class JdbcRepository implements Repository {
                     if (!rows.next()) return Optional.empty();
                     return Optional.of(new User(rows.getString("id"), rows.getString("full_name"), rows.getString("email"),
                             rows.getString("phone"), rows.getString("password_hash"), rows.getString("password_salt"),
-                            Role.valueOf(rows.getString("role_code")), rows.getBoolean("active"), rows.getBoolean("pending")));
+                            parseRole(rows.getString("role_code"), rows.getString("id")), rows.getBoolean("active"), rows.getBoolean("pending")));
                 }
             }
         });
@@ -128,8 +162,34 @@ public final class JdbcRepository implements Repository {
 
     private Vehicle vehicleFrom(ResultSet rows) throws SQLException {
         return new Vehicle(rows.getString("id"), rows.getString("plate_number"), rows.getString("model"), rows.getString("vehicle_type"),
-                rows.getDouble("capacity_kg"), rows.getDouble("mileage_km"), VehicleStatus.valueOf(rows.getString("status")),
+                rows.getDouble("capacity_kg"), rows.getDouble("mileage_km"), parseVehicleStatus(rows.getString("status"), rows.getString("id")),
                 rows.getString("driver_id"), rows.getDouble("next_service_km"));
+    }
+
+    private Role parseRole(String raw, String rowId) {
+        if (raw == null) throw new AppServices.AppException("User '" + rowId + "' has no role in the database. Fix its role_code, then restart.");
+        try { return Role.valueOf(raw.trim().toUpperCase(java.util.Locale.ROOT)); }
+        catch (IllegalArgumentException e) { throw new AppServices.AppException("User '" + rowId + "' has an unknown role '" + raw + "'. Fix its role_code, then restart.", e); }
+    }
+
+    private VehicleStatus parseVehicleStatus(String raw, String rowId) {
+        if (raw == null) throw new AppServices.AppException("Vehicle '" + rowId + "' has no status in the database. Fix its status, then restart.");
+        String key = raw.trim().toUpperCase(java.util.Locale.ROOT).replace(' ', '_');
+        try { return VehicleStatus.valueOf(key); }
+        catch (IllegalArgumentException e) { throw new AppServices.AppException("Vehicle '" + rowId + "' has an unknown status '" + raw + "'. Fix its status, then restart.", e); }
+    }
+
+    private Priority parsePriority(String raw, String rowId) {
+        if (raw == null) throw new AppServices.AppException("Order '" + rowId + "' has no priority in the database. Fix its priority, then restart.");
+        try { return Priority.valueOf(raw.trim().toUpperCase(java.util.Locale.ROOT)); }
+        catch (IllegalArgumentException e) { throw new AppServices.AppException("Order '" + rowId + "' has an unknown priority '" + raw + "'. Fix its priority, then restart.", e); }
+    }
+
+    private OrderStatus parseOrderStatus(String raw, String rowId) {
+        if (raw == null) throw new AppServices.AppException("Order '" + rowId + "' has no status in the database. Fix its status, then restart.");
+        String key = raw.trim().toUpperCase(java.util.Locale.ROOT).replace(' ', '_');
+        try { return OrderStatus.valueOf(key); }
+        catch (IllegalArgumentException e) { throw new AppServices.AppException("Order '" + rowId + "' has an unknown status '" + raw + "'. Fix its status, then restart.", e); }
     }
 
     @Override public void saveVehicle(Vehicle vehicle) { write(connection -> { saveVehicle(connection, vehicle); return null; }); }
@@ -167,9 +227,10 @@ public final class JdbcRepository implements Repository {
     }
     private Shipment shipmentFrom(ResultSet rows) throws SQLException {
         Timestamp created = rows.getTimestamp("created_at"), delivered = rows.getTimestamp("delivered_at");
-        Shipment shipment = new Shipment(rows.getString("id"), rows.getString("customer_name"), rows.getString("customer_contact"),
+        String rowId = rows.getString("id");
+        Shipment shipment = new Shipment(rowId, rows.getString("customer_name"), rows.getString("customer_contact"),
                 rows.getString("delivery_address"), rows.getString("package_description"), rows.getInt("quantity"),
-                rows.getDouble("weight_kg"), Priority.valueOf(rows.getString("priority")), OrderStatus.valueOf(rows.getString("status")),
+                rows.getDouble("weight_kg"), parsePriority(rows.getString("priority"), rowId), parseOrderStatus(rows.getString("status"), rowId),
                 rows.getString("driver_id"), rows.getString("vehicle_id"), rows.getString("route_id"),
                 created == null ? LocalDateTime.now() : created.toLocalDateTime(), delivered == null ? null : delivered.toLocalDateTime());
         shipment.setDeliveryMetrics(rows.getInt("delivery_minutes"), rows.getInt("customer_satisfaction"));
@@ -190,7 +251,7 @@ public final class JdbcRepository implements Repository {
             statement.setString(4, shipment.address()); statement.setString(5, shipment.packageDescription()); statement.setInt(6, shipment.quantity());
             statement.setDouble(7, shipment.weightKg()); statement.setString(8, shipment.priority().name()); statement.setString(9, shipment.status().name());
             statement.setString(10, shipment.driverId()); statement.setString(11, shipment.vehicleId()); statement.setString(12, shipment.routeId());
-            statement.setTimestamp(13, Timestamp.valueOf(shipment.createdAt()));
+            statement.setTimestamp(13, Timestamp.valueOf(shipment.createdAt() == null ? LocalDateTime.now() : shipment.createdAt()));
             if (shipment.deliveredAt() == null) statement.setNull(14, java.sql.Types.TIMESTAMP); else statement.setTimestamp(14, Timestamp.valueOf(shipment.deliveredAt()));
             if (shipment.deliveryMinutes() <= 0) statement.setNull(15, java.sql.Types.INTEGER); else statement.setInt(15, shipment.deliveryMinutes());
             if (shipment.customerSatisfaction() == 0) statement.setNull(16, java.sql.Types.TINYINT); else statement.setInt(16, shipment.customerSatisfaction());
@@ -229,11 +290,25 @@ public final class JdbcRepository implements Repository {
         });
     }
     @Override public void saveRoute(RoutePlan route) {
+        if (route == null) throw new AppServices.AppException("Route details are required.");
+        if (route.stops() == null || route.stops().size() < 2) throw new AppServices.AppException("Add a depot and at least one stop.");
         // Validate BEFORE the transaction: a failure must not wipe the existing stops.
         for (Stop stop : route.stops()) {
+            if (stop == null || stop.id() == null || stop.name() == null) throw new AppServices.AppException("Every route stop needs a name and location.");
             AppServices.requireServiceArea(stop.x(), stop.y(), "Route stop '" + stop.name() + "'");
         }
+        LocalDateTime createdAt = route.createdAt() == null ? LocalDateTime.now() : route.createdAt();
         transaction(connection -> {
+            // Preserve the original creation time on updates, like the demo does.
+            LocalDateTime effectiveCreated = createdAt;
+            try (PreparedStatement existing = connection.prepareStatement("SELECT created_at FROM routes WHERE id=?")) {
+                existing.setString(1, route.id());
+                try (ResultSet rows = existing.executeQuery()) {
+                    if (rows.next() && rows.getTimestamp("created_at") != null) {
+                        effectiveCreated = rows.getTimestamp("created_at").toLocalDateTime();
+                    }
+                }
+            }
             try (PreparedStatement statement = connection.prepareStatement("""
                     INSERT INTO routes(id, route_name, driver_id, distance_km, estimated_minutes, completed, created_at)
                     VALUES(?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE route_name=VALUES(route_name), driver_id=VALUES(driver_id),
@@ -242,9 +317,11 @@ public final class JdbcRepository implements Repository {
                     """)) {
                 statement.setString(1, route.id()); statement.setString(2, route.name()); statement.setString(3, route.driverId());
                 statement.setDouble(4, route.distanceKm()); statement.setInt(5, route.estimatedMinutes()); statement.setBoolean(6, route.completed());
-                statement.setTimestamp(7, Timestamp.valueOf(route.createdAt())); statement.executeUpdate();
+                statement.setTimestamp(7, Timestamp.valueOf(effectiveCreated)); statement.executeUpdate();
             }
             execute(connection, "DELETE FROM route_stops WHERE route_id=?", route.id());
+            // PK is (route_id, stop_order), so shared district/pin ids (e.g. 'gadong')
+            // may appear on many routes, matching the demo repository.
             try (PreparedStatement statement = connection.prepareStatement("INSERT INTO route_stops(id, route_id, stop_order, stop_name, x_coord, y_coord) VALUES(?,?,?,?,?,?)")) {
                 int order = 0;
                 for (Stop stop : route.stops()) {
@@ -314,9 +391,14 @@ private TrackingPoint trackingFrom(ResultSet rows, LocalDateTime recorded) throw
         Double accuracy = colDoubleOrNull(rows, "accuracy_m");
         FixType fix = FixType.GPS;
         String source = "nmea";
-        try { String f = rows.getString("fix_type"); if (f != null) fix = FixType.valueOf(f); } catch (Exception ignored) { }
+        try { String f = rows.getString("fix_type"); if (f != null) fix = FixType.valueOf(f.trim().toUpperCase(java.util.Locale.ROOT)); } catch (Exception ignored) { }
         try { String s = rows.getString("source"); if (s != null && !s.isBlank()) source = s; } catch (Exception ignored) { }
-        return new TrackingPoint(rows.getString("id"), rows.getString("vehicle_id"), rows.getString("shipment_id"),
+        // Prefer the caller-supplied UUID (client_id) so quarantine/tour caches keyed by
+        // TrackingPoint.id stay stable across restarts, like the demo repository.
+        String id = rows.getString("id");
+        try { String client = rows.getString("client_id"); if (client != null && !client.isBlank()) id = client; }
+        catch (SQLException missingColumn) { /* pre-migration DB without client_id */ }
+        return new TrackingPoint(id, rows.getString("vehicle_id"), rows.getString("shipment_id"),
                 rows.getDouble("x_coord"), rows.getDouble("y_coord"), rows.getInt("eta_minutes"), recorded,
                 speed, heading, accuracy, fix, source);
     }
@@ -340,22 +422,25 @@ private TrackingPoint trackingFrom(ResultSet rows, LocalDateTime recorded) throw
     }
 
     @Override public void saveTrackingPoint(TrackingPoint point) { write(connection -> {
+        if (point == null) throw new AppServices.AppException("GPS fix details are required.");
+        if (point.vehicleId() == null || point.vehicleId().isBlank()) throw new AppServices.AppException("Choose a vehicle for this GPS fix.");
         AppServices.requireServiceArea(point.x(), point.y(), "Tracking fix");
+        LocalDateTime recordedAt = point.recordedAt() == null ? LocalDateTime.now() : point.recordedAt();
         try {
-            try (PreparedStatement statement = connection.prepareStatement("INSERT INTO tracking_history(vehicle_id,shipment_id,x_coord,y_coord,eta_minutes,recorded_at,speed_kmh,heading_deg,accuracy_m,fix_type,source) VALUES(?,?,?,?,?,?,?,?,?,?,?)")) {
-                statement.setString(1, point.vehicleId()); statement.setString(2, point.shipmentId()); statement.setDouble(3, point.x()); statement.setDouble(4, point.y()); statement.setInt(5, point.etaMinutes()); statement.setTimestamp(6, Timestamp.valueOf(point.recordedAt()));
-                statement.setDouble(7, point.speedKmh());
-                if (point.headingDeg() == null) statement.setNull(8, java.sql.Types.DECIMAL); else statement.setDouble(8, point.headingDeg());
-                if (point.accuracyM() == null) statement.setNull(9, java.sql.Types.DECIMAL); else statement.setDouble(9, point.accuracyM());
-                statement.setString(10, point.fixType() == null ? "GPS" : point.fixType().name());
-                statement.setString(11, point.source() == null ? "nmea" : point.source());
+            try (PreparedStatement statement = connection.prepareStatement("INSERT INTO tracking_history(client_id,vehicle_id,shipment_id,x_coord,y_coord,eta_minutes,recorded_at,speed_kmh,heading_deg,accuracy_m,fix_type,source) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)")) {
+                statement.setString(1, point.id()); statement.setString(2, point.vehicleId()); statement.setString(3, point.shipmentId()); statement.setDouble(4, point.x()); statement.setDouble(5, point.y()); statement.setInt(6, point.etaMinutes()); statement.setTimestamp(7, Timestamp.valueOf(recordedAt));
+                statement.setDouble(8, point.speedKmh());
+                if (point.headingDeg() == null) statement.setNull(9, java.sql.Types.DECIMAL); else statement.setDouble(9, point.headingDeg());
+                if (point.accuracyM() == null) statement.setNull(10, java.sql.Types.DECIMAL); else statement.setDouble(10, point.accuracyM());
+                statement.setString(11, point.fixType() == null ? "GPS" : point.fixType().name());
+                statement.setString(12, point.source() == null ? "nmea" : point.source());
                 statement.executeUpdate();
             }
         } catch (SQLException legacy) {
             // Pre-migration DB without new columns.
             if (legacy.getErrorCode() == 1054) {
                 try (PreparedStatement statement = connection.prepareStatement("INSERT INTO tracking_history(vehicle_id,shipment_id,x_coord,y_coord,eta_minutes,recorded_at) VALUES(?,?,?,?,?,?)")) {
-                    statement.setString(1, point.vehicleId()); statement.setString(2, point.shipmentId()); statement.setDouble(3, point.x()); statement.setDouble(4, point.y()); statement.setInt(5, point.etaMinutes()); statement.setTimestamp(6, Timestamp.valueOf(point.recordedAt())); statement.executeUpdate();
+                    statement.setString(1, point.vehicleId()); statement.setString(2, point.shipmentId()); statement.setDouble(3, point.x()); statement.setDouble(4, point.y()); statement.setInt(5, point.etaMinutes()); statement.setTimestamp(6, Timestamp.valueOf(recordedAt)); statement.executeUpdate();
                 }
             } else throw legacy;
         }

@@ -4,6 +4,9 @@ import javafx.application.Platform;
 import javafx.scene.canvas.Canvas;
 import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.image.Image;
+import javafx.scene.image.PixelFormat;
+import javafx.scene.image.PixelReader;
+import javafx.scene.image.WritableImage;
 import javafx.scene.paint.Color;
 import javafx.scene.shape.StrokeLineCap;
 import javafx.scene.shape.StrokeLineJoin;
@@ -43,8 +46,8 @@ import static edu.pb.dcls.Domain.Stop;
 import static edu.pb.dcls.Domain.TrackingPoint;
 
 /**
- * Real-map rendering over live tiles (OSM Standard default, no key; CARTO Voyager @2x
- * retina when DCLS_CARTO_KEY is set, zoom 3-20). WiFi-first: the disk tile cache covers
+ * Real-map rendering over live tiles (OSM Standard default and Esri World Imagery,
+ * both keyless, zoom 3-20). WiFi-first: the disk tile cache covers
  * transient blips. Stateless per call except the shared tile cache: every method takes
  * what it draws, so there is no shared state between screens.
  * Stop.x()/y() carry longitude/latitude (WGS84 degrees).
@@ -59,21 +62,17 @@ final class MapRenderer {
 
     static final ViewBounds FULL_MAP = new ViewBounds(MAP_LON_MIN, MAP_LON_MAX, MAP_LAT_MIN, MAP_LAT_MAX);
 
-    // ---- Live Google-style tiles (CARTO Voyager, free with attribution) ----
-    static final int TILE_SIZE = 256, LIVE_MIN_Z = 3, LIVE_MAX_Z = 20, LIVE_MAX_TILES = 64;
-    private static final String[] TILE_HOSTS = {"a", "b", "c", "d"};
-    /** Free CARTO key (no billing, no account): set DCLS_CARTO_KEY. When empty the app
-     *  uses OSM Standard automatically and never requests CARTO (CARTO now serves
-     *  "API KEY REQUIRED" watermark tiles to keyless callers). */
-    static final String CARTO_KEY = System.getenv().getOrDefault("DCLS_CARTO_KEY", "").trim();
+    // ---- Live raster tiles (OSM Standard and Esri World Imagery, both keyless) ----
+    // Budget fits a full-country view one zoom deeper (z13 ~= 192 tiles): close-up
+    // crispness without starving wider views (the count loop still steps back down).
+    static final int TILE_SIZE = 256, LIVE_MIN_Z = 3, LIVE_MAX_Z = 20, LIVE_MAX_TILES = 224;
 
     static {
-        System.out.println("[dcls-tiles] key configured: " + (CARTO_KEY.isEmpty() ? "no → OSM Standard default" : "yes"));
         purgePoisonedKeylessCache();
     }
 
-    /** One-time cleanup of dead cache weight: watermark keyless scopes, the obsolete
-     *  keyed scope, abandoned numeric-zoom layout dirs, and OSRM/geocode files
+    /** One-time cleanup of dead cache weight: removed-provider scopes (Voyager/HOT),
+     *  abandoned numeric-zoom layout dirs, and OSRM/geocode files
      *  older than 30 days. Current scopes are never touched. */
     private static void purgePoisonedKeylessCache() {
         try {
@@ -81,10 +80,14 @@ final class MapRenderer {
             String live = currentScopeName();
             if (!"keyless".equals(live)) deleteTree(tiles.resolve("keyless"));
             if (!"k6d775938".equals(live)) deleteTree(tiles.resolve("k6d775938"));
+            if (!"hot-v1".equals(live)) deleteTree(tiles.resolve("hot-v1"));
             if (Files.isDirectory(tiles)) {
                 try (var entries = Files.list(tiles)) {
                     entries.filter(p -> Files.isDirectory(p)
-                                    && p.getFileName().toString().matches("\\d+"))
+                                    && (p.getFileName().toString().matches("\\d+")
+                                        || p.getFileName().toString().matches("k[0-9a-f]+")
+                                        || p.getFileName().toString().startsWith("osm-v2-k"))
+                                    && !p.getFileName().toString().equals(live))
                             .forEach(MapRenderer::deleteTree);
                 } catch (Exception ignored) { }
             }
@@ -95,9 +98,8 @@ final class MapRenderer {
 
     /** Scope dir written by {@link #tileDiskPath} for the current config. */
     static String currentScopeName() {
-        boolean osm = basemap == Basemap.OSM_STANDARD || CARTO_KEY.isEmpty();
-        return (osm ? "osm-v2-" : "")
-                + (CARTO_KEY.isEmpty() ? "keyless-v2" : "k" + Integer.toHexString(CARTO_KEY.hashCode()));
+        if (basemap == Basemap.ESRI_IMAGERY) return "esri-v1";
+        return "osm-v2-keyless-v2";
     }
 
     private static void deleteTree(Path root) {
@@ -160,21 +162,22 @@ final class MapRenderer {
         return "https://" + host + ".tile.openstreetmap.org/" + z + "/" + x + "/" + y + ".png";
     }
 
+    static String esriImageryUrl(int z, int x, int y) {
+        // Esri uses {z}/{y}/{x} order (row/column swapped vs OSM-style {z}/{x}/{y}).
+        return "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/" + z + "/" + y + "/" + x;
+    }
+
     private static String tileUrlShifted(int z, int x, int y, int hostShift) {
         return tileUrlFor(z, x, y, hostShift, basemap);
     }
 
     private static String tileUrlFor(int z, int x, int y, int hostShift, Basemap provider) {
-        if (provider == Basemap.OSM_STANDARD) return osmUrl(z, x, y, hostShift);
-        // Never request CARTO without a key: it returns HTTP 200 watermark tiles
-        // ("API KEY REQUIRED") which would otherwise be cached as good tiles.
-        if (CARTO_KEY.isEmpty()) return osmUrl(z, x, y, hostShift);
-        String host = TILE_HOSTS[Math.floorMod(x + y + hostShift, TILE_HOSTS.length)];
-        return "https://" + host + ".basemaps.cartocdn.com/rastertiles/voyager/" + z + "/" + x + "/" + y + "@2x.png?key=" + CARTO_KEY;
+        if (provider == Basemap.ESRI_IMAGERY) return esriImageryUrl(z, x, y);
+        return osmUrl(z, x, y, hostShift);
     }
 
-    private static final Map<String, Image> TILE_MEM = Collections.synchronizedMap(new LinkedHashMap<>(256, 0.75f, true) {
-        @Override protected boolean removeEldestEntry(Map.Entry<String, Image> entry) { return size() > 192; }
+    private static final Map<String, Image> TILE_MEM = Collections.synchronizedMap(new LinkedHashMap<>(384, 0.75f, true) {
+        @Override protected boolean removeEldestEntry(Map.Entry<String, Image> entry) { return size() > 320; }
     });
     private static final Set<String> TILE_IN_FLIGHT = Collections.synchronizedSet(new HashSet<>());
     private static final AtomicBoolean TILE_URL_LOGGED = new AtomicBoolean();
@@ -182,9 +185,9 @@ final class MapRenderer {
     private static final Map<String, Long> TILE_FAILED = new ConcurrentHashMap<>();
     /** Tiles the server confirms do not exist (404): never retried within a session. */
     private static final Set<String> TILE_GONE = ConcurrentHashMap.newKeySet();
-    /** Free basemap style: OSM Standard (no-key default) or CARTO Voyager (key required). */
-    enum Basemap { VOYAGER, OSM_STANDARD }
-    static volatile Basemap basemap = CARTO_KEY.isEmpty() ? Basemap.OSM_STANDARD : Basemap.VOYAGER;
+    /** Free keyless basemap style: OSM Standard (default) or Esri World Imagery satellite. */
+    enum Basemap { OSM_STANDARD, ESRI_IMAGERY }
+    static volatile Basemap basemap = Basemap.OSM_STANDARD;
     private static final ExecutorService TILE_IO = Executors.newFixedThreadPool(3, runnable -> {
         Thread thread = new Thread(runnable, "dcls-tiles"); thread.setDaemon(true); return thread;
     });
@@ -218,32 +221,25 @@ final class MapRenderer {
     }
 
     private static Path tileDiskPathFor(String key, Basemap provider) {
-        // v2 scope: old "keyless/voyager/*" entries hold "API KEY REQUIRED" watermark
-        // tiles (served HTTP 200) and must never be reused.
-        boolean osm = provider == Basemap.OSM_STANDARD || CARTO_KEY.isEmpty();
-        String scope = (osm ? "osm-v2-" : "")
-                + (CARTO_KEY.isEmpty() ? "keyless-v2" : "k" + Integer.toHexString(CARTO_KEY.hashCode()));
-        String cacheKey = (osm ? "osm/" : "voyager/") + key;
+        String scope;
+        String cacheKey;
+        if (provider == Basemap.ESRI_IMAGERY) { scope = "esri-v1"; cacheKey = "esri/" + key; }
+        else { scope = "osm-v2-keyless-v2"; cacheKey = "osm/" + key; }
         return Path.of(System.getProperty("user.home"), ".dcls", "tiles", scope, cacheKey + ".png");
     }
 
     /** Cached tile image, or null on a miss (queues one background fetch). Failures
      *  are recorded with a reason (see tileProblem) and retried after a cooldown.
      *  All cache keys are provider-scoped and the provider is snapshotted per
-     *  request, so toggling the basemap mid-fetch can never mix OSM/CARTO tiles. */
+     *  request, so toggling the basemap mid-fetch can never mix OSM/Esri tiles. */
     static Image requestTile(int z, int x, int y) {
         String key = z + "/" + x + "/" + y;
         Basemap provider = basemap;
-        String skey = (provider == Basemap.OSM_STANDARD ? "o/" : "v/") + key;
+        String skey = memKey(provider, key);
         Image hit = TILE_MEM.get(skey);
         if (hit != null) return hit;
-        try {
-            Path disk = tileDiskPathFor(key, provider);
-            if (Files.isRegularFile(disk)) {
-                Image img = new Image(disk.toUri().toString(), false);
-                if (!img.isError()) { TILE_MEM.put(skey, img); return img; }
-            }
-        } catch (Exception ignored) { }
+        Image img = decodeTileFile(tileDiskPathFor(key, provider), provider);
+        if (img != null) { TILE_MEM.put(skey, img); return img; }
         Long failedAt = TILE_FAILED.get(skey);
         if (failedAt != null && System.currentTimeMillis() - failedAt < 60_000) return null;
         if (TILE_IN_FLIGHT.add(skey)) {
@@ -255,9 +251,11 @@ final class MapRenderer {
 
     private static void fetchTile(String skey, String key, int z, int x, int y, Basemap provider) {
         if (TILE_URL_LOGGED.compareAndSet(false, true)) {
-            boolean osm = provider == Basemap.OSM_STANDARD || CARTO_KEY.isEmpty();
-            System.out.println("[dcls-tiles] provider: " + (osm ? "OSM Standard (no key)"
-                    : "CARTO Voyager (?key=****)"));
+            String providerName = switch (provider) {
+                case ESRI_IMAGERY -> "Esri World Imagery (no key)";
+                default -> "OSM Standard (no key)";
+            };
+            System.out.println("[dcls-tiles] provider: " + providerName);
         }
         paceFetches();
         try {
@@ -335,15 +333,80 @@ final class MapRenderer {
                 .header("User-Agent", "DCLS classroom demo")
                 .GET().build();
         HttpResponse<byte[]> response = TILE_HTTP.send(request, HttpResponse.BodyHandlers.ofByteArray());
-        if (response.statusCode() == 200 && response.body().length > 0) return response.body();
+        if (response.statusCode() == 200 && response.body().length > 0) {
+            // Truncated bodies decode into blocky half-tiles; never cache them as good.
+            long expected = response.headers().firstValueAsLong("Content-Length").orElse(-1);
+            if (expected >= 0 && expected != response.body().length) throw new IOException("truncated tile body");
+            return response.body();
+        }
         throw new TileHttpException(response.statusCode(),
                 response.headers().firstValue("Retry-After").orElse(null));
     }
 
+    /** Display-side deep-water lift for Esri imagery (cached source bytes stay
+     *  untouched): dark blue-dominant pixels blend toward steel teal-navy so open
+     *  ocean reads as water instead of void. Dark greens/grays (forest, shadow)
+     *  fail the blue-dominance check and pass through bit-identical, as does
+     *  anything brighter than the knee. Applied once per tile, then cached. */
+    private static Image liftDeepWater(Image img) {
+        int w = (int) img.getWidth(), h = (int) img.getHeight();
+        if (w <= 0 || h <= 0) return img;
+        PixelReader reader = img.getPixelReader();
+        if (reader == null) return img;
+        int[] px = new int[w * h];
+        try {
+            reader.getPixels(0, 0, w, h, PixelFormat.getIntArgbInstance(), px, 0, w);
+        } catch (Exception e) {
+            return img;
+        }
+        boolean touched = false;
+        for (int i = 0; i < px.length; i++) {
+            int p = px[i];
+            int r = (p >> 16) & 0xFF, g = (p >> 8) & 0xFF, b = p & 0xFF;
+            int m = Math.max(r, Math.max(g, b));
+            if (m < 80 && b >= r && b >= g) {
+                double f = (1 - m / 80.0) * 0.9;
+                r += (int) ((38 - r) * f);
+                g += (int) ((78 - g) * f);
+                b += (int) ((108 - b) * f);
+                px[i] = (p & 0xFF000000) | (r << 16) | (g << 8) | b;
+                touched = true;
+            }
+        }
+        if (!touched) return img;
+        try {
+            WritableImage out = new WritableImage(w, h);
+            out.getPixelWriter().setPixels(0, 0, w, h, PixelFormat.getIntArgbInstance(), px, 0, w);
+            return out;
+        } catch (Exception e) {
+            return img;
+        }
+    }
+
+    /** Decode tile bytes with display styling for the provider. Null when undecodable. */
+    private static Image decodeTile(byte[] body, Basemap provider) {
+        try {
+            Image img = new Image(new ByteArrayInputStream(body));
+            if (img.isError()) return null;
+            if (provider == Basemap.ESRI_IMAGERY) img = liftDeepWater(img);
+            return img;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** Decode a cached tile file with display styling. Null when missing/undecodable. */
+    private static Image decodeTileFile(Path disk, Basemap provider) {
+        try {
+            if (Files.isRegularFile(disk)) return decodeTile(Files.readAllBytes(disk), provider);
+        } catch (Exception ignored) { }
+        return null;
+    }
+
     /** Cache a downloaded tile; returns false (and records failure) on decode errors. */
     private static boolean storeTile(String skey, String key, byte[] body, Basemap provider) {
-        Image img = new Image(new ByteArrayInputStream(body));
-        if (img.isError()) {
+        Image img = decodeTile(body, provider);
+        if (img == null) {
             failTile(skey, "error", "decode error", 60_000);
             return false;
         }
@@ -368,7 +431,7 @@ final class MapRenderer {
     private static String describe(Exception e) {
         String detail = e.getClass().getSimpleName();
         if (e.getMessage() != null && !e.getMessage().isBlank()) {
-            String message = e.getMessage().replace(CARTO_KEY, "****");
+            String message = e.getMessage();
             detail += ": " + message.substring(0, Math.min(message.length(), 120));
         }
         return detail;
@@ -388,8 +451,8 @@ final class MapRenderer {
         return 60_000;
     }
 
-    /** Last tile-failure class, for the on-canvas notice: offline, denied (401/403 —
-     *  usually a missing DCLS_CARTO_KEY), throttled (429), error, or null. */
+    /** Last tile-failure class, for the on-canvas notice: offline, denied (401/403),
+     *  throttled (429), error, or null. */
     private static volatile String tileProblem;
 
     private static void failTile(String key, String problem, String detail, long cooldownMs) {
@@ -451,10 +514,41 @@ final class MapRenderer {
     /** What one frame actually needs: tiles drawn, still arriving, or failed-cooling. */
     private record FrameCoverage(int painted, int pending, int failed) { }
 
+    /** Last view-zoom line already printed (drawLiveTiles runs every frame). */
+    private static volatile String lastZoomLog = "";
+
+    /** Deepest zoom worth fetching per provider (Esri imagery ends before our max). */
+    static int maxFetchZoom(Basemap provider) {
+        return provider == Basemap.ESRI_IMAGERY ? 19 : LIVE_MAX_Z;
+    }
+
+    /** Display zoom may be overzoomed one level for crisper 256px tiles when the deeper
+     *  tile count still fits the fetch budget; wide views stay as-is.
+     *  Pure logic, headless-testable. */
+    static int fetchZoom(int displayZ, ViewBounds view, Basemap provider) {
+        if (displayZ >= maxFetchZoom(provider)) return displayZ;
+        int z = displayZ + 1;
+        long count = (long) (lonToTileX(view.lonMax(), z) - lonToTileX(view.lonMin(), z) + 1)
+                * (latToTileY(view.latMin(), z) - latToTileY(view.latMax(), z) + 1);
+        return count <= LIVE_MAX_TILES ? z : displayZ;
+    }
+
+    /** Cached tile image without fetching (memory, then disk). No cooldown or retry
+     *  side effects: safe for fallback painting on every frame. */
+    static Image peekTile(int z, int x, int y) {
+        String key = z + "/" + x + "/" + y;
+        Basemap provider = basemap;
+        Image hit = TILE_MEM.get(memKey(provider, key));
+        if (hit != null && !hit.isError()) return hit;
+        Image img = decodeTileFile(tileDiskPathFor(key, provider), provider);
+        if (img != null) { TILE_MEM.put(memKey(provider, key), img); return img; }
+        return null;
+    }
+
     /** Paint live tiles; reports coverage so callers can tell loading apart from failure. */
     private static FrameCoverage drawLiveTiles(GraphicsContext g, double w, double h, ViewBounds view) {
         double pad = 14;
-        int z = zoomFor(view.lonMax() - view.lonMin(), w - pad * 2);
+        int z = fetchZoom(zoomFor(view.lonMax() - view.lonMin(), w - pad * 2), view, basemap);
         int x0 = lonToTileX(view.lonMin(), z), x1 = lonToTileX(view.lonMax(), z);
         int y0 = latToTileY(view.latMax(), z), y1 = latToTileY(view.latMin(), z);
         while ((x1 - x0 + 1) * (y1 - y0 + 1) > LIVE_MAX_TILES && z > LIVE_MIN_Z) {
@@ -462,6 +556,9 @@ final class MapRenderer {
             x0 = lonToTileX(view.lonMin(), z); x1 = lonToTileX(view.lonMax(), z);
             y0 = latToTileY(view.latMax(), z); y1 = latToTileY(view.latMin(), z);
         }
+        // One line per zoom change so "nothing changed" is checkable in the console.
+        String zoomMsg = "[dcls-tiles] view z" + z + " (" + ((x1 - x0 + 1) * (y1 - y0 + 1)) + " tiles)";
+        if (!zoomMsg.equals(lastZoomLog)) { lastZoomLog = zoomMsg; System.out.println(zoomMsg); }
         double top = mercator(view.latMax()), bottom = mercator(view.latMin());
         int painted = 0, pending = 0, failed = 0;
         g.save();
@@ -469,27 +566,40 @@ final class MapRenderer {
         for (int x = x0; x <= x1; x++) {
             for (int y = y0; y <= y1; y++) {
                 Image img = requestTile(z, x, y);
-                if (img == null || img.isError()) {
-                    if (tileCoolingDown(z, x, y)) failed++;
-                    else pending++;
-                    continue;
-                }
                 double dx0 = pad + (tileXToLon(x, z) - view.lonMin()) / (view.lonMax() - view.lonMin()) * (w - pad * 2);
                 double dx1 = pad + (tileXToLon(x + 1, z) - view.lonMin()) / (view.lonMax() - view.lonMin()) * (w - pad * 2);
                 double dy0 = pad + (top - mercator(tileYToLat(y, z))) / (top - bottom) * (h - pad * 2);
                 double dy1 = pad + (top - mercator(tileYToLat(y + 1, z))) / (top - bottom) * (h - pad * 2);
-                g.drawImage(img, dx0, dy0, dx1 - dx0, dy1 - dy0);
-                painted++;
+                if (img != null && !img.isError()) {
+                    g.drawImage(img, dx0, dy0, dx1 - dx0, dy1 - dy0);
+                    painted++;
+                    continue;
+                }
+                // Missing deep tile: paint the cached parent quadrant (softer but never
+                // a gray hole); background + retry overlay only when nothing is cached.
+                Image parent = z > LIVE_MIN_Z ? peekTile(z - 1, Math.floorDiv(x, 2), Math.floorDiv(y, 2)) : null;
+                if (parent != null && !parent.isError()) {
+                    double pw = parent.getWidth(), ph = parent.getHeight();
+                    g.drawImage(parent, Math.floorMod(x, 2) * pw / 2, Math.floorMod(y, 2) * ph / 2,
+                            pw / 2, ph / 2, dx0, dy0, dx1 - dx0, dy1 - dy0);
+                    painted++;
+                } else if (tileCoolingDown(z, x, y)) failed++;
+                else pending++;
             }
         }
         g.restore();
         return new FrameCoverage(painted, pending, failed);
     }
 
+    /** In-memory key prefix per provider, so OSM and Esri tiles never collide. */
+    static String memKey(Basemap provider, String key) {
+        return (provider == Basemap.ESRI_IMAGERY ? "e/" : "o/") + key;
+    }
+
     /** True while the tile sits out its post-failure cooldown (no fetch in flight). */
     static boolean tileCoolingDown(int z, int x, int y) {
         String key = z + "/" + x + "/" + y;
-        String skey = (basemap == Basemap.OSM_STANDARD ? "o/" : "v/") + key;
+        String skey = memKey(basemap, key);
         if (TILE_GONE.contains(skey)) return true;
         Long retryAt = TILE_FAILED.get(skey);
         if (retryAt == null) return false;
@@ -700,7 +810,7 @@ final class MapRenderer {
             } else {
                 String problem = tileProblem == null ? "" : tileProblem;
                 reason = switch (problem) {
-                    case "denied" -> "CARTO needs an API key — using OSM Standard (free, no key).";
+                    case "denied" -> "Tile server denied the request — retrying automatically.";
                     case "throttled" -> "Tile server is rate-limiting us — retrying automatically.";
                     case "offline" -> "Connect to the internet.";
                     default -> "A network error occurred — retrying automatically.";
@@ -712,9 +822,13 @@ final class MapRenderer {
             g.fillText("Previously visited areas load from the tile cache.", 14, h / 2 + 18);
         }
         g.setFill(Color.web("#657487")); g.setFont(Font.font("Segoe UI", 11));
-        g.fillText("Brunei Darussalam  ·  Live GPS" + (basemap == Basemap.OSM_STANDARD ? " · OSM" : " · CARTO"), 14, 20);
+        String mapTag = basemap == Basemap.ESRI_IMAGERY ? " · Esri" : " · OSM";
+        g.fillText("Brunei Darussalam  ·  Live GPS" + mapTag, 14, 20);
         g.setFont(Font.font("Segoe UI", 9));
-        g.fillText("© OSM contributors © CARTO", w - 172, h - 8);
+        String credit = basemap == Basemap.ESRI_IMAGERY
+                ? "Imagery © Esri, Maxar, Earthstar Geographics"
+                : "© OpenStreetMap contributors";
+        g.fillText(credit, basemap == Basemap.ESRI_IMAGERY ? w - 260 : w - 172, h - 8);
         drawScaleBar(g, w, h, view);
         return g;
     }
@@ -779,7 +893,12 @@ final class MapRenderer {
         g.setLineCap(StrokeLineCap.ROUND);
         g.setLineJoin(StrokeLineJoin.ROUND);
         for (int i = 1; i < stops.size(); i++) {
-            List<double[]> path = AppServices.RouteService.legPath(stops.get(i - 1), stops.get(i));
+            Stop from = stops.get(i - 1), to = stops.get(i);
+            List<double[]> path = AppServices.RouteService.legPath(from, to);
+            // Approximate (straight-fallback) legs draw thinner and dimmer so estimates
+            // are visually distinct from true road geometry (see OsrmRouter.hasRoad).
+            boolean road = AppServices.OsrmRouter.hasRoad(from.x(), from.y(), to.x(), to.y());
+            double dim = road ? 1.0 : 0.5;
             List<double[]> pixels = new ArrayList<>();
             for (double[] pt : path) {
                 double[] raw = projectRaw(pt[0], pt[1], width, height, view);
@@ -795,13 +914,13 @@ final class MapRenderer {
             }
             double alpha = highlight < 0 || highlight == i - 1 ? 1.0 : 0.15;
             g.setGlobalAlpha(1.0);
-            g.setStroke(Color.web("#ffffff", 0.9 * alpha)); g.setLineWidth(7);
+            g.setStroke(Color.web("#ffffff", 0.9 * alpha * dim)); g.setLineWidth(road ? 7 : 4);
             strokePixelPath(g, pixels, width, height);
-            g.setGlobalAlpha(0.75 * alpha);
-            g.setStroke(Color.web(color)); g.setLineWidth(4);
+            g.setGlobalAlpha(0.75 * alpha * dim);
+            g.setStroke(Color.web(color)); g.setLineWidth(road ? 4 : 2.5);
             strokePixelPath(g, pixels, width, height);
             g.setGlobalAlpha(1.0);
-            g.setStroke(Color.web(color, alpha)); g.setLineWidth(2.5);
+            g.setStroke(Color.web(color, alpha * dim)); g.setLineWidth(2.5);
             drawChevrons(g, pixels, width, height);
         }
         g.restore();

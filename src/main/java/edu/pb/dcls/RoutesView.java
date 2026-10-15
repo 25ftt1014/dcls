@@ -13,7 +13,9 @@ import javafx.scene.control.TableView;
 import javafx.scene.control.TextField;
 import javafx.scene.control.Tooltip;
 import javafx.scene.input.MouseEvent;
+import javafx.scene.control.ScrollPane;
 import javafx.scene.layout.HBox;
+import javafx.scene.layout.Region;
 import javafx.scene.layout.VBox;
 import javafx.stage.Popup;
 import javafx.util.Duration;
@@ -26,6 +28,7 @@ import java.util.Map;
 import java.util.function.Consumer;
 
 import static edu.pb.dcls.AppServices.AppException;
+import static edu.pb.dcls.Domain.OrderStatus;
 import static edu.pb.dcls.Domain.RoutePlan;
 import static edu.pb.dcls.Domain.Stop;
 import static edu.pb.dcls.Domain.User;
@@ -60,14 +63,6 @@ final class RoutesView {
         pill.getStyleClass().add(cls);
     }
 
-    private static VBox heroMetric(String caption, Label value) {
-        Label title = new Label(caption);
-        title.getStyleClass().add("eyebrow");
-        VBox box = new VBox(2, title, value);
-        HBox.setHgrow(box, ALWAYS);
-        return box;
-    }
-
     VBox page() {
         final int gen = ++app.routePageGen;
         // Always-blank entry: clear stale draft/preview unless arriving via order handoff.
@@ -90,25 +85,26 @@ final class RoutesView {
 
         TextField name = new TextField(); name.setPromptText("Route name");
         ComboBox<String> place = new ComboBox<>(FXCollections.observableArrayList(app.routeService.placeNames())); place.setPromptText("Choose stop"); place.setMaxWidth(Double.MAX_VALUE);
-        Button addStop = button("Add stop", "secondary-button"); addStop.setMaxWidth(Double.MAX_VALUE);
+        Button addStop = button("Add", "secondary-button"); addStop.setPrefWidth(64);
+        HBox addRow = new HBox(8, place, addStop); HBox.setHgrow(place, ALWAYS);
+        Button addNearby = button("Add nearby pending orders", "link-button"); addNearby.setMaxWidth(Double.MAX_VALUE);
+        CheckBox clickCheck = new CheckBox("Place stops by clicking map"); clickCheck.setSelected(true);
         ComboBox<User> driver = app.driverCombo(); driver.setPromptText("Assign driver (optional)");
         CheckBox optimizeToggle = new CheckBox("Optimize order"); optimizeToggle.setSelected(true);
         optimizeToggle.setTooltip(new Tooltip("Uncheck to visit stops in the order listed"));
-        Button optimize = button("Calculate now", "secondary-button"); optimize.setMaxWidth(Double.MAX_VALUE);
         Button saveAssign = button("Save & assign", "primary-button"); saveAssign.setMaxWidth(Double.MAX_VALUE);
-        Button resetTrail = button("Reset to initial trail", "secondary-button"); resetTrail.setMaxWidth(Double.MAX_VALUE);
-        Button clickToggle = button("Map clicks: placing ON", "secondary-button"); clickToggle.setMaxWidth(Double.MAX_VALUE);
+        Button recalc = button("Recalculate", "link-button");
+        Button clearLink = button("Clear", "link-button");
 
         Label statusPill = new Label("Add stops");
         statusPill.getStyleClass().addAll("status-pill", "status-warn");
         Label heroKm = new Label("—"); heroKm.getStyleClass().add("metric-value");
         Label heroMin = new Label("—"); heroMin.getStyleClass().add("metric-value");
-        HBox hero = new HBox(10, heroMetric("Distance", heroKm), heroMetric("Drive time", heroMin));
         Label routeResult = new Label("Add at least one delivery stop after the depot."); routeResult.getStyleClass().add("muted"); routeResult.setWrapText(true);
         VBox legRows = new VBox(2);
         VBox etaBreakdown = new VBox(2);
 
-        DclsApp.MapController previewMap = app.new MapController(440, 340);
+        DclsApp.MapController previewMap = app.new MapController(640, 480);
         final boolean[] dirty = {false};
         final int[] highlightLeg = {-1};
         previewMap.content = () -> (dirty[0] ? app.routeStopsDraft : app.previewStops).stream().map(s -> new double[] {s.x(), s.y()}).toList();
@@ -305,6 +301,7 @@ final class RoutesView {
             highlightLeg[0] = -1;
             etaBreakdown.getChildren().clear();
             previewMap.redraw();
+            refreshNearbyVisibility(addNearby);
             debounce.playFromStart();
         };
         DclsApp.ListViewWithRemove draft = new DclsApp.ListViewWithRemove(app.routeStopsDraft, () -> {
@@ -372,8 +369,6 @@ final class RoutesView {
             prefillWorker[0] = thread;
             thread.start();
         };
-        Button addNearby = button("Add nearby pending orders", "secondary-button");
-        addNearby.setMaxWidth(Double.MAX_VALUE);
         addNearby.setOnAction(event -> {
             if (app.routeStopsDraft.isEmpty()) return;
             Stop anchor = app.routeStopsDraft.get(app.routeStopsDraft.size() - 1);
@@ -413,18 +408,15 @@ final class RoutesView {
         });
         final RoutePlan[] editing = {null};
         previewMap.clickAction = lonLat -> placePinAt(lonLat[0], lonLat[1], markDirty);
-        optimize.setOnAction(event -> { debounce.stop(); runCalcRef[0].accept(true); });
+        recalc.setOnAction(event -> { debounce.stop(); runCalcRef[0].accept(true); });
         optimizeToggle.setOnAction(event -> markDirty.run());
-        clickToggle.setOnAction(event -> {
-            if (previewMap.clickAction != null) {
-                previewMap.clickAction = null;
-                clickToggle.setText("Map clicks: placing OFF");
-            } else {
+        clickCheck.setOnAction(event -> {
+            if (clickCheck.isSelected()) {
                 previewMap.clickAction = lonLat -> placePinAt(lonLat[0], lonLat[1], markDirty);
-                clickToggle.setText("Map clicks: placing ON");
+            } else {
+                previewMap.clickAction = null;
             }
         });
-        resetTrail.setText("Clear all");
         saveAssign.setOnAction(event -> {
             debounce.stop();
             if (planned[0] == null || dirty[0]) {
@@ -483,27 +475,41 @@ RoutePlan toSave = new RoutePlan(route.id(), route.name(), driver.getValue().id(
             pinTip.hide();
             showPinPopup(pinPopup, shown.get(hit), markDirty);
         });
+        Label draftTitle = new Label("Delivery stops"); draftTitle.getStyleClass().add("section-title");
+        HBox draftHeader = new HBox(8, draftTitle, new Region(), clearLink);
+        draftHeader.setAlignment(Pos.CENTER_LEFT);
+        HBox.setHgrow(draftHeader.getChildren().get(1), ALWAYS);
         controls.getChildren().addAll(
                 stepSection(1, "Add stops"),
-                place, addStop, addNearby, clickToggle, geocodeBox,
-                new Label("Delivery stops"), draft,
+                addRow, addNearby, clickCheck, geocodeBox,
+                draftHeader, draft,
                 stepSection(2, "Route"),
-                optimizeToggle, statusPill, hero, routeResult, legRows, etaBreakdown, optimize, resetTrail,
+                optimizeToggle, legRows, etaBreakdown,
                 stepSection(3, "Assign & save"),
                 new Label("Route name"), name, driver, saveAssign);
-        controls.setPrefWidth(348); controls.setMinWidth(320); VBox.setVgrow(draft, ALWAYS);
+        ScrollPane controlScroll = new ScrollPane(controls);
+        controlScroll.setFitToWidth(true);
+        controlScroll.setHbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
+        controlScroll.setStyle("-fx-background: transparent; -fx-background-color: transparent;");
+        controlScroll.setPrefWidth(300); controlScroll.setMinWidth(260);
         VBox mapPanel = panel(new Label("Route preview — click to place stops, the route draws itself")); ((Label) mapPanel.getChildren().get(0)).getStyleClass().add("section-title");
-        mapPanel.getChildren().addAll(previewMap.canvas, previewMap.zoomBar, app.legendBox());
-        builder.getChildren().addAll(controls, mapPanel); HBox.setHgrow(mapPanel, ALWAYS);
+        HBox statusBar = new HBox(10, statusPill, heroKm, heroMin, routeResult, recalc);
+        statusBar.setAlignment(Pos.CENTER_LEFT);
+        HBox.setHgrow(routeResult, ALWAYS);
+        mapPanel.getChildren().addAll(previewMap.canvas, previewMap.zoomBar, app.legendBox(), statusBar);
+        mapPanel.setMinWidth(320); HBox.setHgrow(mapPanel, ALWAYS);
+        previewMap.canvas.widthProperty().bind(mapPanel.widthProperty().subtract(24));
+        mapPanel.widthProperty().addListener((o, a, b) -> previewMap.redraw());
         VBox history = panel(new Label("Route history")); ((Label) history.getChildren().get(0)).getStyleClass().add("section-title");
+        history.setPrefWidth(300); history.setMinWidth(260);
         TableView<RoutePlan> table = new TableView<>(); table.setPlaceholder(new Label("No routes have been planned yet."));
-        table.getColumns().add(textCol("Route", RoutePlan::name, 180));
-        table.getColumns().add(textCol("Stops", r -> String.valueOf(r.stops().size()), 60));
-        table.getColumns().add(textCol("Distance", r -> String.format("%.1f km", r.distanceKm()), 95));
-        table.getColumns().add(textCol("Estimate", r -> r.estimatedMinutes() + " min", 95));
-        table.getColumns().add(textCol("Driver", r -> app.driverName(r.driverId()), 140));
-        table.getColumns().add(textCol("Created", r -> r.createdAt().format(DclsApp.DATE_TIME), 130));
-        table.setItems(FXCollections.observableArrayList(app.repository.routes())); table.setPrefHeight(180); table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY);
+        table.getColumns().add(textCol("Route", RoutePlan::name, 130));
+        table.getColumns().add(textCol("Stops", r -> String.valueOf(r.stops().size()), 45));
+        table.getColumns().add(textCol("Distance", r -> String.format("%.1f km", r.distanceKm()), 75));
+        table.getColumns().add(textCol("Estimate", r -> r.estimatedMinutes() + " min", 65));
+        table.getColumns().add(textCol("Driver", r -> app.driverName(r.driverId()), 85));
+        table.setItems(FXCollections.observableArrayList(app.repository.routes())); table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY);
+        table.setMaxHeight(Double.MAX_VALUE); VBox.setVgrow(table, ALWAYS);
         Button editRoute = button("Edit selected route", "secondary-button"), deleteRoute = button("Delete selected route", "danger-button");
         editRoute.setDisable(true); deleteRoute.setDisable(true);
         editRoute.setOnAction(event -> {
@@ -543,7 +549,7 @@ RoutePlan toSave = new RoutePlan(route.id(), route.name(), driver.getValue().id(
         });
         // Blank by default: no auto-loaded saved route (removed error-prone initial trail).
         // Selecting a history row still previews it, but never mutates the draft.
-        resetTrail.setOnAction(event -> {
+        clearLink.setOnAction(event -> {
             debounce.stop();
             if (worker[0] != null) worker[0].interrupt();
             app.routeStopsDraft.clear();
@@ -566,7 +572,9 @@ RoutePlan toSave = new RoutePlan(route.id(), route.name(), driver.getValue().id(
         });
         prefillHandoff.run();
         previewMap.redraw();
-        history.getChildren().addAll(table, routeActions); page.getChildren().addAll(builder, history); return page;
+        refreshNearbyVisibility(addNearby);
+        builder.getChildren().addAll(controlScroll, mapPanel, history);
+        history.getChildren().addAll(table, routeActions); page.getChildren().add(builder); return page;
     }
 
     /** Rebuilds the locations panel from the current draft: one status line per
@@ -667,6 +675,14 @@ RoutePlan toSave = new RoutePlan(route.id(), route.name(), driver.getValue().id(
         app.routeStopConfidence.put(pin.id(), 1.0);
         app.routeStopConfirmed.add(pin.id());
         markDirty.run();
+    }
+
+    /** The nearby-orders shortcut only shows when it can do something (pending orders exist). */
+    private void refreshNearbyVisibility(Button addNearby) {
+        boolean show = !app.routeStopsDraft.isEmpty() && app.repository.shipments().stream()
+                .anyMatch(s -> s.status() == OrderStatus.PENDING);
+        addNearby.setVisible(show);
+        addNearby.setManaged(show);
     }
 
     /** Order ids whose pins still block route calculation. Pure and headless-testable. */

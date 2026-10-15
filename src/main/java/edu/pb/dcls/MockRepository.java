@@ -97,7 +97,10 @@ public final class MockRepository implements Repository {
     }
     @Override public List<RoutePlan> routes() { return new ArrayList<>(routes.values()); }
     @Override public void saveRoute(RoutePlan route) {
+        if (route == null) throw new AppServices.AppException("Route details are required.");
+        if (route.stops() == null || route.stops().size() < 2) throw new AppServices.AppException("Add a depot and at least one stop.");
         for (Domain.Stop stop : route.stops()) {
+            if (stop == null || stop.id() == null || stop.name() == null) throw new AppServices.AppException("Every route stop needs a name and location.");
             AppServices.requireServiceArea(stop.x(), stop.y(), "Route stop '" + stop.name() + "'");
         }
         routes.put(route.id(), route);
@@ -125,8 +128,15 @@ public final class MockRepository implements Repository {
 
     @Override public List<TrackingPoint> trackingHistory() { return new ArrayList<>(tracking); }
     @Override public void saveTrackingPoint(TrackingPoint point) {
+        if (point == null) throw new AppServices.AppException("GPS fix details are required.");
+        if (point.vehicleId() == null || point.vehicleId().isBlank()) throw new AppServices.AppException("Choose a vehicle for this GPS fix.");
         AppServices.requireServiceArea(point.x(), point.y(), "Tracking fix");
-        tracking.add(point);
+        TrackingPoint stored = point.recordedAt() == null
+                ? new TrackingPoint(point.id(), point.vehicleId(), point.shipmentId(), point.x(), point.y(),
+                        point.etaMinutes(), LocalDateTime.now(), point.speedKmh(), point.headingDeg(),
+                        point.accuracyM(), point.fixType(), point.source())
+                : point;
+        tracking.add(stored);
         while (tracking.size() > TRACKING_CAP) tracking.removeFirst();
     }
     @Override public boolean persistent() { return false; }

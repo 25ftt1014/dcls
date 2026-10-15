@@ -120,9 +120,12 @@ final class CachedRepository implements Repository {
     @Override public void saveTrackingPoint(TrackingPoint point) {
         delegate.saveTrackingPoint(point);
         synchronized (this) {
+            // Same 2000-fix cap as JdbcRepository/MockRepository; readers sort by
+            // recordedAt explicitly, so insertion order is kept here.
             List<TrackingPoint> points = new ArrayList<>(snapshot.tracking());
-            points.add(0, point);
-            if (points.size() > 500) points = points.subList(0, 500);
+            points.removeIf(p -> p.id() != null && p.id().equals(point.id()));
+            points.add(point);
+            while (points.size() > 2000) points.remove(0);
             snapshot = new Snapshot(snapshot.users(), snapshot.vehicles(), snapshot.shipments(), snapshot.routes(), snapshot.maintenance(), snapshot.fuel(), points);
         }
     }

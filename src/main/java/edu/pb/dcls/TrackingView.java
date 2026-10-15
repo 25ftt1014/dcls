@@ -41,24 +41,15 @@ final class TrackingView {
         app.trackingLegend = new VBox(3);
         app.focusChipBox = new VBox(2);
         // Basemap + search row (free providers only).
-        ComboBox<String> basemap = new ComboBox<>(FXCollections.observableArrayList("CARTO Voyager", "OSM Standard"));
-        basemap.setValue(MapRenderer.basemap == MapRenderer.Basemap.OSM_STANDARD ? "OSM Standard" : "CARTO Voyager");
+        ComboBox<String> basemap = new ComboBox<>(FXCollections.observableArrayList(
+                "OSM Standard", "Esri Imagery"));
+        basemap.setValue(MapRenderer.basemap == MapRenderer.Basemap.ESRI_IMAGERY ? "Esri Imagery" : "OSM Standard");
         basemap.setMaxWidth(Double.MAX_VALUE);
         basemap.setOnAction(e -> {
-            if (!"OSM Standard".equals(basemap.getValue()) && MapRenderer.CARTO_KEY.isEmpty()) {
-                app.toast("CARTO needs an API key — staying on OSM Standard (free, no key).");
-                basemap.setValue("OSM Standard");
-                return;
-            }
-            MapRenderer.basemap = "OSM Standard".equals(basemap.getValue())
-                    ? MapRenderer.Basemap.OSM_STANDARD : MapRenderer.Basemap.VOYAGER;
+            MapRenderer.basemap = "Esri Imagery".equals(basemap.getValue())
+                    ? MapRenderer.Basemap.ESRI_IMAGERY : MapRenderer.Basemap.OSM_STANDARD;
             app.trackingMaps.redraw();
         });
-        if (MapRenderer.CARTO_KEY.isEmpty()) {
-            Label nokey = new Label("CARTO needs a key — using OSM Standard (free, no key).");
-            nokey.getStyleClass().add("muted"); nokey.setWrapText(true);
-            map.getChildren().add(nokey);
-        }
         javafx.scene.control.TextField search = new javafx.scene.control.TextField();
         search.setPromptText("Search place in Brunei…");
         search.setOnAction(e -> {
@@ -200,13 +191,22 @@ final class TrackingView {
             if (vehicleId == null) { app.alert(Alert.AlertType.WARNING, "No vehicle", "Add a vehicle first."); return; }
             List<GpsFeed.GpsFix> fixes = GpsFeed.parseGpx(xml, vehicleId, "gpx");
             if (fixes.isEmpty()) { app.alert(Alert.AlertType.WARNING, "Empty GPX", "No track points found."); return; }
-            int n = 0;
+            int n = 0, skipped = 0;
+            String firstSkip = null;
             for (GpsFeed.GpsFix f : fixes) {
                 try { app.tracking.ingest(f, selected == null ? null : selected.id()); n++; }
-                catch (RuntimeException ignored) { }
+                catch (RuntimeException ex) { skipped++; if (firstSkip == null) firstSkip = ex.getMessage(); }
             }
             app.setFeedStatus("GPX: " + file.getName() + " · " + n + " fixes");
-            app.toast("GPX imported: " + n + " fixes → " + app.vehiclePlate(vehicleId));
+            if (n == 0) {
+                app.alert(Alert.AlertType.WARNING, "No fixes imported",
+                        "All " + fixes.size() + " track points were skipped."
+                                + (firstSkip == null ? "" : " Reason: " + firstSkip)
+                                + " Only fixes inside the Brunei service area can be stored.");
+                return;
+            }
+            app.toast("GPX imported: " + n + " fixes → " + app.vehiclePlate(vehicleId)
+                    + (skipped == 0 ? "" : " · skipped " + skipped + ": " + firstSkip));
             app.drawTracking();
             if (selected != null) app.showEta(selected);
         } catch (Exception ex) {
@@ -225,13 +225,22 @@ final class TrackingView {
                     : app.repository.vehicles().stream().findFirst().map(v -> v.id()).orElse(null);
             if (vehicleId == null) { app.alert(Alert.AlertType.WARNING, "No vehicle", "Add a vehicle first."); return; }
             List<GpsFeed.GpsFix> fixes = GpsFeed.readNmeaFile(file.toPath(), vehicleId);
-            int n = 0;
+            int n = 0, skipped = 0;
+            String firstSkip = null;
             for (GpsFeed.GpsFix f : fixes) {
                 try { app.tracking.ingest(f, selected == null ? null : selected.id()); n++; }
-                catch (RuntimeException ignored) { }
+                catch (RuntimeException ex) { skipped++; if (firstSkip == null) firstSkip = ex.getMessage(); }
             }
             app.setFeedStatus("NMEA: " + file.getName() + " · " + n + " fixes");
-            app.toast("NMEA imported: " + n + " fixes");
+            if (n == 0 && !fixes.isEmpty()) {
+                app.alert(Alert.AlertType.WARNING, "No fixes imported",
+                        "All " + fixes.size() + " sentences were skipped."
+                                + (firstSkip == null ? "" : " Reason: " + firstSkip)
+                                + " Only fixes inside the Brunei service area can be stored.");
+                return;
+            }
+            app.toast("NMEA imported: " + n + " fixes"
+                    + (skipped == 0 ? "" : " · skipped " + skipped + ": " + firstSkip));
             app.drawTracking();
             if (n == 0) app.alert(Alert.AlertType.WARNING, "No fixes", "No valid $GPGGA/$GPRMC sentences found.");
         } catch (Exception ex) {

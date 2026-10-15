@@ -61,6 +61,40 @@ class GpsFeedTest {
     }
 
     @Test
+    void bulkSameTimestampFixesAllStored() {
+        // NMEA sentences carry no date and MySQL TIMESTAMP truncates to whole seconds,
+        // so bulk imports stamp many fixes with the same instant — all must be kept.
+        MockRepository repo = new MockRepository();
+        AppServices.TrackingService tracking = new AppServices.TrackingService(repo);
+        LocalDateTime ts = LocalDateTime.now();
+        int before = repo.trackingHistory().size();
+        for (int i = 0; i < 5; i++) {
+            tracking.ingest("v-8817", null, 114.9000 + i * 0.001, 4.9000 + i * 0.001,
+                    30, null, null, Domain.FixType.GPS, "nmea", ts);
+        }
+        assertEquals(before + 5, repo.trackingHistory().size());
+    }
+
+    @Test
+    void olderFixIgnoredButExactRedeliveryIgnored() {
+        MockRepository repo = new MockRepository();
+        AppServices.TrackingService tracking = new AppServices.TrackingService(repo);
+        LocalDateTime base = LocalDateTime.now();
+        var first = tracking.ingest("v-8817", null, 114.9000, 4.9000,
+                30, null, null, Domain.FixType.GPS, "nmea", base);
+        assertNotNull(first);
+        int size = repo.trackingHistory().size();
+        // Strictly older fix: ignored.
+        assertSame(first, tracking.ingest("v-8817", null, 114.9010, 4.9010,
+                30, null, null, Domain.FixType.GPS, "nmea", base.minusMinutes(1)));
+        assertEquals(size, repo.trackingHistory().size());
+        // Exact redelivery (same instant + position, e.g. repeated mobile poll): ignored.
+        tracking.ingest("v-8817", null, 114.9000, 4.9000,
+                30, null, null, Domain.FixType.GPS, "nmea", base);
+        assertEquals(size, repo.trackingHistory().size());
+    }
+
+    @Test
     void outOfBoundsFixRejected() {
         MockRepository repo = new MockRepository();
         AppServices.TrackingService tracking = new AppServices.TrackingService(repo);

@@ -492,6 +492,7 @@ public final class DclsApp extends Application {
                             routeService.etaMinutes(tour.remainingKm()), false, LocalDateTime.now());
                     trackingRoutes.put(entry.getKey(), asRoute);
                     for (Stop stop : tour.ordered()) frame.add(ll(stop.x(), stop.y()));
+                    warmTourLegs(asRoute);
                 }
             } catch (RuntimeException ignored) {
                 entry.getValue().stream().map(Shipment::routeId).filter(java.util.Objects::nonNull).findFirst()
@@ -499,6 +500,7 @@ public final class DclsApp extends Application {
                         .ifPresent(route -> {
                             trackingRoutes.put(entry.getKey(), route);
                             for (Stop stop : route.stops()) frame.add(ll(stop.x(), stop.y()));
+                            warmTourLegs(route);
                         });
             }
             // Quarantined (sea/noise) fixes never enter the trail or the frame.
@@ -537,6 +539,20 @@ public final class DclsApp extends Application {
         }
         trackingMaps.redraw();
         updateTrackingLegend(byVehicle);
+    }
+
+    /** Fetch road geometry for tour legs in the background (one queued fetch per pair,
+     *  5-minute backoff while offline). The 1s tracking tick redraws when it lands;
+     *  rendering itself never blocks on the network. */
+    private void warmTourLegs(RoutePlan route) {
+        if (route == null || route.stops().size() < 2) return;
+        for (int i = 1; i < route.stops().size(); i++) {
+            Stop a = route.stops().get(i - 1), b = route.stops().get(i);
+            AppServices.OsrmRouter.warmLeg(a.x(), a.y(), b.x(), b.y(), () ->
+                    Platform.runLater(() -> {
+                        if ("tracking".equals(activePage)) drawTracking();
+                    }));
+        }
     }
 
     /** Click-to-focus target: points to frame plus how they were found. */
@@ -666,7 +682,7 @@ public final class DclsApp extends Application {
             if (latest != null) {
                 boolean stale = tracking.gps().isStale(vehicleId);
                 drawVehicleMarker(g, w, h, latest.x(), latest.y(), vehiclePlate(vehicleId), stale ? "#8a94a6" : color, stale, view);
-            } else if (route != null) {
+            } else if (route != null && !route.stops().isEmpty()) {
                 Stop depot = route.stops().get(0);
                 drawVehicleMarker(g, w, h, depot.x(), depot.y(), vehiclePlate(vehicleId), color, false, view);
             }
@@ -887,14 +903,18 @@ public final class DclsApp extends Application {
         new Thread(() -> {
             try {
                 List<GpsFeed.GpsFix> fixes = GpsFeed.pollMobileFeed(url);
-                int n = 0;
+                int n = 0, skipped = 0;
+                String firstSkip = null;
                 for (GpsFeed.GpsFix f : fixes) {
-                    try { tracking.ingest(f, null); n++; } catch (RuntimeException ignored) { }
+                    try { tracking.ingest(f, null); n++; }
+                    catch (RuntimeException ex) { skipped++; if (firstSkip == null) firstSkip = ex.getMessage(); }
                 }
-                int count = n;
+                int count = n, missed = skipped;
+                String skipReason = firstSkip;
                 javafx.application.Platform.runLater(() -> {
                     setFeedStatus("Mobile: " + count + " fixes polled");
-                    toast("Mobile feed: " + count + " fixes");
+                    toast("Mobile feed: " + count + " fixes"
+                            + (missed == 0 ? "" : " · skipped " + missed + ": " + skipReason));
                     drawTracking();
                     checkReroute();
                 });

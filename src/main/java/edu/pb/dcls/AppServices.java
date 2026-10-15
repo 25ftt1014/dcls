@@ -473,6 +473,56 @@ final class AppServices {
             return snapLeg(lonA, latA, lonB, latB);
         }
 
+        /** True when legPath() can draw true road geometry without fetching (exact/bundled
+         *  pair, prior OSRM result, or a snapped district pair). No network. */
+        static boolean hasRoad(double lonA, double latA, double lonB, double latB) {
+            if (leg(lonA, latA, lonB, latB) != null) return true;
+            Stop snapA = nearestPlace(lonA, latA), snapB = nearestPlace(lonB, latB);
+            String pairKey = RoadNetwork.key(snapA.x(), snapA.y(), snapB.x(), snapB.y());
+            return RoadNetwork.PATHS.containsKey(pairKey) && RoadNetwork.KM.containsKey(pairKey);
+        }
+
+        /** Legs with a queued background fetch, plus miss cooldowns (okey -> eligible millis). */
+        private static final Set<String> WARM_QUEUED = Collections.synchronizedSet(new java.util.HashSet<>());
+        private static final Map<String, Long> WARM_COOLDOWN = Collections.synchronizedMap(new java.util.HashMap<>());
+        private static final java.util.concurrent.ExecutorService WARM_EXEC =
+                java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
+                    Thread thread = new Thread(r, "dcls-osrm-warm");
+                    thread.setDaemon(true);
+                    return thread;
+                });
+        /** Back off re-fetching unknown legs while offline (minutes, not every render tick). */
+        private static final long WARM_COOLDOWN_MS = 5 * 60 * 1000;
+
+        /** Ensure road geometry for a leg is cached, fetching once in the background when
+         *  needed. Never blocks and never fetches on the render path: returns immediately,
+         *  and onDone runs on the fetch thread after the cache settles (hit or miss).
+         *  Returns true when a fetch was queued. Renderers must keep using leg(). */
+        static boolean warmLeg(double lonA, double latA, double lonB, double latB, Runnable onDone) {
+            if (!Double.isFinite(lonA) || !Double.isFinite(latA) || !Double.isFinite(lonB) || !Double.isFinite(latB)) return false;
+            if (leg(lonA, latA, lonB, latB) != null) return false;
+            String key = okey(lonA, latA, lonB, latB);
+            Long eligible = WARM_COOLDOWN.get(key);
+            if (eligible != null && eligible > System.currentTimeMillis()) return false;
+            if (!WARM_QUEUED.add(key)) return false;
+            WARM_EXEC.execute(() -> {
+                try {
+                    resolve(lonA, latA, lonB, latB);
+                    // Still nothing cached (offline/unknown): back off before retrying.
+                    if (leg(lonA, latA, lonB, latB) == null) {
+                        if (WARM_COOLDOWN.size() > 1000) WARM_COOLDOWN.clear();
+                        WARM_COOLDOWN.put(key, System.currentTimeMillis() + WARM_COOLDOWN_MS);
+                    }
+                } finally {
+                    WARM_QUEUED.remove(key);
+                    if (onDone != null) {
+                        try { onDone.run(); } catch (Exception ignored) { }
+                    }
+                }
+            });
+            return true;
+        }
+
         static LegResult fetchLeg(double lonA, double latA, double lonB, double latB) {
             String okey = okey(lonA, latA, lonB, latB);
             if (!OSM_IN_FLIGHT.add(okey)) return null;
@@ -780,6 +830,9 @@ final class AppServices {
                     + midKm + BruneiPlaces.haversineKm(snapB.x(), snapB.y(), lonB, latB);
         }
 
+        /** Straight-fallback pairs already reported (bounds stdout spam from the 1s render tick). */
+        private static final Set<String> LOGGED_STRAIGHT = Collections.synchronizedSet(new java.util.HashSet<>());
+
         /** Offline-approximate leg: stub to nearest districts, stored road path between. */
         static LegResult snapLeg(double lonA, double latA, double lonB, double latB) {
             Stop snapA = nearestPlace(lonA, latA), snapB = nearestPlace(lonB, latB);
@@ -787,6 +840,13 @@ final class AppServices {
             List<double[]> mid = RoadNetwork.PATHS.get(pairKey);
             Double midKm = RoadNetwork.KM.get(pairKey);
             if (mid == null || midKm == null || mid.size() < 2) {
+                // Visible fallback (was silent): straight stub, logged once per pair.
+                if (LOGGED_STRAIGHT.size() > 500) LOGGED_STRAIGHT.clear();
+                if (LOGGED_STRAIGHT.add(shortKey(lonA, latA, lonB, latB))) {
+                    System.out.println("[dcls-osrm] " + shortKey(lonA, latA, lonB, latB)
+                            + " -> straight fallback (no road pair for snap "
+                            + snapA.name() + ">" + snapB.name() + ")");
+                }
                 double km = BruneiPlaces.haversineKm(lonA, latA, lonB, latB);
                 return new LegResult(List.of(new double[] {lonA, latA}, new double[] {lonB, latB}), km, false);
             }
@@ -997,10 +1057,32 @@ final class AppServices {
                 throw new AppException("Fix is outside the Brunei service area — ignored.");
             }
             if (fixType == Domain.FixType.NONE) return null;
-            // Deduplicate: ignore fixes older than the latest stored fix.
+            // Deduplicate: ignore fixes older than the latest stored fix. Fixes sharing
+            // the latest timestamp are kept: bulk NMEA/GPX imports stamp many fixes with
+            // the same instant (NMEA sentences carry no date, GPX tracks may lack <time>,
+            // and MySQL TIMESTAMP truncates to whole seconds), so dropping everything
+            // "not after" silently discarded all but the first fix of an import.
+            // Exact redeliveries (same instant + same position, e.g. a repeated mobile
+            // poll) are still ignored so retries never double-store.
             TrackingPoint latest = latestForVehicle(vehicleId);
             LocalDateTime ts = at == null ? LocalDateTime.now() : at;
-            if (latest != null && !ts.isAfter(latest.recordedAt())) return latest;
+            if (latest != null) {
+                if (ts.isBefore(latest.recordedAt())) return latest;
+                if (!ts.isAfter(latest.recordedAt())) {
+                    // Same instant (common after MySQL TIMESTAMP second-truncation and in
+                    // bulk imports): ignore exact redeliveries anywhere in that instant,
+                    // keep genuinely new positions. Seconds-granularity because the
+                    // database truncates sub-second precision on read-back.
+                    LocalDateTime want = ts.truncatedTo(java.time.temporal.ChronoUnit.SECONDS);
+                    var redelivery = repository.trackingHistory().stream()
+                            .filter(p -> vehicleId.equals(p.vehicleId())
+                                    && p.recordedAt() != null
+                                    && p.recordedAt().truncatedTo(java.time.temporal.ChronoUnit.SECONDS).equals(want)
+                                    && Double.compare(p.x(), lon) == 0 && Double.compare(p.y(), lat) == 0)
+                            .findFirst();
+                    if (redelivery.isPresent()) return redelivery.get();
+                }
+            }
             String ship = shipmentId;
             if (ship == null) {
                 ship = repository.shipments().stream()

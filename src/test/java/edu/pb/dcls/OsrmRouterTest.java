@@ -121,6 +121,66 @@ class OsrmRouterTest {
     }
 
     @Nested
+    @DisplayName("tracking warm-up + road detection")
+    class Warmup {
+        @Test
+        void tourLegSnapsToBundledRoad() {
+            // Depot -> nominatim-precise Gadong point (what tourForVehicle builds):
+            // exact pair misses, district snap hits -> multi-point road path, not straight.
+            var path = AppServices.RouteService.legPath(
+                    AppServices.BruneiPlaces.DEPOT,
+                    new Domain.Stop("stop-x", "Gadong Complex", 114.9189059, 4.9108598));
+            assertTrue(path.size() > 2);
+            assertTrue(AppServices.OsrmRouter.hasRoad(114.94, 4.89, 114.9189059, 4.9108598));
+        }
+
+        @Test
+        void unknownPairHasNoRoad() {
+            // Mid-sea coords snap to districts with no bundled pair: straight fallback.
+            assertFalse(AppServices.OsrmRouter.hasRoad(114.0, 4.0, 114.1, 4.1));
+        }
+
+        @Test
+        void warmLegSkipsCachedPairs() {
+            // Depot -> Berakas district centers are bundled: nothing to fetch, no callback.
+            assertFalse(AppServices.OsrmRouter.warmLeg(114.94, 4.89, 114.95, 4.94, () -> {
+                throw new AssertionError("must not fetch cached legs");
+            }));
+        }
+
+        @Test
+        void resolveReadsDiskCacheWithoutNetwork() throws Exception {
+            java.nio.file.Path home = java.nio.file.Files.createTempDirectory("dcls-osrm-home");
+            String prev = System.getProperty("user.home");
+            System.setProperty("user.home", home.toString());
+            try {
+                // Distinct coords from the other tests: resolve() memoizes into OMEM.
+                double lonA = 113.0, latA = 3.0, lonB = 113.1, latB = 3.1;
+                assertNull(AppServices.OsrmRouter.leg(lonA, latA, lonB, latB));
+                // Canned OSRM response under the r4-rounded cache key (mirrors osrmDiskPath).
+                String okey = "osrm:" + r4(lonA) + "," + r4(latA) + ">" + r4(lonB) + "," + r4(latB);
+                java.nio.file.Path dir = home.resolve(".dcls/osrm");
+                java.nio.file.Files.createDirectories(dir);
+                java.nio.file.Files.writeString(dir.resolve(Integer.toHexString(okey.hashCode()) + ".json"),
+                        "{\"code\":\"Ok\",\"routes\":[{\"distance\":1500.0,\"duration\":120.0,"
+                                + "\"geometry\":{\"coordinates\":[[113.0,3.0],[113.05,3.05],[113.1,3.1]],"
+                                + "\"type\":\"LineString\"}}]}",
+                        java.nio.charset.StandardCharsets.UTF_8);
+                OsrmRouter.LegResult leg = AppServices.OsrmRouter.resolve(lonA, latA, lonB, latB);
+                assertNotNull(leg);
+                assertEquals(3, leg.path().size());
+                assertEquals(1.5, leg.km(), 1e-9);
+                assertTrue(leg.roadQuality());
+                assertTrue(AppServices.OsrmRouter.hasRoad(lonA, latA, lonB, latB));
+            } finally {
+                System.setProperty("user.home", prev);
+            }
+        }
+
+        private static double r4(double value) { return Math.round(value * 1e4) / 1e4; }
+    }
+
+    @Nested
     @DisplayName("preview compute")
     class Compute {
         @Test
