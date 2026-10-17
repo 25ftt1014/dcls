@@ -609,7 +609,38 @@ final class MapRenderer {
      *  Clamped positive: pre-layout frames (zero/negative width) must never
      *  produce a degenerate aspect that squashes the stored view. */
     static double drawableAspect(double w, double h) {
-        return Math.max(w - 28, 1) / Math.max(h - 28, 1);
+        return Math.max(w - MAP_PAD * 2, 1) / Math.max(h - MAP_PAD * 2, 1);
+    }
+
+    /** Zoom the map falls back to when it has nothing to frame: Bandar Seri Begawan
+     *  and the depot at roughly 14 km across, which reads as a neighbourhood view
+     *  rather than a whole-country one. */
+    static final int DEFAULT_ZOOM = 13;
+
+    /** Explicit "show me this at zoom z", balanced to the canvas aspect and clamped
+     *  inside the map, so it can never come back squashed.
+     *
+     *  <p>The span is (360/2^z) scaled by how many tile widths the drawable area is.
+     *  Passing a raw 360/2^z would render about 2.8x too tight: zoomFor picks the tile
+     *  level from span-versus-viewport, not from z on its own, so z alone does not
+     *  describe how much ground a z-deep canvas should cover.
+     *  Pure and headless-testable. */
+    static ViewBounds zoomedView(double lon, double lat, int z, double viewPx, double aspect) {
+        int safeZ = Math.min(LIVE_MAX_Z, Math.max(LIVE_MIN_Z, z));
+        double lonSpanRad = Math.toRadians(360.0 / (1 << safeZ) * (viewPx / TILE_SIZE));
+        return balanceAndClamp(lon, mercator(lat), lonSpanRad, lonSpanRad / aspect, aspect);
+    }
+
+    /** Frame the content when there is some, otherwise fall back to the home view.
+     *
+     *  <p>Empty content must never reach {@link #fitBounds}: its empty fallback is
+     *  FULL_MAP, which is what snapped the route map out to all of Brunei after Clear
+     *  (tiny labels, no pins, no route). Pass home = null to keep the old behaviour
+     *  of framing the whole map, which is what the fleet and dashboard views want.
+     *  Pure and headless-testable. */
+    static ViewBounds autoViewOrHome(List<double[]> points, ViewBounds home, double aspect) {
+        if (home != null && (points == null || points.isEmpty())) return home;
+        return fitBounds(points, aspect);
     }
 
     /** Zoom-to-content: bounds enclosing the given lon/lat points plus margin, matched to

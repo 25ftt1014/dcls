@@ -773,9 +773,13 @@ public final class DclsApp extends Application {
     final class MapController {
         final Canvas canvas;
         final HBox zoomBar;
-        Supplier<List<double[]>> content = List::of;
+Supplier<List<double[]>> content = List::of;
         BiConsumer<GraphicsContext, ViewBounds> painter = (g, v) -> { };
         Consumer<double[]> clickAction;
+        /** View to frame when there is no content to frame, built per paint from the
+         *  live canvas size as (viewPx, aspect). Null keeps the plain whole-map
+         *  fallback that the dashboard and fleet views want. */
+        java.util.function.BiFunction<Double, Double, ViewBounds> homeAt;
         ViewBounds manual;
         ViewBounds lastAuto = FULL_MAP;
         private double pressX, pressY;
@@ -845,7 +849,10 @@ public final class DclsApp extends Application {
                 manual = fitAspect(manual, aspect);
                 view = manual;
             } else {
-                ViewBounds auto = fitAspect(fitBounds(content.get(), aspect), aspect);
+                double viewPx = w - MAP_PAD * 2;
+                ViewBounds home = homeAt == null ? null : homeAt.apply(viewPx, aspect);
+                ViewBounds auto = fitAspect(
+                        autoViewOrHome(content.get(), home, aspect), aspect);
                 lastAuto = auto;
                 view = auto;
             }

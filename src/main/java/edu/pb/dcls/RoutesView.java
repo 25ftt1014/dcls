@@ -108,6 +108,12 @@ final class RoutesView {
         final boolean[] dirty = {false};
         final int[] highlightLeg = {-1};
         previewMap.content = () -> (dirty[0] ? app.routeStopsDraft : app.previewStops).stream().map(s -> new double[] {s.x(), s.y()}).toList();
+        // With no stops to frame, park on the depot at the default zoom instead of
+        // letting fitBounds fall through to FULL_MAP (all of Brunei). Built per paint
+        // so it tracks the live canvas size, like any other auto view.
+        previewMap.homeAt = (viewPx, aspect) -> MapRenderer.zoomedView(
+                AppServices.BruneiPlaces.DEPOT.x(), AppServices.BruneiPlaces.DEPOT.y(),
+                MapRenderer.DEFAULT_ZOOM, viewPx, aspect);
         previewMap.painter = (g, v) -> {
             double w = previewMap.canvas.getWidth(), h = previewMap.canvas.getHeight();
             if (dirty[0]) {
@@ -119,6 +125,10 @@ final class RoutesView {
 
         final RoutePlan[] planned = {null};
         final boolean[] saved = {false};
+        // Bumped whenever the draft changes underneath an in-flight calculation, so a
+        // result computed from the old stops is discarded instead of repainting a
+        // route the user has since cleared or edited.
+        final int[] draftEpoch = {0};
         final Consumer<Boolean>[] runCalcRef = new Consumer[1];
         PauseTransition debounce = new PauseTransition(Duration.seconds(1.5));
         debounce.setOnFinished(event -> {
@@ -177,6 +187,7 @@ final class RoutesView {
             List<Stop> snapshot = new ArrayList<>(app.routeStopsDraft);
             String routeName = name.getText();
             boolean optimizeOrder = optimizeToggle.isSelected();
+            int epoch = draftEpoch[0];
             Thread thread = new Thread(() -> {
                 try {
                     List<Stop> snapped = new ArrayList<>();
@@ -231,7 +242,10 @@ final class RoutesView {
                     boolean ready = allRoad;
                     int snappedCount = moved;
                     Platform.runLater(() -> {
-                        if (gen != app.routePageGen) return;
+                        // Discarded when the page was rebuilt (gen) or when the draft
+                        // changed under us (epoch): a Clear or a pin edit must never be
+                        // undone by a calculation that was already in flight.
+                        if (gen != app.routePageGen || epoch != draftEpoch[0]) return;
                         if (ordered.size() < 2 || legs.size() != ordered.size() - 1) {
                             setStatus(statusPill, "Routing failed — showing pins", "status-warn");
                             previewMap.redraw();
@@ -290,6 +304,7 @@ final class RoutesView {
         // Pins first, blue line later: edits refresh markers instantly and restart the auto-calc.
         Runnable markDirty = () -> {
             if (gen != app.routePageGen) return;
+            draftEpoch[0]++;
             dirty[0] = true;
             planned[0] = null; saved[0] = false;
             int extra = app.routeStopsDraft.size() - 1;
@@ -518,6 +533,7 @@ RoutePlan toSave = new RoutePlan(route.id(), route.name(), driver.getValue().id(
         editRoute.setOnAction(event -> {
             RoutePlan selected = table.getSelectionModel().getSelectedItem();
             if (selected == null) return;
+            draftEpoch[0]++;
             editing[0] = selected; planned[0] = null; saved[0] = false;
             name.setText(selected.name()); app.routeStopsDraft.setAll(selected.stops());
             app.repository.users().stream().filter(user -> user.id().equals(selected.driverId())).findFirst().ifPresent(driver::setValue);
@@ -537,6 +553,7 @@ RoutePlan toSave = new RoutePlan(route.id(), route.name(), driver.getValue().id(
         table.getSelectionModel().selectedItemProperty().addListener((o, old, selected) -> {
             if (selected != null) {
                 debounce.stop();
+                draftEpoch[0]++;
                 app.previewStops = selected.stops();
                 planned[0] = null; saved[0] = false;
                 dirty[0] = false;
@@ -555,6 +572,9 @@ RoutePlan toSave = new RoutePlan(route.id(), route.name(), driver.getValue().id(
         clearLink.setOnAction(event -> {
             debounce.stop();
             if (worker[0] != null) worker[0].interrupt();
+            // Invalidate any in-flight calculation before dropping the stops, so its
+            // result cannot repaint the route that was just cleared.
+            draftEpoch[0]++;
             app.routeStopsDraft.clear();
             app.previewStops = List.of();
             handoffShipmentIds.clear();

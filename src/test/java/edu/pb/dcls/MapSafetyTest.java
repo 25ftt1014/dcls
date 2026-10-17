@@ -181,6 +181,38 @@ class MapSafetyTest {
     }
 
     @Nested
+    @DisplayName("auto view vs home")
+    class AutoViewOrHome {
+        private final MapRenderer.ViewBounds home =
+                new MapRenderer.ViewBounds(114.92, 114.96, 4.88, 4.90);
+
+        @Test
+        void emptyContentUsesHomeInsteadOfTheWholeCountry() {
+            // The Clear bug: empty content reached fitBounds, whose empty fallback is
+            // FULL_MAP, snapping the map out to all of Brunei.
+            assertEquals(home, MapRenderer.autoViewOrHome(List.of(), home, 1.6));
+            assertEquals(home, MapRenderer.autoViewOrHome(null, home, 1.6));
+        }
+
+        @Test
+        void contentWinsOverHome() {
+            var stops = List.of(new double[] {114.94, 4.89}, new double[] {114.95, 4.94});
+            var framed = MapRenderer.autoViewOrHome(stops, home, 1.6);
+            assertNotEquals(MapRenderer.FULL_MAP, framed);
+            assertTrue(framed.lonMax() > 114.95 && framed.latMax() > 4.94,
+                    "stops must be framed, not the home view");
+        }
+
+        @Test
+        void nullHomeKeepsThePlainWholeMapFallback() {
+            // Dashboard and fleet views want the old behaviour when there is nothing
+            // to frame.
+            assertEquals(MapRenderer.FULL_MAP, MapRenderer.autoViewOrHome(List.of(), null, 1.6));
+            assertEquals(MapRenderer.FULL_MAP, MapRenderer.autoViewOrHome(null, null, 1.6));
+        }
+    }
+
+    @Nested
     @DisplayName("projectIfVisible")
     class Visible {
         private final MapRenderer.ViewBounds view =
