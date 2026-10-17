@@ -1,6 +1,7 @@
 package edu.pb.dcls;
 
 import javafx.collections.FXCollections;
+import javafx.animation.Interpolator;
 import javafx.geometry.Pos;
 import javafx.scene.control.Alert;
 import javafx.scene.control.Button;
@@ -15,7 +16,9 @@ import javafx.scene.control.TextField;
 import javafx.scene.control.TitledPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Region;
+import javafx.scene.layout.StackPane;
 import javafx.scene.layout.VBox;
+import javafx.util.Duration;
 import javafx.stage.FileChooser;
 
 import java.io.File;
@@ -49,6 +52,10 @@ final class TrackingView {
     /** Fixed panel width in px: wide enough for the five columns to wrap rather than
      *  clip, narrow enough to leave the map the majority of the screen. */
     static final double PANEL_WIDTH = 420;
+    /** How long the panel takes to slide out and back. */
+    private static final Duration PANEL_ANIMATION = Duration.millis(250);
+    /** Panel padding, so the anchored button lines up with the header row. */
+    private static final double PANEL_INSET = 16;
 
     TrackingView(DclsApp app) { this.app = app; }
 
@@ -92,6 +99,14 @@ final class TrackingView {
         return collapsed ? "Show deliveries" : "Hide deliveries";
     }
 
+    /** Width of the panel column. min, pref and max move together so the column stays
+     *  rigid at any width; nothing can squeeze or stretch it. */
+    private static void setPanelWidth(javafx.scene.layout.Region panel, double width) {
+        panel.setMinWidth(width);
+        panel.setPrefWidth(width);
+        panel.setMaxWidth(width);
+    }
+
     VBox page() {
         VBox page = pageHeader("Real-time tracking", "Live GPS via NMEA, driver mobile feed, or GPX import. Markers freeze when the fix is lost.");
         app.trackingMaps = app.new MapController(470, 350);
@@ -132,11 +147,14 @@ final class TrackingView {
         // so a toggle placed there could never be pressed to bring it back. Both also
         // stay readable while the panel is collapsed, which is exactly when you want
         // to know a vehicle has lost its fix.
+        // The show/hide button is NOT here. It is anchored to the page container at the
+        // coordinates the panel header's right side occupies, so it sits opposite the
+        // title when the panel is open and does not move a pixel when the panel closes.
         Button panelToggle = new Button();
         panelToggle.getStyleClass().add("secondary-button");
         Label noFix = new Label("NO FIX");
         noFix.getStyleClass().addAll("status-pill", "status-bad");
-        HBox mapTools = new HBox(8, search, follow, panelToggle, noFix);
+        HBox mapTools = new HBox(8, search, follow, noFix);
         HBox.setHgrow(search, ALWAYS);
 
         List<Shipment> activeShipments = app.visibleShipments().stream()
@@ -253,18 +271,54 @@ final class TrackingView {
         app.addTrackingBadgeRefresh(refreshBadge);
         refreshBadge.run();
 
+        // ---- slide the panel out / in ------------------------------------
+        // min, pref and max are animated together: the panel is deliberately rigid
+        // (min == pref == max), and driving only maxWidth would put max below min and
+        // leave HBox to resolve a contradictory clamp.
+        javafx.animation.Timeline widthRamp = new javafx.animation.Timeline();
+        for (int step = 1; step <= 10; step++) {
+            final double frac = step / 10.0;
+            widthRamp.getKeyFrames().add(new javafx.animation.KeyFrame(
+                    Duration.millis(PANEL_ANIMATION.toMillis() * step / 10),
+                    e -> setPanelWidth(active, PANEL_WIDTH * (1 - frac))));
+        }
         Runnable applyCollapsed = () -> {
-            active.setVisible(!app.trackingPanelCollapsed);
-            active.setManaged(!app.trackingPanelCollapsed);
-            refreshToggle.run();
+            if (app.trackingPanelCollapsed) {
+                panelToggle.setText(panelToggleLabel(true));
+                panelToggle.setAccessibleText("Show active deliveries");
+                active.setVisible(true);
+                active.setMouseTransparent(true);
+                javafx.animation.TranslateTransition out = new javafx.animation.TranslateTransition(
+                        PANEL_ANIMATION, active);
+                out.setInterpolator(Interpolator.EASE_BOTH);
+                out.setToX(PANEL_WIDTH);
+                out.setOnFinished(e -> { if (app.trackingPanelCollapsed) active.setVisible(false); });
+                out.play();
+                widthRamp.playFromStart();
+            } else {
+                panelToggle.setText(panelToggleLabel(false));
+                panelToggle.setAccessibleText("Hide active deliveries");
+                active.setVisible(true);
+                active.setTranslateX(PANEL_WIDTH);
+                javafx.animation.TranslateTransition in = new javafx.animation.TranslateTransition(
+                        PANEL_ANIMATION, active);
+                in.setInterpolator(Interpolator.EASE_BOTH);
+                in.setToX(0);
+                in.play();
+                setPanelWidth(active, PANEL_WIDTH);
+                widthRamp.stop();
+            }
+            if (app.trackingMaps != null) app.trackingMaps.requestRedraw();
         };
         panelToggle.setOnAction(event -> {
             app.trackingPanelCollapsed = !app.trackingPanelCollapsed;
             applyCollapsed.run();
-            // The map just changed width; let it repaint on the next pulse.
-            if (app.trackingMaps != null) app.trackingMaps.requestRedraw();
         });
         applyCollapsed.run();
+        if (app.trackingPanelCollapsed) {
+            active.setVisible(false);
+            setPanelWidth(active, 0);
+        }
 
         Runnable refreshFilter = () -> table.setItems(FXCollections.observableArrayList(
                 activeShipments.stream()
@@ -305,14 +359,21 @@ final class TrackingView {
         map.heightProperty().addListener((o, a, b) -> { if (app.trackingMaps != null) app.trackingMaps.requestRedraw(); });
 
         // Fixed width on all three properties is what makes the panel immovable:
-        // min == pref == max, so no layout can squeeze or stretch it.
-        active.setMinWidth(PANEL_WIDTH);
-        active.setPrefWidth(PANEL_WIDTH);
-        active.setMaxWidth(PANEL_WIDTH);
+        // min == pref == max, so no layout can squeeze or stretch it. The collapse
+        // animation moves all three together rather than just maxWidth.
+        setPanelWidth(active, PANEL_WIDTH);
         HBox row = new HBox(12, map, active);
         HBox.setHgrow(map, ALWAYS);
-        VBox content = new VBox(row);
-        VBox.setVgrow(row, ALWAYS);
+
+        // The toggle is anchored to the container, not to the panel, so collapsing the
+        // panel cannot move it. Offsets place it opposite the header title: one panel
+        // padding in from the right edge, and nudged down to sit on the header row.
+        StackPane content = new StackPane(row);
+        content.getChildren().add(panelToggle);
+        StackPane.setAlignment(panelToggle, Pos.TOP_RIGHT);
+        panelToggle.setTranslateX(-PANEL_INSET);
+        panelToggle.setTranslateY(PANEL_INSET - 4);
+        VBox.setVgrow(content, ALWAYS);
         page.getChildren().add(content);
         if (app.focusedVehicleId != null) {
             table.getItems().stream().filter(s -> app.focusedVehicleId.equals(s.vehicleId())).findFirst()
