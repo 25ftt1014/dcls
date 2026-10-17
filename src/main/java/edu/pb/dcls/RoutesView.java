@@ -22,7 +22,6 @@ import javafx.util.Duration;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Consumer;
@@ -152,7 +151,7 @@ final class RoutesView {
         final Map<String, AddressGeocoder.GeocodedStop> lastGeocode = new java.util.HashMap<>();
         stopConfidence.clear();
         confirmedStops.clear();
-        VBox page = pageHeader("Route planning", handoffShipmentIds.isEmpty()
+        VBox page = pageHeader(handoffShipmentIds.isEmpty()
                 ? "Start blank — add stops or arrive from an order to auto-locate its address."
                 : "Route for " + String.join(", ", handoffShipmentIds) + " — address located by keywords.");
         HBox builder = new HBox(12);

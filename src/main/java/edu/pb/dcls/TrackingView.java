@@ -10,7 +10,6 @@ import javafx.scene.control.ComboBox;
 import javafx.scene.control.ContextMenu;
 import javafx.scene.control.Label;
 import javafx.scene.control.MenuItem;
-import javafx.scene.control.ScrollPane;
 import javafx.scene.control.SeparatorMenuItem;
 import javafx.scene.control.TableView;
 import javafx.scene.control.TextField;
@@ -147,8 +146,9 @@ final class TrackingView {
         node.setMaxWidth(width);
     }
 
+
     VBox page() {
-        VBox page = pageHeader("Real-time tracking", "Live GPS via NMEA, driver mobile feed, or GPX import. Markers freeze when the fix is lost.");
+        VBox page = pageHeader("Live GPS via NMEA, driver mobile feed, or GPX import. Markers freeze when the fix is lost.");
         app.trackingMaps = app.new MapController(470, 350);
         app.trackingMaps.content = () -> app.trackingFrame;
         app.trackingMaps.painter = (g, v) -> app.paintTracking(g, app.trackingMaps.canvas.getWidth(), app.trackingMaps.canvas.getHeight(), v);

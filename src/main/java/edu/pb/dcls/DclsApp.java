@@ -53,12 +53,10 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
-import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -932,9 +930,9 @@ Supplier<List<double[]>> content = List::of;
         }
 
         void zoomAt(double factor, double px, double py) {
-            ViewBounds base = currentView();
-            double w = canvas.getWidth(), h = canvas.getHeight(), pad = 14;
-            double[] cursor = unproject(px, py);
+        ViewBounds base = currentView();
+    double w = canvas.getWidth(), h = canvas.getHeight();
+    double[] cursor = unproject(px, py);
             double lonSpan = Math.min(Math.max((base.lonMax() - base.lonMin()) / factor, 0.0006), MAP_LON_MAX - MAP_LON_MIN);
             double latSpan = Math.min(Math.max((base.latMax() - base.latMin()) / factor, 0.00045), MAP_LAT_MAX - MAP_LAT_MIN);
             double lonMin = cursor[0] - (cursor[0] - base.lonMin()) / factor;
@@ -945,8 +943,8 @@ Supplier<List<double[]>> content = List::of;
         }
 
         void panBy(double dxPx, double dyPx) {
-            ViewBounds base = currentView();
-            double w = canvas.getWidth(), h = canvas.getHeight(), pad = 14;
+   ViewBounds base = currentView();
+            double w = canvas.getWidth(), h = canvas.getHeight(), pad = MapRenderer.MAP_PAD;
             double lonSpan = base.lonMax() - base.lonMin();
             double mercSpan = mercator(base.latMax()) - mercator(base.latMin());
             double dLon = dxPx / (w - pad * 2) * lonSpan;
@@ -959,8 +957,8 @@ Supplier<List<double[]>> content = List::of;
         }
 
         double[] unproject(double px, double py) {
-            ViewBounds view = currentView();
-            double w = canvas.getWidth(), h = canvas.getHeight(), pad = 14;
+      ViewBounds view = currentView();
+     double w = canvas.getWidth(), h = canvas.getHeight(), pad = MapRenderer.MAP_PAD;
             double lon = view.lonMin() + (px - pad) / (w - pad * 2) * (view.lonMax() - view.lonMin());
             double mercTop = mercator(view.latMax()), mercBottom = mercator(view.latMin());
             double lat = mercToLat(mercTop - (py - pad) / (h - pad * 2) * (mercTop - mercBottom));

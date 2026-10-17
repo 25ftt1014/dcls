@@ -4,7 +4,6 @@ import javafx.collections.FXCollections;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Node;
-import javafx.scene.control.Alert;
 import javafx.scene.control.Button;
 import javafx.scene.control.ButtonType;
 import javafx.scene.control.ComboBox;
@@ -57,7 +56,7 @@ final class FleetView {
     FleetView(DclsApp app) { this.app = app; }
 
     VBox page() {
-        VBox page = pageHeader("Fleet", "Manage vehicle availability, assignments, and service records.");
+        VBox page = pageHeader("Manage vehicle availability, assignments, and service records.");
         HBox recordLinks = new HBox(8); recordLinks.setAlignment(Pos.CENTER_RIGHT);
         Button maintenance = button("Maintenance records", "secondary-button"); maintenance.setOnAction(event -> { app.fleetRecordsView = "maintenance"; app.showPage("fleet"); });
         Button fuelRecords = button("Fuel records", "secondary-button"); fuelRecords.setOnAction(event -> { app.fleetRecordsView = "fuel"; app.showPage("fleet"); });

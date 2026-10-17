@@ -78,7 +78,10 @@ final class UiFactory {
         return card;
     }
 
-    static VBox pageHeader(String title, String subtitle) {
+/** Page header block. There is deliberately no title Label here: the page name is
+     *  already rendered in the top bar (see DclsApp's heading), and duplicating it in
+     *  the page repeated the name on every screen. */
+    static VBox pageHeader(String subtitle) {
         VBox page = new VBox(14);
         page.setPadding(new Insets(15, 24, 22, 28));
         page.getStyleClass().add("workspace");

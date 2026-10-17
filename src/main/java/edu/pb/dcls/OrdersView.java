@@ -58,7 +58,7 @@ final class OrdersView {
     OrdersView(DclsApp app) { this.app = app; }
 
     VBox page() {
-        VBox page = pageHeader("Orders & shipments", "Follow each delivery from intake through customer confirmation.");
+        VBox page = pageHeader("Follow each delivery from intake through customer confirmation.");
         HBox tools = new HBox(9); tools.setAlignment(Pos.CENTER_LEFT);
         TextField search = new TextField(); search.setPromptText("Search order or customer..."); search.setPrefWidth(310); search.setAccessibleText("Search orders");
         ChoiceBox<OrderStatus> statusFilter = enumFilter(OrderStatus.values(), "All statuses");

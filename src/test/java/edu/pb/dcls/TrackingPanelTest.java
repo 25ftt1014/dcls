@@ -39,7 +39,7 @@ class TrackingPanelTest {
 
         @Test
         void widthIsFixed() {
-assertEquals(440, TrackingView.PANEL_WIDTH);
+            assertEquals(440, TrackingView.PANEL_WIDTH);
     }
 
     @Test
