@@ -199,6 +199,9 @@ final class TrackingView {
         table.getColumns().add(wrapTextCol("Destination", Shipment::address, 140));
         table.setItems(FXCollections.observableArrayList(activeShipments));
         table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY);
+        // A fixed cell size is what forces one line per row, and therefore the ellipsis.
+        // -1 is TableView's "let each row size itself" value.
+        table.setFixedCellSize(-1d);
 
         // ---- selected-row detail -------------------------------------
         ComboBox<String> feed = new ComboBox<>(FXCollections.observableArrayList("nmea", "mobile", "gpx"));

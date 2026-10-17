@@ -301,10 +301,14 @@
 .focusable:focused { -fx-border-color: -accent; }
 
 /* ---- active-deliveries panel ------------------------------------ */
-/* Wrapping rows: -fx-cell-size -1 releases the fixed 40px row height so a
-   wrapped cell can grow instead of clipping its text. */
-.table-view.wrap-rows .table-row-cell { -fx-cell-size: -1; }
-.table-view.wrap-rows .table-cell { -fx-padding: 8 10 8 10; }
+/* Wrapping rows. Two independent guards, because the cell factory alone left the text
+   ellipsized: the CSS -fx-wrap-text makes wrapping apply even if a factory is replaced,
+   and -fx-cell-size carries a unit (-1px) so the parser accepts it — -1 is TableRow's
+   "size myself from content" sentinel. TrackingView also calls setFixedCellSize(-1).
+   TableRow has no cellSize setter in JavaFX 25, so the row height is governed by the
+   TableView property, not by this rule. */
+.table-view.wrap-rows .table-row-cell { -fx-cell-size: -1px; }
+.table-view.wrap-rows .table-cell { -fx-padding: 8 10 8 10; -fx-wrap-text: true; }
 
 .count-badge {
     -fx-background-color: -accent;
