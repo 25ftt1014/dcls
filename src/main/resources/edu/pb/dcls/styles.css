@@ -296,17 +296,14 @@
 .scroll-bar .thumb:hover { -fx-background-color: #b2bfd3; }
 .scroll-bar .increment-button, .scroll-bar .decrement-button { -fx-background-color: transparent; -fx-padding: 0; }
 
-.focusable:focused { -fx-border-color: -accent; }
 
 /* ---- active-deliveries panel ------------------------------------ */
-/* Wrapping rows. Two independent guards, because the cell factory alone left the text
-   ellipsized: the CSS -fx-wrap-text makes wrapping apply even if a factory is replaced,
-   and -fx-cell-size carries a unit (-1px) so the parser accepts it — -1 is TableRow's
-   "size myself from content" sentinel. TrackingView also calls setFixedCellSize(-1).
-   TableRow has no cellSize setter in JavaFX 25, so the row height is governed by the
-   TableView property, not by this rule. */
-.table-view.wrap-rows .table-row-cell { -fx-cell-size: -1px; }
+/* Wrapping rows. -fx-wrap-text makes wrapping apply even if a cell factory is replaced.
+   Row height is deliberately NOT set here: TrackingView's setFixedCellSize(-1d) owns it,
+   and the two used to disagree, leaving every cell single-line and ellipsized. */
 .table-view.wrap-rows .table-cell { -fx-padding: 8 10 8 10; -fx-wrap-text: true; }
+/* Tighter pill inside the 440px drawer so "In transit" clears the 68px Status column. */
+.tracking-drawer .status-pill { -fx-padding: 3 7; }
 
 .count-badge {
     -fx-background-color: -accent;
@@ -343,7 +340,7 @@
 }
 .tracking-toggle:hover { -fx-border-color: -accent; }
 .tracking-toggle:focused { -fx-border-color: -accent; -fx-background-color: -accent-soft; }
-.tracking-toggle .glyph { -fx-font-size: 15px; -fx-text-fill: -ink; }
+.tracking-toggle .glyph { -fx-font-size: 14px; -fx-text-fill: -ink; }
 
 /* Overlay-mode backdrop: dims the map, click anywhere to dismiss. */
 .drawer-scrim { -fx-background-color: rgba(20,27,45,0.34); }

@@ -59,9 +59,6 @@ final class TrackingView {
      *  it. Measured on the container, not the stage: the nav sidebar already eats ~200px,
      *  so a stage-based threshold would switch far too late. */
     static final double PUSH_MIN_WIDTH = 1100;
-    /** Delay between the slide finishing and the map adopting its new width, so the
-     *  resize lands just after the motion rather than on its last frame. */
-    private static final Duration RESIZE_SETTLE = Duration.millis(60);
     /** Panel padding, so the anchored button lines up with the drawer header row. */
     private static final double PANEL_INSET = 16;
 
@@ -138,6 +135,14 @@ final class TrackingView {
     private static java.util.prefs.Preferences prefs() {
         return java.util.prefs.Preferences.userNodeForPackage(TrackingView.class);
     }
+    /**
+     * Stop a StackPane stretching this node across the whole map. StackPane resizes
+     * managed children to fill and then ignores their alignment, so a corner control
+     * needs an explicit USE_PREF_SIZE ceiling to stay corner-sized.
+     */
+    private static void hug(Region node) {
+        node.setMaxSize(Region.USE_PREF_SIZE, Region.USE_PREF_SIZE);
+    }
 
     /** Pin a node to one width: min == pref == max so no layout can move it. */
     private static void fixWidth(javafx.scene.layout.Region node, double width) {
@@ -199,7 +204,7 @@ final class TrackingView {
         toggleDot.getStyleClass().add("warning-dot");
         StackPane panelToggle = new StackPane(toggleGlyph, toggleBadge, toggleDot);
         panelToggle.getStyleClass().add("tracking-toggle");
-        panelToggle.setPadding(new Insets(6, 10, 6, 8));
+        panelToggle.setPadding(new Insets(4, 9, 4, 7));
         StackPane.setAlignment(toggleBadge, Pos.CENTER_RIGHT);
         StackPane.setAlignment(toggleDot, Pos.TOP_RIGHT);
         panelToggle.setFocusTraversable(true);
@@ -239,17 +244,19 @@ final class TrackingView {
         // Releases the global 40px row height so a wrapped cell can grow instead of
         // clipping its text; see .wrap-rows in styles.css.
         table.getStyleClass().add("wrap-rows");
+        table.setAccessibleText("Active deliveries");
         table.setPlaceholder(new Label("No active deliveries — assign an order first."));
-        // Widths sum to exactly the drawer's content area (440 - 2x16 = 408), so
-        // CONSTRAINED resize never has to squeeze a column and the cells wrap instead.
-        // Status is back as a column: at 440px it fits without costing Destination.
-        table.getColumns().add(wrapTextCol("Order", Shipment::id, 68));
+
+// Widths sum to 392, not the drawer's 408px content width: the vertical scrollbar
+        // takes ~14px, and CONSTRAINED_RESIZE_POLICY responds to that shortfall by
+        // shrinking every column, which ellipsis-clips all of them at once.
+        table.getColumns().add(wrapTextCol("Order", Shipment::id, 88));
         table.getColumns().add(wrapTextCol("Vehicle", s -> app.vehiclePlate(s.vehicleId()), 76));
         table.getColumns().add(chipCol("Fix",
                 s -> s.vehicleId() == null ? "—" : app.tracking.gpsStatus(s.vehicleId()),
                 (s, text) -> text.startsWith("NO FIX") ? "status-bad"
-                        : text.startsWith("LOST") ? "status-warn" : "status-good", 88));
-        table.getColumns().add(wrapTextCol("Destination", Shipment::address, 108));
+                        : text.startsWith("LOST") ? "status-warn" : "status-good", 76));
+        table.getColumns().add(wrapTextCol("Destination", Shipment::address, 84));
         table.getColumns().add(chipCol("Status", s -> s.status().label(),
                 (s, text) -> s.status() == OrderStatus.IN_TRANSIT ? "status-info" : "status-good", 68));
         table.setItems(FXCollections.observableArrayList(activeShipments));
@@ -322,8 +329,13 @@ final class TrackingView {
         // toggle (top-right), drawer. The scrim sits under the drawer so it dims the map
         // without swallowing clicks meant for the drawer, and under the toggle so the
         // button stays reachable in overlay mode.
+        // Scrim first: it dims the map and eats clicks, but the overlay controls and the
+        // drawer are added after it so they stay on top and usable.
         StackPane content = new StackPane(map);
-        content.getChildren().addAll(mapOverlay, scrim, panelToggle, active);
+        // StackPane centres managed children by default, so the moment the drawer
+        // narrows the map it drifts to the middle and leaves a dead gutter on the left.
+        StackPane.setAlignment(map, Pos.TOP_LEFT);
+        content.getChildren().addAll(scrim, mapOverlay, panelToggle, active);
 
         // ---- live count, NO FIX, and the toggle state --------------------
         Runnable refreshToggle = () ->
@@ -349,20 +361,14 @@ final class TrackingView {
         // drawer never has to be re-parented between modes.
         final boolean[] overlayMode = {true};
         final javafx.animation.Transition[] running = {null};
-        final javafx.animation.PauseTransition[] settle = {null};
+        final javafx.animation.PauseTransition[] resize = {null};
 
-        // The map adopts its new width exactly once, a beat after the slide ends, so the
-        // canvas-width binding never fires mid-animation and no tiles are re-fetched
-        // while the drawer is moving.
+        // The map adopts its new width part-way through the slide rather than after
+        // it: by then the drawer is most of the way across, so the map edge crosses
+        // its shadow mid-motion instead of visibly catching up a beat later.
         Runnable applyMapWidth = () -> {
             double reserved = overlayMode[0] || app.trackingPanelCollapsed ? 0 : PANEL_WIDTH;
             map.setMaxWidth(Math.max(240, content.getWidth() - reserved));
-        };
-        Runnable settleResize = () -> {
-            if (settle[0] != null) settle[0].stop();
-            settle[0] = new javafx.animation.PauseTransition(motion(CLOSE_MS));
-            settle[0].setOnFinished(e -> applyMapWidth.run());
-            settle[0].play();
         };
 
         // Interruptible: stop whatever is in flight and reverse from wherever the drawer
@@ -372,7 +378,7 @@ final class TrackingView {
             boolean closing = app.trackingPanelCollapsed;
             refreshToggle.run();
             if (running[0] != null) { running[0].stop(); running[0] = null; }
-            if (settle[0] != null) { settle[0].stop(); settle[0] = null; }
+            if (resize[0] != null) { resize[0].stop(); resize[0] = null; }
 
             // Cache the drawer for the duration only: a cached subtree repaints from a
             // snapshot, so the slide costs no re-layout. Cleared afterwards so the text
@@ -404,10 +410,21 @@ final class TrackingView {
                 active.setCache(false);
                 active.setMouseTransparent(closing);
                 if (closing) { active.setVisible(false); scrim.setOpacity(0); scrim.setVisible(false); }
-                if (app.trackingPanelCollapsed == closing) settleResize.run();
-            });
+                // Idempotent, and the safety net for a fast double-toggle that reversed
+                // before the mid-slide resize ever fired.
+                applyMapWidth.run();
+  });
             running[0] = group;
+            if (resize[0] != null) resize[0].stop();
+            resize[0] = new javafx.animation.PauseTransition(
+                    Duration.millis(Math.round(duration.toMillis() * 0.45)));
+            resize[0].setOnFinished(e -> applyMapWidth.run());
+            resize[0].play();
             group.play();
+            // Hand focus across the boundary so the keyboard never gets stranded
+            // behind a440px panel: into the filter when the drawer opens, back to
+            // the toggle that opened it when it closes.
+            (closing ? panelToggle : filter).requestFocus();
         };
 
         panelToggle.setOnMouseClicked(event -> {
@@ -502,9 +519,11 @@ final class TrackingView {
         fixWidth(active, PANEL_WIDTH);
 
         StackPane.setAlignment(mapOverlay, Pos.TOP_LEFT);
+        hug(mapOverlay);
         mapOverlay.setPadding(new Insets(PANEL_INSET - 2, 0, 0, PANEL_INSET));
         StackPane.setAlignment(scrim, Pos.TOP_LEFT);
         StackPane.setAlignment(panelToggle, Pos.TOP_RIGHT);
+        hug(panelToggle);
         panelToggle.setTranslateX(-PANEL_INSET);
         panelToggle.setTranslateY(PANEL_INSET);
         StackPane.setAlignment(active, Pos.TOP_RIGHT);

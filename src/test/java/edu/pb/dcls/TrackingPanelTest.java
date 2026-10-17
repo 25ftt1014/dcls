@@ -33,9 +33,14 @@ class TrackingPanelTest {
     @Nested
     @DisplayName("fixed width")
     class FixedWidth {
-        /** Column widths as laid out in TrackingView; must not exceed the panel's
-         *  content area or CONSTRAINED_RESIZE_POLICY squeezes them back to clipping. */
-        private final double columns = 68 + 76 + 88 + 108 + 68;
+/** Column widths as laid out in TrackingView. They must leave room for the
+         *  vertical scrollbar, not merely fit the content area: hitting the content
+         *  width exactly is what made CONSTRAINED_RESIZE_POLICY shrink every column
+         *  and ellipsis-clip them all at once. */
+        private final double columns = 88 + 76 + 76 + 84 + 68;
+
+        /** What TableView's vertical scrollbar claims from the content width. */
+        private final double scrollbar = 16;
 
         @Test
         void widthIsFixed() {
@@ -44,12 +49,20 @@ class TrackingPanelTest {
 
     @Test
     void columnsFitInsideThePanel() {
-        double content = TrackingView.PANEL_WIDTH - UiFactory.PANEL_PADDING_H;
+            double content = TrackingView.PANEL_WIDTH - UiFactory.PANEL_PADDING_H;
         assertTrue(columns <= content,
-                "columns " + columns + " exceed panel content width " + content);
+      "columns " + columns + " exceed panel content width " + content);
     }
 
-@Test
+    @Test
+    void columnsLeaveRoomForTheScrollbar() {
+        double content = TrackingView.PANEL_WIDTH - UiFactory.PANEL_PADDING_H;
+        assertTrue(columns + scrollbar <= content,
+       "columns " + columns + " plus a " + scrollbar
+                        + "px scrollbar do not fit inside " + content);
+    }
+
+        @Test
     void overlayBelowTheBreakpointAndPushAbove() {
         // Below the breakpoint the drawer floats over the map with a scrim; at or above
         // it pushes the map aside. Measured on the map container, not the stage, because
