@@ -21,6 +21,7 @@ import javafx.scene.control.Alert;
 import javafx.scene.control.Button;
 import javafx.scene.control.ButtonType;
 import javafx.scene.control.CheckBox;
+import javafx.scene.control.CheckMenuItem;
 import javafx.scene.control.ComboBox;
 import javafx.scene.control.Dialog;
 import javafx.scene.control.Label;
@@ -28,6 +29,7 @@ import javafx.scene.control.MenuButton;
 import javafx.scene.control.MenuItem;
 import javafx.scene.control.PasswordField;
 import javafx.scene.control.ScrollPane;
+import javafx.scene.control.SeparatorMenuItem;
 import javafx.scene.control.TextField;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.HBox;
@@ -127,6 +129,9 @@ public final class DclsApp extends Application {
      *  fixed-width sibling of the map, so there is no draggable position to remember:
      *  it is either shown or hidden. */
     boolean trackingPanelCollapsed = false;
+    /** Reduced motion: collapses every UI animation to zero duration. Seeded from
+     *  -Ddcls.reduceMotion so it can be set without a UI, and toggleable in Settings. */
+    boolean reduceMotion = Boolean.parseBoolean(System.getProperty("dcls.reduceMotion", "false"));
     /** Active-deliveries count / NO FIX refresh, registered by TrackingView for the
      *  open page so the header badge stays live as fixes arrive. */
     Runnable trackingBadgeRefresh;
@@ -371,7 +376,15 @@ public final class DclsApp extends Application {
         sidebar.getChildren().add(identity);
 
         MenuButton settings = new MenuButton("Settings"); settings.setMaxWidth(Double.MAX_VALUE); settings.setAccessibleText("Settings and profile"); settings.getStyleClass().add("settings-button");
-        settings.getItems().addAll(menu("My profile", this::profileDialog), menu("Change password", this::passwordDialog), menu("Sign out", () -> { stopTracking(); currentUser = null; showLogin(); }));
+        CheckMenuItem reduceMotionItem = new CheckMenuItem("Reduce motion");
+        reduceMotionItem.setSelected(reduceMotion);
+        
+        reduceMotionItem.setOnAction(event -> {
+            reduceMotion = reduceMotionItem.isSelected();
+            // The page fade is the other motion in the app; honour the change at once.
+            if (shell != null) showPage(activePage);
+        });
+        settings.getItems().addAll(menu("My profile", this::profileDialog), menu("Change password", this::passwordDialog), new SeparatorMenuItem(), reduceMotionItem, new SeparatorMenuItem(), menu("Sign out", () -> { stopTracking(); currentUser = null; showLogin(); }));
         sidebar.getChildren().add(settings);
         return sidebar;
     }

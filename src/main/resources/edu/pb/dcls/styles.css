@@ -322,3 +322,58 @@
 
 .tracking-detail .titled-pane > .title { -fx-background-color: transparent; -fx-padding: 6 0 6 0; }
 .tracking-detail .titled-pane > .content { -fx-background-color: transparent; -fx-padding: 4 0 0 0; }
+
+/* Drawer: right-edge panel anchored to the map container. It is positioned by
+   TranslateTransition, never by layout reflow, so nothing can drag or resize it. */
+.tracking-drawer {
+    -fx-background-color: -surface;
+    -fx-border-color: -line;
+    -fx-border-width: 1 0 0 1;
+    -fx-border-radius: 14 0 0 14;
+    -fx-background-radius: 14 0 0 14;
+    -fx-effect: dropshadow(gaussian, rgba(20,27,45,0.16), 20, 0, 0, 6);
+}
+
+/* Icon toggle: fixed position top-right of the map area, never inside the drawer. */
+.tracking-toggle {
+    -fx-background-color: -surface;
+    -fx-border-color: -line;
+    -fx-background-radius: 10;
+    -fx-border-radius: 10;
+    -fx-cursor: hand;
+    -fx-effect: dropshadow(gaussian, rgba(20,27,45,0.12), 10, 0, 0, 3);
+}
+.tracking-toggle:hover { -fx-border-color: -accent; }
+.tracking-toggle:focused { -fx-border-color: -accent; -fx-background-color: -accent-soft; }
+.tracking-toggle .glyph { -fx-font-size: 15px; -fx-text-fill: -ink; }
+
+/* Overlay-mode backdrop: dims the map, click anywhere to dismiss. */
+.drawer-scrim { -fx-background-color: rgba(20,27,45,0.34); }
+
+/* Follow-selected and NO FIX, floated over the map rather than stacked below it. */
+.map-overlay {
+    -fx-background-color: -surface;
+    -fx-background-radius: 10;
+    -fx-padding: 5 10 5 8;
+    -fx-effect: dropshadow(gaussian, rgba(20,27,45,0.10), 10, 0, 0, 3);
+}
+
+.drawer-close {
+    -fx-background-color: transparent;
+    -fx-text-fill: -ink-soft;
+    -fx-font-size: 13px;
+    -fx-padding: 2 6 2 6;
+    -fx-cursor: hand;
+    -fx-background-radius: 8;
+}
+.drawer-close:hover { -fx-background-color: -accent-soft; -fx-text-fill: -accent-hover; }
+
+.warning-dot {
+    -fx-background-color: #d97706;
+    -fx-background-radius: 20;
+    -fx-border-radius: 20;
+    -fx-min-width: 8px; -fx-pref-width: 8px; -fx-max-width: 8px;
+    -fx-min-height: 8px; -fx-pref-height: 8px; -fx-max-height: 8px;
+    -fx-border-color: -surface;
+    -fx-border-width: 1;
+}

@@ -35,22 +35,47 @@ class TrackingPanelTest {
     class FixedWidth {
         /** Column widths as laid out in TrackingView; must not exceed the panel's
          *  content area or CONSTRAINED_RESIZE_POLICY squeezes them back to clipping. */
-        private final double columns = 72 + 80 + 96 + 140;
+        private final double columns = 68 + 76 + 88 + 108 + 68;
 
         @Test
         void widthIsFixed() {
-            assertEquals(420, TrackingView.PANEL_WIDTH);
-        }
+assertEquals(440, TrackingView.PANEL_WIDTH);
+    }
 
-        @Test
-        void columnsFitInsideThePanel() {
-            double content = TrackingView.PANEL_WIDTH - UiFactory.PANEL_PADDING_H;
-            assertTrue(columns <= content,
-                    "columns " + columns + " exceed panel content width " + content);
-        }
+    @Test
+    void columnsFitInsideThePanel() {
+        double content = TrackingView.PANEL_WIDTH - UiFactory.PANEL_PADDING_H;
+        assertTrue(columns <= content,
+                "columns " + columns + " exceed panel content width " + content);
+    }
 
-        @Test
-        void panelPaddingIsNotTheTileInset() {
+@Test
+    void overlayBelowTheBreakpointAndPushAbove() {
+        // Below the breakpoint the drawer floats over the map with a scrim; at or above
+        // it pushes the map aside. Measured on the map container, not the stage, because
+        // the nav sidebar already consumes ~200px.
+        assertTrue(TrackingView.drawerOverlay(0));
+        assertTrue(TrackingView.drawerOverlay(900));
+        assertTrue(TrackingView.drawerOverlay(TrackingView.PUSH_MIN_WIDTH - 0.1));
+        assertFalse(TrackingView.drawerOverlay(TrackingView.PUSH_MIN_WIDTH));
+        assertFalse(TrackingView.drawerOverlay(1600));
+    }
+
+    @Test
+    void closeIsQuickerThanOpen() {
+        assertTrue(TrackingView.CLOSE_MS < TrackingView.OPEN_MS,
+                "closing should feel snappier than opening");
+    }
+
+    @Test
+    void reducedMotionCollapsesEveryDuration() {
+        assertEquals(javafx.util.Duration.ZERO, TrackingView.motionDuration(true, 280));
+        assertEquals(javafx.util.Duration.ZERO, TrackingView.motionDuration(true, 220));
+        assertEquals(javafx.util.Duration.millis(280), TrackingView.motionDuration(false, 280));
+    }
+
+    @Test
+    void panelPaddingIsNotTheTileInset() {
             // The canvas binding and the column budget both use the 16px-per-side panel
             // padding, never MapRenderer.MAP_PAD, which is the separate 14px inset the
             // projection maps tiles onto.
@@ -113,18 +138,18 @@ class TrackingPanelTest {
     class Toggle {
         @Test
         void offersTheOppositeOfTheCurrentState() {
-            // The toggle lives on the map toolbar, never inside the panel: when the
-            // panel is hidden its own header is hidden with it, so a toggle placed
-            // there could never be pressed to bring the panel back.
-            assertEquals("Hide deliveries", TrackingView.panelToggleLabel(false));
-            assertEquals("Show deliveries", TrackingView.panelToggleLabel(true));
+            // The toggle is an icon button, so its accessible name is the only label it
+            // has and must always offer the opposite of the current state.
+            assertEquals("Hide active deliveries", TrackingView.panelToggleAccessibleText(false));
+            assertEquals("Show active deliveries", TrackingView.panelToggleAccessibleText(true));
         }
 
         @Test
         void startsVisibleAndOffersToHide() {
             DclsApp app = new DclsApp();
             assertFalse(app.trackingPanelCollapsed, "panel starts shown");
-            assertEquals("Hide deliveries", TrackingView.panelToggleLabel(app.trackingPanelCollapsed));
+            assertEquals("Hide active deliveries",
+                    TrackingView.panelToggleAccessibleText(app.trackingPanelCollapsed));
         }
     }
 

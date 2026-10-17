@@ -2,6 +2,7 @@ package edu.pb.dcls;
 
 import javafx.collections.FXCollections;
 import javafx.animation.Interpolator;
+import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.control.Alert;
 import javafx.scene.control.Button;
@@ -49,19 +50,42 @@ import static javafx.scene.layout.Priority.ALWAYS;
 final class TrackingView {
     private final DclsApp app;
 
-    /** Fixed panel width in px: wide enough for the five columns to wrap rather than
-     *  clip, narrow enough to leave the map the majority of the screen. */
-    static final double PANEL_WIDTH = 420;
-    /** How long the panel takes to slide out and back. */
-    private static final Duration PANEL_ANIMATION = Duration.millis(250);
-    /** Panel padding, so the anchored button lines up with the header row. */
+    /** Fixed drawer width in px. Sized so all five columns fit the content area
+     *  without clipping while still leaving the map the majority of the screen. */
+    static final double PANEL_WIDTH = 440;
+    /** Slide durations: opening eases in slightly longer than closing, which reads as
+     *  responsive rather than sluggish on the way back. */
+    static final double OPEN_MS = 280, CLOSE_MS = 220;
+    /** Below this map-container width the drawer floats over the map instead of pushing
+     *  it. Measured on the container, not the stage: the nav sidebar already eats ~200px,
+     *  so a stage-based threshold would switch far too late. */
+    static final double PUSH_MIN_WIDTH = 1100;
+    /** Delay between the slide finishing and the map adopting its new width, so the
+     *  resize lands just after the motion rather than on its last frame. */
+    private static final Duration RESIZE_SETTLE = Duration.millis(60);
+    /** Panel padding, so the anchored button lines up with the drawer header row. */
     private static final double PANEL_INSET = 16;
 
     TrackingView(DclsApp app) { this.app = app; }
 
     // ---- pure, headlessly testable helpers ---------------------------
 
-    /** Count badge in the panel header. Zero means no badge at all. */
+    /** Overlay below the breakpoint (drawer floats, scrim visible), push at or above it. */
+    static boolean drawerOverlay(double containerWidth) {
+        return containerWidth < PUSH_MIN_WIDTH;
+    }
+
+    /** Honours reduced motion by collapsing every duration to zero. */
+    static Duration motionDuration(boolean reduced, double millis) {
+        return reduced ? Duration.ZERO : Duration.millis(millis);
+    }
+
+    /** Honours the app's reduced-motion setting. */
+    private Duration motion(double millis) {
+        return motionDuration(app.reduceMotion, millis);
+    }
+
+    /** Count badge on the toggle. Zero means no badge at all. */
     static int activeDeliveryBadge(List<Shipment> rows) {
         return rows == null ? 0 : rows.size();
     }
@@ -93,18 +117,34 @@ final class TrackingView {
         return haystack != null && haystack.toLowerCase(Locale.ROOT).contains(needle);
     }
 
-    /** Label for the show/hide toggle. Pure, so the mapping is testable without a
-     *  toolkit: the button must always offer the opposite of the current state. */
-    static String panelToggleLabel(boolean collapsed) {
-        return collapsed ? "Show deliveries" : "Hide deliveries";
+    /** Accessible name for the toggle. The button is an icon, so this is the only label it
+     *  has; it must always offer the opposite of the current state. */
+    static String panelToggleAccessibleText(boolean collapsed) {
+        return collapsed ? "Show active deliveries" : "Hide active deliveries";
     }
 
-    /** Width of the panel column. min, pref and max move together so the column stays
-     *  rigid at any width; nothing can squeeze or stretch it. */
-    private static void setPanelWidth(javafx.scene.layout.Region panel, double width) {
-        panel.setMinWidth(width);
-        panel.setPrefWidth(width);
-        panel.setMaxWidth(width);
+    /** Restored drawer state, default shown. Read lazily — never from a constructor —
+     *  so building a DclsApp stays free of Preferences side effects. */
+    static boolean loadDrawerOpen() {
+        try { return prefs().getBoolean(PREF_OPEN, false); }
+        catch (RuntimeException unavailable) { return false; }
+    }
+
+    static void saveDrawerOpen(boolean open) {
+        try { prefs().putBoolean(PREF_OPEN, open); } catch (RuntimeException ignored) { }
+    }
+
+    private static final String PREF_OPEN = "trackingDrawerOpen";
+
+    private static java.util.prefs.Preferences prefs() {
+        return java.util.prefs.Preferences.userNodeForPackage(TrackingView.class);
+    }
+
+    /** Pin a node to one width: min == pref == max so no layout can move it. */
+    private static void fixWidth(javafx.scene.layout.Region node, double width) {
+        node.setMinWidth(width);
+        node.setPrefWidth(width);
+        node.setMaxWidth(width);
     }
 
     VBox page() {
@@ -138,37 +178,51 @@ final class TrackingView {
             thread.setDaemon(true);
             thread.start();
         });
+        // "Follow selected" and the NO FIX warning sit ON the map, top-left, rather than in a
+        // row below it, so the map gets the full panel height.
         javafx.scene.control.CheckBox follow = new javafx.scene.control.CheckBox("Follow selected");
         follow.setSelected(app.followSelected);
         follow.setOnAction(e -> app.followSelected = follow.isSelected());
-
-        // The show/hide toggle and the NO FIX warning live on the map toolbar, never
-        // inside the panel. When the panel is hidden its own header is hidden with it,
-        // so a toggle placed there could never be pressed to bring it back. Both also
-        // stay readable while the panel is collapsed, which is exactly when you want
-        // to know a vehicle has lost its fix.
-        // The show/hide button is NOT here. It is anchored to the page container at the
-        // coordinates the panel header's right side occupies, so it sits opposite the
-        // title when the panel is open and does not move a pixel when the panel closes.
-        Button panelToggle = new Button();
-        panelToggle.getStyleClass().add("secondary-button");
         Label noFix = new Label("NO FIX");
         noFix.getStyleClass().addAll("status-pill", "status-bad");
-        HBox mapTools = new HBox(8, search, follow, noFix);
-        HBox.setHgrow(search, ALWAYS);
+        HBox mapOverlay = new HBox(8, follow, noFix);
+        mapOverlay.getStyleClass().add("map-overlay");
+
+        // The toggle is an icon: glyph plus the live count and a red dot when any
+        // vehicle has lost its fix. Both indicators are visible whether the drawer is
+        // open or closed, which is exactly when a lost signal matters most.
+        Label toggleGlyph = new Label("☰");
+        toggleGlyph.getStyleClass().add("glyph");
+        Label toggleBadge = new Label();
+        toggleBadge.getStyleClass().add("count-badge");
+        Region toggleDot = new Region();
+        toggleDot.getStyleClass().add("warning-dot");
+        StackPane panelToggle = new StackPane(toggleGlyph, toggleBadge, toggleDot);
+        panelToggle.getStyleClass().add("tracking-toggle");
+        panelToggle.setPadding(new Insets(6, 10, 6, 8));
+        StackPane.setAlignment(toggleBadge, Pos.CENTER_RIGHT);
+        StackPane.setAlignment(toggleDot, Pos.TOP_RIGHT);
+        panelToggle.setFocusTraversable(true);
+        panelToggle.setAccessibleRole(javafx.scene.AccessibleRole.BUTTON);
 
         List<Shipment> activeShipments = app.visibleShipments().stream()
                 .filter(s -> s.status() == OrderStatus.IN_TRANSIT || s.status() == OrderStatus.ASSIGNED).toList();
 
-        // ---- header: title and live count badge ----
+        // ---- drawer header: title, live count, close ----
         Label activeTitle = new Label("Active deliveries");
         activeTitle.getStyleClass().add("section-title");
         Label countBadge = new Label();
         countBadge.getStyleClass().add("count-badge");
-        HBox activeHeader = new HBox(8, activeTitle, countBadge);
+        Button closeDrawer = new Button("✕");
+        closeDrawer.getStyleClass().add("drawer-close");
+        closeDrawer.setAccessibleText("Close active deliveries");
+        Region headerGap = new Region();
+        HBox.setHgrow(headerGap, ALWAYS);
+        HBox activeHeader = new HBox(8, activeTitle, countBadge, headerGap, closeDrawer);
         activeHeader.setAlignment(Pos.CENTER_LEFT);
 
         VBox active = panel(activeHeader);
+        active.getStyleClass().add("tracking-drawer");
 
         TextField filter = new TextField();
         filter.setPromptText("Filter orders, vehicles, destinations…");
@@ -186,17 +240,18 @@ final class TrackingView {
         // clipping its text; see .wrap-rows in styles.css.
         table.getStyleClass().add("wrap-rows");
         table.setPlaceholder(new Label("No active deliveries — assign an order first."));
-        // Widths sum to exactly the panel's content area. Status is deliberately not a
-        // column: every row here is either ASSIGNED or IN_TRANSIT, so it carries little
-        // and cost the Destination column enough width to truncate again. It is shown
-        // as a chip in the detail pane instead.
-        table.getColumns().add(wrapTextCol("Order", Shipment::id, 72));
-        table.getColumns().add(wrapTextCol("Vehicle", s -> app.vehiclePlate(s.vehicleId()), 80));
+        // Widths sum to exactly the drawer's content area (440 - 2x16 = 408), so
+        // CONSTRAINED resize never has to squeeze a column and the cells wrap instead.
+        // Status is back as a column: at 440px it fits without costing Destination.
+        table.getColumns().add(wrapTextCol("Order", Shipment::id, 68));
+        table.getColumns().add(wrapTextCol("Vehicle", s -> app.vehiclePlate(s.vehicleId()), 76));
         table.getColumns().add(chipCol("Fix",
                 s -> s.vehicleId() == null ? "—" : app.tracking.gpsStatus(s.vehicleId()),
                 (s, text) -> text.startsWith("NO FIX") ? "status-bad"
-                        : text.startsWith("LOST") ? "status-warn" : "status-good", 96));
-        table.getColumns().add(wrapTextCol("Destination", Shipment::address, 140));
+                        : text.startsWith("LOST") ? "status-warn" : "status-good", 88));
+        table.getColumns().add(wrapTextCol("Destination", Shipment::address, 108));
+        table.getColumns().add(chipCol("Status", s -> s.status().label(),
+                (s, text) -> s.status() == OrderStatus.IN_TRANSIT ? "status-info" : "status-good", 68));
         table.setItems(FXCollections.observableArrayList(activeShipments));
         table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY);
         // A fixed cell size is what forces one line per row, and therefore the ellipsis.
@@ -255,73 +310,155 @@ final class TrackingView {
         VBox.setVgrow(table, ALWAYS);
         active.getChildren().addAll(filter, table, detail);
 
-        // ---- live count, NO FIX, and the show/hide toggle ---------------
-        // refreshToggle must stay callable before `table` exists (the toolbar button
-        // is created above it), so it only reads the app flag, not the rows.
-        Runnable refreshToggle = () -> {
-            panelToggle.setText(panelToggleLabel(app.trackingPanelCollapsed));
-            panelToggle.setAccessibleText(app.trackingPanelCollapsed
-                    ? "Show active deliveries" : "Hide active deliveries");
-        };
+        // Scrim covers the map only, and only in overlay mode. Hidden and
+        // mouse-transparent otherwise so it can never eat a map drag.
+        Region scrim = new Region();
+        scrim.getStyleClass().add("drawer-scrim");
+        scrim.setVisible(false);
+        scrim.setMouseTransparent(true);
+        scrim.setOpacity(0);
+
+        // Layering, back to front: map, map overlay (top-left), scrim over the map only,
+        // toggle (top-right), drawer. The scrim sits under the drawer so it dims the map
+        // without swallowing clicks meant for the drawer, and under the toggle so the
+        // button stays reachable in overlay mode.
+        StackPane content = new StackPane(map);
+        content.getChildren().addAll(mapOverlay, scrim, panelToggle, active);
+
+        // ---- live count, NO FIX, and the toggle state --------------------
+        Runnable refreshToggle = () ->
+                panelToggle.setAccessibleText(panelToggleAccessibleText(app.trackingPanelCollapsed));
         Runnable refreshBadge = () -> {
             int count = activeDeliveryBadge(table.getItems());
             countBadge.setText(String.valueOf(count));
             countBadge.setVisible(count > 0);
-            noFix.setVisible(hasNoFixWarning(table.getItems(), id -> app.tracking.gpsStatus(id)));
-            noFix.setManaged(noFix.isVisible());
+            toggleBadge.setText(String.valueOf(count));
+            toggleBadge.setVisible(count > 0);
+            boolean lost = hasNoFixWarning(table.getItems(), id -> app.tracking.gpsStatus(id));
+            noFix.setVisible(lost);
+            noFix.setManaged(lost);
+            toggleDot.setVisible(lost);
             refreshToggle.run();
         };
         app.addTrackingBadgeRefresh(refreshBadge);
         refreshBadge.run();
 
-        // ---- slide the panel out / in ------------------------------------
-        // min, pref and max are animated together: the panel is deliberately rigid
-        // (min == pref == max), and driving only maxWidth would put max below min and
-        // leave HBox to resolve a contradictory clamp.
-        javafx.animation.Timeline widthRamp = new javafx.animation.Timeline();
-        for (int step = 1; step <= 10; step++) {
-            final double frac = step / 10.0;
-            widthRamp.getKeyFrames().add(new javafx.animation.KeyFrame(
-                    Duration.millis(PANEL_ANIMATION.toMillis() * step / 10),
-                    e -> setPanelWidth(active, PANEL_WIDTH * (1 - frac))));
-        }
-        Runnable applyCollapsed = () -> {
-            if (app.trackingPanelCollapsed) {
-                panelToggle.setText(panelToggleLabel(true));
-                panelToggle.setAccessibleText("Show active deliveries");
-                active.setVisible(true);
-                active.setMouseTransparent(true);
-                javafx.animation.TranslateTransition out = new javafx.animation.TranslateTransition(
-                        PANEL_ANIMATION, active);
-                out.setInterpolator(Interpolator.EASE_BOTH);
-                out.setToX(PANEL_WIDTH);
-                out.setOnFinished(e -> { if (app.trackingPanelCollapsed) active.setVisible(false); });
-                out.play();
-                widthRamp.playFromStart();
-            } else {
-                panelToggle.setText(panelToggleLabel(false));
-                panelToggle.setAccessibleText("Hide active deliveries");
-                active.setVisible(true);
-                active.setTranslateX(PANEL_WIDTH);
-                javafx.animation.TranslateTransition in = new javafx.animation.TranslateTransition(
-                        PANEL_ANIMATION, active);
-                in.setInterpolator(Interpolator.EASE_BOTH);
-                in.setToX(0);
-                in.play();
-                setPanelWidth(active, PANEL_WIDTH);
-                widthRamp.stop();
-            }
-            if (app.trackingMaps != null) app.trackingMaps.requestRedraw();
+        // ---- slide the drawer out / in -----------------------------------
+        // Layout: overlay below the breakpoint (drawer floats, scrim shown), push above
+        // it. Push is expressed by narrowing the map, not by reflowing a sibling, so the
+        // drawer never has to be re-parented between modes.
+        final boolean[] overlayMode = {true};
+        final javafx.animation.Transition[] running = {null};
+        final javafx.animation.PauseTransition[] settle = {null};
+
+        // The map adopts its new width exactly once, a beat after the slide ends, so the
+        // canvas-width binding never fires mid-animation and no tiles are re-fetched
+        // while the drawer is moving.
+        Runnable applyMapWidth = () -> {
+            double reserved = overlayMode[0] || app.trackingPanelCollapsed ? 0 : PANEL_WIDTH;
+            map.setMaxWidth(Math.max(240, content.getWidth() - reserved));
         };
-        panelToggle.setOnAction(event -> {
+        Runnable settleResize = () -> {
+            if (settle[0] != null) settle[0].stop();
+            settle[0] = new javafx.animation.PauseTransition(motion(CLOSE_MS));
+            settle[0].setOnFinished(e -> applyMapWidth.run());
+            settle[0].play();
+        };
+
+        // Interruptible: stop whatever is in flight and reverse from wherever the drawer
+        // currently is, so a fast double-toggle never jumps or runs two transitions at
+        // once on the same node.
+        Runnable applyCollapsed = () -> {
+            boolean closing = app.trackingPanelCollapsed;
+            refreshToggle.run();
+            if (running[0] != null) { running[0].stop(); running[0] = null; }
+            if (settle[0] != null) { settle[0].stop(); settle[0] = null; }
+
+            // Cache the drawer for the duration only: a cached subtree repaints from a
+            // snapshot, so the slide costs no re-layout. Cleared afterwards so the text
+            // stays sharp when the drawer is at rest.
+            active.setCache(true);
+            active.setCacheHint(javafx.scene.CacheHint.SPEED);
+
+            double from = active.getTranslateX();
+            double to = closing ? PANEL_WIDTH : 0;
+            Duration duration = motion(closing ? CLOSE_MS : OPEN_MS);
+            boolean showScrim = !closing && overlayMode[0];
+
+            active.setVisible(true);
+            javafx.animation.TranslateTransition slide =
+                    new javafx.animation.TranslateTransition(duration, active);
+            slide.setInterpolator(Interpolator.EASE_BOTH);
+            slide.setFromX(from);
+            slide.setToX(to);
+
+            scrim.setVisible(showScrim || scrim.getOpacity() > 0);
+            scrim.setMouseTransparent(!showScrim);
+            javafx.animation.FadeTransition fade = new javafx.animation.FadeTransition(duration, scrim);
+            fade.setInterpolator(Interpolator.EASE_BOTH);
+            fade.setFromValue(scrim.getOpacity());
+            fade.setToValue(showScrim ? 0.34 : 0);
+
+            javafx.animation.ParallelTransition group = new javafx.animation.ParallelTransition(slide, fade);
+            group.setOnFinished(e -> {
+                active.setCache(false);
+                active.setMouseTransparent(closing);
+                if (closing) { active.setVisible(false); scrim.setOpacity(0); scrim.setVisible(false); }
+                if (app.trackingPanelCollapsed == closing) settleResize.run();
+            });
+            running[0] = group;
+            group.play();
+        };
+
+        panelToggle.setOnMouseClicked(event -> {
             app.trackingPanelCollapsed = !app.trackingPanelCollapsed;
+            saveDrawerOpen(!app.trackingPanelCollapsed);
             applyCollapsed.run();
         });
-        applyCollapsed.run();
+        panelToggle.setOnKeyPressed(event -> {
+            if (event.getCode() == javafx.scene.input.KeyCode.ENTER
+                    || event.getCode() == javafx.scene.input.KeyCode.SPACE) {
+                app.trackingPanelCollapsed = !app.trackingPanelCollapsed;
+                saveDrawerOpen(!app.trackingPanelCollapsed);
+                applyCollapsed.run();
+                event.consume();
+            }
+        });
+        closeDrawer.setOnAction(event -> {
+            app.trackingPanelCollapsed = true;
+            saveDrawerOpen(false);
+            applyCollapsed.run();
+        });
+        scrim.setOnMousePressed(event -> {
+            app.trackingPanelCollapsed = true;
+            saveDrawerOpen(false);
+            applyCollapsed.run();
+        });
+        // Esc closes the drawer, but only while it owns focus, so it never steals the
+        // key from a dialog or the filter field.
+        active.addEventFilter(javafx.scene.input.KeyEvent.KEY_PRESSED, event -> {
+            if (event.getCode() == javafx.scene.input.KeyCode.ESCAPE && !app.trackingPanelCollapsed) {
+                app.trackingPanelCollapsed = true;
+                saveDrawerOpen(false);
+                applyCollapsed.run();
+                event.consume();
+            }
+        });
+
+        // Restore the stored state without playing the animation: place the drawer at
+        // its resting position directly, so opening the page never animates.
+        app.trackingPanelCollapsed = !loadDrawerOpen();
+        refreshToggle.run();
         if (app.trackingPanelCollapsed) {
+            active.setTranslateX(PANEL_WIDTH);
             active.setVisible(false);
-            setPanelWidth(active, 0);
+            active.setMouseTransparent(true);
         }
+        scrim.setOpacity(0);
+        scrim.setVisible(false);
+        scrim.setMouseTransparent(true);
+        overlayMode[0] = drawerOverlay(900);
+        applyMapWidth.run();
 
         Runnable refreshFilter = () -> table.setItems(FXCollections.observableArrayList(
                 activeShipments.stream()
@@ -354,28 +491,36 @@ final class TrackingView {
         statusChip.setManaged(false);
 
         map.setMinWidth(280);
-        map.getChildren().addAll(app.trackingCanvas, app.trackingMaps.zoomBar, mapTools,
+        map.getChildren().addAll(app.trackingCanvas, app.trackingMaps.zoomBar, search,
                 app.focusChipBox, app.legendBox(), app.trackingLegend);
-        // Map canvas follows the panel width so collapsing really does give the space back.
+        HBox.setHgrow(search, ALWAYS);
+        // Map canvas follows the panel width so the drawer really does give the space back.
         app.trackingCanvas.widthProperty().bind(map.widthProperty().subtract(PANEL_PADDING_H));
         map.widthProperty().addListener((o, a, b) -> { if (app.trackingMaps != null) app.trackingMaps.requestRedraw(); });
         map.heightProperty().addListener((o, a, b) -> { if (app.trackingMaps != null) app.trackingMaps.requestRedraw(); });
 
-        // Fixed width on all three properties is what makes the panel immovable:
-        // min == pref == max, so no layout can squeeze or stretch it. The collapse
-        // animation moves all three together rather than just maxWidth.
-        setPanelWidth(active, PANEL_WIDTH);
-        HBox row = new HBox(12, map, active);
-        HBox.setHgrow(map, ALWAYS);
+        fixWidth(active, PANEL_WIDTH);
 
-        // The toggle is anchored to the container, not to the panel, so collapsing the
-        // panel cannot move it. Offsets place it opposite the header title: one panel
-        // padding in from the right edge, and nudged down to sit on the header row.
-        StackPane content = new StackPane(row);
-        content.getChildren().add(panelToggle);
+        StackPane.setAlignment(mapOverlay, Pos.TOP_LEFT);
+        mapOverlay.setPadding(new Insets(PANEL_INSET - 2, 0, 0, PANEL_INSET));
+        StackPane.setAlignment(scrim, Pos.TOP_LEFT);
         StackPane.setAlignment(panelToggle, Pos.TOP_RIGHT);
         panelToggle.setTranslateX(-PANEL_INSET);
-        panelToggle.setTranslateY(PANEL_INSET - 4);
+        panelToggle.setTranslateY(PANEL_INSET);
+        StackPane.setAlignment(active, Pos.TOP_RIGHT);
+
+        // The breakpoint is measured on this container, and re-evaluated as the window
+        // resizes. Only the map width changes — never the drawer's.
+        content.widthProperty().addListener((o, a, b) -> {
+            boolean now = drawerOverlay(b.doubleValue());
+            if (now != overlayMode[0]) {
+                overlayMode[0] = now;
+                applyMapWidth.run();
+                if (!app.trackingPanelCollapsed) { scrim.setVisible(now); scrim.setMouseTransparent(!now); }
+            } else {
+                applyMapWidth.run();
+            }
+        });
         VBox.setVgrow(content, ALWAYS);
         page.getChildren().add(content);
         if (app.focusedVehicleId != null) {
