@@ -1042,11 +1042,26 @@ final class MapRenderer {
         drawVehicleMarker(g, width, height, x, y, label, "#1457c5", false, FULL_MAP);
     }
 
+/** One vehicle marker. State is encoded twice over, not by hue alone: a
+     *  stale/lost vehicle is a hollow ring crossed through, a live one a solid dot
+     *  (WCAG 1.4.1 — colour must not be the only channel). */
+    static void drawMarkerDot(GraphicsContext g, double px, double py, String color, boolean stale) {
+        if (stale) {
+            g.setFill(Color.WHITE); g.fillOval(px - 9, py - 9, 18, 18);
+            g.setStroke(Color.web(color)); g.setLineWidth(3);
+            g.strokeOval(px - 9, py - 9, 18, 18);
+            g.strokeLine(px - 4.5, py - 4.5, px + 4.5, py + 4.5);
+       g.strokeLine(px + 4.5, py - 4.5, px - 4.5, py + 4.5);
+        } else {
+            g.setFill(Color.web(color)); g.fillOval(px - 9, py - 9, 18, 18);
+       g.setStroke(Color.WHITE); g.setLineWidth(2); g.strokeOval(px - 9, py - 9, 18, 18);
+        }
+    }
+
     static void drawVehicleMarker(GraphicsContext g, double width, double height, double x, double y, String label, String color, boolean stale, ViewBounds view) {
-        double[] p = project(x, y, width, height, view); double px = p[0], py = p[1];
-        g.setFill(Color.web(color)); g.fillOval(px - 9, py - 9, 18, 18);
-        g.setStroke(Color.WHITE); g.setLineWidth(2); g.strokeOval(px - 9, py - 9, 18, 18);
-        mapLabel(g, label + (stale ? " · STALE" : ""), px + 12, py + 4);
+   double[] p = project(x, y, width, height, view); double px = p[0], py = p[1];
+        drawMarkerDot(g, px, py, color, stale);
+  mapLabel(g, label + (stale ? " · STALE" : ""), px + 12, py + 4);
     }
 
     static void drawDashboardRoads(Canvas canvas) {
@@ -1065,10 +1080,9 @@ final class MapRenderer {
         ViewBounds view = fitBounds(points, drawableAspect(w, h));
         GraphicsContext g = prepareMap(canvas, view);
         if (plots != null) for (VehiclePlot plot : plots) {
-            double[] p = project(plot.lon(), plot.lat(), w, h, view);
-            g.setFill(Color.web(plot.color())); g.fillOval(p[0] - 9, p[1] - 9, 18, 18);
-            g.setStroke(Color.WHITE); g.setLineWidth(2); g.strokeOval(p[0] - 9, p[1] - 9, 18, 18);
-            mapLabel(g, plot.label() + (plot.stale() ? " · STALE" : ""), p[0] + 12, p[1] + 4);
+      double[] p = project(plot.lon(), plot.lat(), w, h, view);
+            drawMarkerDot(g, p[0], p[1], plot.color(), plot.stale());
+          mapLabel(g, plot.label() + (plot.stale() ? " · STALE" : ""), p[0] + 12, p[1] + 4);
         }
         return view;
     }

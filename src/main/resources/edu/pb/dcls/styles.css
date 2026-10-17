@@ -171,6 +171,23 @@
 }
 .detail-value { -fx-font-size: 12px; -fx-text-fill: -ink-soft; }
 
+
+
+/* ---- focus visibility ------------------------------------------ */
+/* Modena's default focus ring is a faint dotted line that vanishes against the
+   white cards. Every keyboard-reachable control gets an unmistakable accent ring
+   instead. Text fields already have one of their own (see .text-field:focused). */
+.button:focused, .check-box:focused, .toggle-button:focused,
+.menu-button:focused, .list-view:focused, .table-view:focused {
+    -fx-border-color: -accent;
+    -fx-border-width: 2;
+    -fx-border-radius: 9;
+}
+.check-box:focused { -fx-background-color: -accent-soft; -fx-border-radius: 9; }
+/* The canvas has no border of its own; the map panel shows the ring instead. */
+.map-focused { -fx-border-color: -accent; -fx-border-width: 2; }
+/* Disabled controls stay legible rather than fading below contrast. */
+.button:disabled, .secondary-button:disabled, .text-field:disabled { -fx-opacity: 0.55; }
 /* ---- inputs --------------------------------------------------- */
 .text-field, .password-field, .choice-box, .combo-box, .date-picker {
     -fx-background-color: #fbfcfe;

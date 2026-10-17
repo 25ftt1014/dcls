@@ -751,10 +751,12 @@ public final class DclsApp extends Application {
             if (latest != null) {
                 boolean stale = tracking.gps().isStale(vehicleId);
                 drawVehicleMarker(g, w, h, latest.x(), latest.y(), vehiclePlate(vehicleId), stale ? "#8a94a6" : color, stale, view);
-            } else if (route != null && !route.stops().isEmpty()) {
-                Stop depot = route.stops().get(0);
-                drawVehicleMarker(g, w, h, depot.x(), depot.y(), vehiclePlate(vehicleId), color, false, view);
-            }
+} else if (route != null && !route.stops().isEmpty()) {
+     // No fix at all: fall back to the depot, but draw it in the stale shape so
+       // "last known position" never masquerades as a live one.
+       Stop depot = route.stops().get(0);
+          drawVehicleMarker(g, w, h, depot.x(), depot.y(), vehiclePlate(vehicleId), "#8a94a6", true, view);
+        }
             g.setGlobalAlpha(1.0);
         }
         // Focused order with no usable fix yet: pin its preset destination.
@@ -775,45 +777,73 @@ public final class DclsApp extends Application {
                 legendSwatch("#17613f", "Depot / route start"),
                 legendSwatch("#176df6", "District stop · blue route"),
                 legendSwatch("#7c3aed", "Custom map pin (click-added)"),
-                legendSwatch("#8a94a6", "STALE — no live fix >15s"));
+     legendLostSwatch("#8a94a6", "STALE — no live fix >15s (crossed out)"));
         Label title = new Label("Legend"); title.getStyleClass().add("eyebrow");
         VBox box = new VBox(4, title, legend);
         box.setPadding(new Insets(4, 0, 0, 0));
         return box;
     }
 
-    /** Legend chip: colored dot + label. */
+/** Legend chip: a shape sample plus a label. The marker row mirrors
+     *  {@link MapRenderer#drawMarkerDot} so the legend shows the real thing. */
     HBox legendSwatch(String color, String label) {
         Label dot = new Label("●"); dot.setStyle("-fx-text-fill: " + color + "; -fx-font-size: 13px;");
         Label text = new Label(label); text.getStyleClass().add("muted");
-        HBox row = new HBox(6, dot, text); row.setAlignment(Pos.CENTER_LEFT);
+        HBox row = new HBox(6, dot, text);
+        row.setAlignment(Pos.CENTER_LEFT);
         return row;
     }
 
-    /** Live per-vehicle legend chips under the fleet map. */
+    /** Legend row for a stale vehicle: the crossed-out ring, drawn as a glyph. */
+    HBox legendLostSwatch(String color, String label) {
+        Label dot = new Label("⊗"); dot.setStyle("-fx-text-fill: " + color + "; -fx-font-size: 13px;");
+        Label text = new Label(label); text.getStyleClass().add("muted");
+        HBox row = new HBox(6, dot, text);
+        row.setAlignment(Pos.CENTER_LEFT);
+        return row;
+    }
+
+/** Live per-vehicle legend chips under the fleet map. */
     void updateTrackingLegend(Map<String, List<Shipment>> byVehicle) {
-        if (trackingLegend == null) return;
-        trackingLegend.getChildren().clear();
+  if (trackingLegend == null) return;
+     trackingLegend.getChildren().clear();
         if (byVehicle.isEmpty()) {
-            Label none = new Label("No vehicles on the road.");
-            none.getStyleClass().add("muted");
+      Label none = new Label("No vehicles on the road.");
+        none.getStyleClass().add("muted");
             trackingLegend.getChildren().add(none);
+    narrateMap(0, 0);
             return;
-        }
+    }
         Label title = new Label(focusedVehicleId != null ? "Showing" : "On the road"); title.getStyleClass().add("eyebrow");
         trackingLegend.getChildren().add(title);
+        int shown = 0, lost = 0;
         for (Map.Entry<String, List<Shipment>> entry : byVehicle.entrySet()) {
-            String vehicleId = entry.getKey();
+     String vehicleId = entry.getKey();
             if (focusedVehicleId != null && !focusedVehicleId.equals(vehicleId)) continue;
-            boolean stale = tracking.gps().isStale(vehicleId);
+          boolean stale = tracking.gps().isStale(vehicleId);
+            shown++;
+            if (stale) lost++;
             TrackingPoint latest = tracking.latestPlausibleForVehicle(vehicleId);
             String extra = "";
             if (latest != null) {
                 long age = Math.max(0, java.time.Duration.between(latest.recordedAt(), LocalDateTime.now()).getSeconds());
                 extra = " · " + tracking.gpsStatus(vehicleId) + " · " + age + "s ago";
             }
-            trackingLegend.getChildren().add(legendSwatch(stale ? "#8a94a6" : vehicleColor(vehicleId),
-                    vehiclePlate(vehicleId) + " · " + entry.getValue().size() + " order(s)" + extra));
+            String detail = vehiclePlate(vehicleId) + " · " + entry.getValue().size() + " order(s)";
+            trackingLegend.getChildren().add(stale
+  ? legendLostSwatch("#8a94a6", detail + " · no live fix" + extra)
+                    : legendSwatch(vehicleColor(vehicleId), detail + extra));
+        }
+// The canvas is opaque to a screen reader, so it narrates itself here — this is
+        // the one place that already knows every vehicle's fix state. Called on both
+        // paths, so the count cannot go stale when the fleet empties.
+        narrateMap(shown, lost);
+    }
+
+    /** Speak the fleet state on the tracking canvas. */
+    private void narrateMap(int shown, int lost) {
+        if (trackingCanvas != null) {
+            trackingCanvas.setAccessibleText(TrackingView.mapAccessibleSummary(shown, lost));
         }
     }
 
@@ -875,6 +905,17 @@ Supplier<List<double[]>> content = List::of;
             // schedules its own first paint instead, so pages can't forget to.
             Platform.runLater(this::requestRedraw);
             Button in = button("+", "secondary-button"), out = button("−", "secondary-button"), reset = button("Reset view", "secondary-button");
+            // "+" and "−" are glyphs: without this a screen reader announces a bare symbol.
+        in.setAccessibleText("Zoom in");
+      in.setTooltip(new javafx.scene.control.Tooltip("Zoom in (+)"));
+   out.setAccessibleText("Zoom out");
+    out.setTooltip(new javafx.scene.control.Tooltip("Zoom out (−)"));
+     reset.setTooltip(new javafx.scene.control.Tooltip("Reset view (R)"));
+            canvas.setFocusTraversable(true);
+        // IMAGE_VIEW, not IMAGE: AccessibleRole has no IMAGE constant. Canvas is not a
+        // Control, so it cannot carry a tooltip — the ? overlay documents the keys.
+        canvas.setAccessibleRole(javafx.scene.AccessibleRole.IMAGE_VIEW);
+        canvas.setAccessibleText("Fleet map");
             in.setOnAction(event -> zoomAt(1.4, canvas.getWidth() / 2, canvas.getHeight() / 2));
             out.setOnAction(event -> zoomAt(1 / 1.4, canvas.getWidth() / 2, canvas.getHeight() / 2));
             reset.setOnAction(event -> { manual = null; redraw(); });
@@ -892,6 +933,34 @@ Supplier<List<double[]>> content = List::of;
         }
 
         ViewBounds currentView() { return manual != null ? manual : lastAuto; }
+
+   /** Pixels a single arrow-key press moves the map. */
+        private static final int KEY_PAN_PX = 60;
+
+        /**
+         * Keyboard equivalent of scroll-to-zoom and drag-to-pan, so the map is not
+         * mouse-only. Attached as a filter on the whole panel: that way it also fires
+         * when focus sits on the zoom bar, but it stands down for text fields, where
+         * arrows and +/- are the user's own.
+         */
+        void bindMapKeys(javafx.scene.Node host) {
+     host.addEventFilter(javafx.scene.input.KeyEvent.KEY_PRESSED, event -> {
+          if (event.isConsumed()) return;
+   if (event.getTarget() instanceof javafx.scene.control.TextInputControl) return;
+        double cx = canvas.getWidth() / 2, cy = canvas.getHeight() / 2;
+   switch (event.getCode()) {
+      case LEFT -> panBy(-KEY_PAN_PX, 0);
+     case RIGHT -> panBy(KEY_PAN_PX, 0);
+     case UP -> panBy(0, -KEY_PAN_PX);
+            case DOWN -> panBy(0, KEY_PAN_PX);
+  case ADD, EQUALS -> zoomAt(1.4, cx, cy);
+      case SUBTRACT, MINUS -> zoomAt(1 / 1.4, cx, cy);
+   case R, DIGIT0, NUMPAD0 -> { manual = null; redraw(); }
+       default -> { return; }
+      }
+    event.consume();
+       });
+        }
 
         void redraw() {
             double w = canvas.getWidth(), h = canvas.getHeight();

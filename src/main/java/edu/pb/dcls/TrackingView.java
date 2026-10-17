@@ -119,6 +119,21 @@ final class TrackingView {
         return collapsed ? "Show active deliveries" : "Hide active deliveries";
     }
 
+    /**
+     * Screen-reader text for the map canvas, which is otherwise a blank rectangle to a
+     * non-visual user: "Fleet map. 3 vehicles shown. 3 with no live fix."
+     */
+    static String mapAccessibleSummary(int shown, int lost) {
+        StringBuilder text = new StringBuilder("Fleet map. ");
+        text.append(shown == 1 ? "1 vehicle shown." : shown + " vehicles shown.");
+    if (lost > 0) {
+      text.append(' ').append(lost == 1 ? "1 has" : lost + " have")
+     .append(" no live fix.");
+        }
+        text.append(" Use arrow keys to pan, plus and minus to zoom, R to reset.");
+        return text.toString();
+    }
+
     /** Restored drawer state, default shown. Read lazily — never from a constructor —
      *  so building a DclsApp stays free of Preferences side effects. */
     static boolean loadDrawerOpen() {
@@ -160,7 +175,25 @@ final class TrackingView {
         app.trackingCanvas = app.trackingMaps.canvas;
         VBox map = panel(new Label("Fleet map  ·  Brunei Darussalam — scroll to zoom, drag to pan")); ((Label) map.getChildren().get(0)).getStyleClass().add("section-title");
         app.trackingLegend = new VBox(3);
-        app.focusChipBox = new VBox(2);
+   app.focusChipBox = new VBox(2);
+        // A bare Canvas cannot paint a focus ring of its own, so the panel borrows one
+        // — but only for genuine keyboard use. The canvas is the page's first
+        // focus-traversable node, so JavaFX hands it focus on its own whenever the
+        // page is shown or the window regains focus with no owner; drawing the ring
+        // then would flash a blue outline on every visit to this tab.
+        final boolean[] keyboardMode = {false};
+        Runnable focusRing = () -> {
+          boolean on = app.trackingCanvas.isFocused() && keyboardMode[0];
+     if (on) map.getStyleClass().add("map-focused");
+            else map.getStyleClass().remove("map-focused");
+        };
+        app.trackingCanvas.focusedProperty().addListener((o, was, is) -> focusRing.run());
+        // A keypress reaching the canvas is by definition a Tab away from keyboard use.
+        app.trackingCanvas.addEventFilter(javafx.scene.input.KeyEvent.KEY_PRESSED,
+        event -> { keyboardMode[0] = true; focusRing.run(); });
+app.trackingCanvas.addEventFilter(javafx.scene.input.MouseEvent.MOUSE_PRESSED,
+       event -> { keyboardMode[0] = false; focusRing.run(); });
+        app.trackingMaps.bindMapKeys(map);
         // Search + follow row (OSM Standard is the only basemap).
         javafx.scene.control.TextField search = new javafx.scene.control.TextField();
         search.setPromptText("Search place in Brunei…");
