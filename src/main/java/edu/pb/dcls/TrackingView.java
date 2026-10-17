@@ -20,10 +20,11 @@ import javafx.scene.layout.StackPane;
 import javafx.scene.layout.VBox;
 import javafx.util.Duration;
 import javafx.stage.FileChooser;
+import javafx.stage.Popup;
 
 import java.io.File;
 import java.nio.file.Files;
-import java.time.LocalDateTime;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import java.util.function.Function;
@@ -31,6 +32,7 @@ import java.util.function.Function;
 import static edu.pb.dcls.Domain.OrderStatus;
 import static edu.pb.dcls.Domain.Shipment;
 import static edu.pb.dcls.UiFactory.PANEL_PADDING_H;
+import static edu.pb.dcls.UiFactory.button;
 import static edu.pb.dcls.UiFactory.chipCol;
 import static edu.pb.dcls.UiFactory.pageHeader;
 import static edu.pb.dcls.UiFactory.panel;
@@ -110,7 +112,28 @@ final class TrackingView {
     }
 
     private static boolean contains(String haystack, String needle) {
-        return haystack != null && haystack.toLowerCase(Locale.ROOT).contains(needle);
+    return haystack != null && haystack.toLowerCase(Locale.ROOT).contains(needle);
+    }
+
+    /**
+     * Active deliveries with a lost signal first. "NO FIX" is the row an operator has
+     * to act on, so burying it under healthy rows hides the only thing worth doing.
+     * Order within each group is the caller's, which keeps this stable and testable.
+     */
+    static List<Shipment> lostFixFirst(List<Shipment> rows, Function<String, String> gpsStatus) {
+        if (rows == null || rows.isEmpty()) return List.of();
+        if (gpsStatus == null) return List.copyOf(rows);
+        return rows.stream()
+                .sorted(Comparator.comparingInt(row -> noFixRank(row, gpsStatus)))
+    .toList();
+    }
+
+    /** 0 when the row's vehicle has lost its fix, 1 otherwise. Unassigned rows rank 1. */
+    private static int noFixRank(Shipment row, Function<String, String> gpsStatus) {
+        String vehicleId = row.vehicleId();
+        if (vehicleId == null) return 1;
+        String status = gpsStatus.apply(vehicleId);
+        return status != null && (status.contains("NO FIX") || status.contains("LOST")) ? 0 : 1;
     }
 
     /** Accessible name for the toggle. The button is an icon, so this is the only label it
@@ -146,6 +169,40 @@ final class TrackingView {
     }
 
     private static final String PREF_OPEN = "trackingDrawerOpen";
+
+    /** Keyboard shortcuts, as shown in the ? popover and asserted by a test so the
+     *  documented list cannot silently drift from the ones actually bound. */
+    static List<String> shortcutHelpLines() {
+        return List.of(
+   "Arrow keys — pan the map",
+      "+ / − — zoom in and out",
+        "R — reset the map view",
+            "D — show or hide active deliveries",
+    "F — jump to the delivery filter",
+        "Esc — close the active deliveries drawer",
+        "Enter / Space — activate the focused control");
+    }
+
+    /** The ? button that opens the shortcut list. */
+    private Button shortcutHelpButton() {
+        Button help = button("?", "secondary-button");
+        help.setAccessibleText("Keyboard shortcuts");
+        help.setFocusTraversable(true);
+        VBox content = new VBox(6);
+        Label title = new Label("Keyboard shortcuts");
+        title.getStyleClass().add("section-title");
+        content.getChildren().add(title);
+        shortcutHelpLines().forEach(line -> content.getChildren().add(new Label(line)));
+        content.setPadding(new Insets(12));
+        content.getStyleClass().add("legend-popover");
+        Popup popover = new Popup();
+        popover.getContent().add(content);
+        help.setOnAction(event -> {
+  if (popover.isShowing()) popover.hide();
+     else popover.show(help, 0, help.getHeight());
+   });
+        return help;
+    }
 
     private static java.util.prefs.Preferences prefs() {
         return java.util.prefs.Preferences.userNodeForPackage(TrackingView.class);
@@ -495,6 +552,22 @@ app.trackingCanvas.addEventFilter(javafx.scene.input.MouseEvent.MOUSE_PRESSED,
             }
         });
 
+        // Page-level shortcuts. D toggles the drawer, F jumps to the filter. Both stand
+        // down while a text field has focus, so typing "d" is never a shortcut.
+        page.addEventFilter(javafx.scene.input.KeyEvent.KEY_PRESSED, event -> {
+            if (event.isConsumed()) return;
+        if (event.getTarget() instanceof javafx.scene.control.TextInputControl) return;
+            if (event.getCode() == javafx.scene.input.KeyCode.D) {
+    app.trackingPanelCollapsed = !app.trackingPanelCollapsed;
+     saveDrawerOpen(!app.trackingPanelCollapsed);
+      applyCollapsed.run();
+      event.consume();
+            } else if (event.getCode() == javafx.scene.input.KeyCode.F) {
+      filter.requestFocus();
+   event.consume();
+        }
+        });
+
         // Restore the stored state without playing the animation: place the drawer at
         // its resting position directly, so opening the page never animates.
         app.trackingPanelCollapsed = !loadDrawerOpen();
@@ -511,9 +584,9 @@ app.trackingCanvas.addEventFilter(javafx.scene.input.MouseEvent.MOUSE_PRESSED,
         applyMapWidth.run();
 
         Runnable refreshFilter = () -> table.setItems(FXCollections.observableArrayList(
-                activeShipments.stream()
-                        .filter(s -> matchesFilter(s, filter.getText(), app.vehiclePlate(s.vehicleId())))
-                        .toList()));
+      lostFixFirst(activeShipments.stream()
+   .filter(s -> matchesFilter(s, filter.getText(), app.vehiclePlate(s.vehicleId())))
+    .toList(), id -> app.tracking.gpsStatus(id))));
         filter.textProperty().addListener((o, a, b) -> {
             refreshFilter.run();
             refreshBadge.run();
@@ -541,8 +614,26 @@ app.trackingCanvas.addEventFilter(javafx.scene.input.MouseEvent.MOUSE_PRESSED,
         statusChip.setManaged(false);
 
         map.setMinWidth(280);
-        map.getChildren().addAll(app.trackingCanvas, app.trackingMaps.zoomBar, search,
-                app.focusChipBox, app.legendBox(), app.trackingLegend);
+  map.getChildren().addAll(app.trackingCanvas, app.trackingMaps.zoomBar, search,
+                app.focusChipBox);
+
+        // The four-row legend and the per-vehicle chips together cost ~130px of map
+        // height, and the chips duplicate the drawer table. Both move into a popover;
+        // the chips keep updating because updateTrackingLegend writes straight into
+        // trackingLegend, which the popup holds.
+        Button legendButton = button("Legend", "secondary-button");
+        legendButton.setAccessibleText("Show map legend and vehicles");
+        legendButton.setFocusTraversable(true);
+        VBox legendContent = new VBox(10, app.legendBox(), app.trackingLegend);
+        legendContent.setPadding(new Insets(12));
+        legendContent.getStyleClass().add("legend-popover");
+        Popup legendPopover = new Popup();
+        legendPopover.getContent().add(legendContent);
+        legendButton.setOnAction(event -> {
+            if (legendPopover.isShowing()) legendPopover.hide();
+            else legendPopover.show(legendButton, 0, legendButton.getHeight());
+        });
+        mapOverlay.getChildren().addAll(legendButton, shortcutHelpButton());
         HBox.setHgrow(search, ALWAYS);
         // Map canvas follows the panel width so the drawer really does give the space back.
         app.trackingCanvas.widthProperty().bind(map.widthProperty().subtract(PANEL_PADDING_H));

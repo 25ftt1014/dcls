@@ -187,9 +187,80 @@ class TrackingPanelTest {
         }
 
         @Test
-        void isCaseInsensitiveAndTrims() {
-            assertTrue(TrackingView.matchesFilter(row, "  KIULAP  ", "BKL 1934"));
-            assertFalse(TrackingView.matchesFilter(row, "nonexistent", "BKL 1934"));
+   void isCaseInsensitiveAndTrims() {
+  assertTrue(TrackingView.matchesFilter(row, "  KIULAP  ", "BKL 1934"));
+          assertFalse(TrackingView.matchesFilter(row, "nonexistent", "BKL 1934"));
+        }
+    }
+
+    @Nested
+    @DisplayName("lost-signal ordering")
+    class Ordering {
+        private final Shipment lost = shipment("S-2", "Kiulap", OrderStatus.IN_TRANSIT, "v-lost");
+        private final Shipment healthy = shipment("S-1", "Jerudong", OrderStatus.ASSIGNED, "v-ok");
+        private final Shipment unassigned = shipment("S-3", "Bukit", OrderStatus.ASSIGNED, null);
+
+        private java.util.function.Function<String, String> status(String... lostIds) {
+            java.util.Set<String> lostSet = java.util.Set.of(lostIds);
+            return id -> lostSet.contains(id) ? "NO FIX 40s" : "LIVE 2s";
+        }
+
+        @Test
+        void putsLostFixesFirst() {
+            List<Shipment> sorted = TrackingView.lostFixFirst(
+                    List.of(healthy, lost, unassigned), status("v-lost"));
+            assertEquals(List.of(lost, healthy, unassigned), sorted);
+        }
+
+        @Test
+        void treatsLostSignalsAsLostToo() {
+            List<Shipment> sorted = TrackingView.lostFixFirst(
+                    List.of(healthy, lost), id -> id.equals("v-lost") ? "LOST 90s" : "LIVE 2s");
+            assertEquals(lost, sorted.get(0));
+        }
+
+        @Test
+        void keepsCallerOrderWhenEveryRowIsHealthy() {
+            assertEquals(List.of(healthy, lost, unassigned),
+                    TrackingView.lostFixFirst(List.of(healthy, lost, unassigned), status()));
+        }
+
+        @Test
+        void handlesEmptyAndMissingInput() {
+            assertTrue(TrackingView.lostFixFirst(null, status()).isEmpty());
+            assertTrue(TrackingView.lostFixFirst(List.of(), status()).isEmpty());
+            assertEquals(2, TrackingView.lostFixFirst(List.of(healthy, lost), null).size());
+        }
+    }
+
+    @Nested
+    @DisplayName("map and shortcut announcements")
+    class Announcements {
+        @Test
+        void narratesTheMapForScreenReaders() {
+            assertEquals("Fleet map. 3 vehicles shown. 3 have no live fix. "
+                            + "Use arrow keys to pan, plus and minus to zoom, R to reset.",
+                    TrackingView.mapAccessibleSummary(3, 3));
+        }
+
+        @Test
+        void usesSingularsForOne() {
+            assertTrue(TrackingView.mapAccessibleSummary(1, 1).contains("1 vehicle shown."));
+            assertTrue(TrackingView.mapAccessibleSummary(1, 1).contains("1 has no live fix."));
+        }
+
+        @Test
+        void staysQuietWhenEveryFixIsGood() {
+            assertFalse(TrackingView.mapAccessibleSummary(2, 0).contains("no live fix"));
+        }
+
+        @Test
+        void documentsTheBoundShortcuts() {
+            List<String> lines = TrackingView.shortcutHelpLines();
+            assertFalse(lines.isEmpty());
+            assertTrue(lines.stream().anyMatch(line -> line.startsWith("Arrow keys")));
+            assertTrue(lines.stream().anyMatch(line -> line.startsWith("R ")));
+            assertTrue(lines.stream().anyMatch(line -> line.startsWith("Esc")));
         }
     }
 }

@@ -369,6 +369,13 @@
     -fx-padding: 5 10 5 8;
     -fx-effect: dropshadow(gaussian, rgba(20,27,45,0.10), 10, 0, 0, 3);
 }
+/* Floating legend / shortcut list. */
+.legend-popover {
+-fx-background-color: -surface;
+    -fx-background-radius: 10;
+    -fx-padding: 12;
+    -fx-effect: dropshadow(gaussian, rgba(20,27,45,0.18), 16, 0, 0, 4);
+}
 
 .drawer-close {
     -fx-background-color: transparent;
