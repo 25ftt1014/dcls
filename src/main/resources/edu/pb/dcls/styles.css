@@ -53,8 +53,14 @@
 .page-subtitle { -fx-text-fill: -ink-soft; -fx-font-size: 13px; }
 .section-title { -fx-font-size: 15px; -fx-font-weight: 700; -fx-text-fill: -ink; }
 .muted { -fx-text-fill: -ink-soft; }
-/* Label beside a toggle; the tick box alone carries no meaning. */
-.toggle-title { -fx-text-fill: -ink; -fx-font-weight: 600; -fx-font-size: 12.5px; }
+
+/* CheckBox label text. Measured: the string is intact and the control is 182px wide,
+   unclipped and correctly placed inside the panel's ScrollPane, yet no text paints
+   there while the identical controls render fine elsewhere. Setting the fill
+   explicitly at both the control and the internal label covers the case where the
+   skin's Label fails to pick up the inherited fill. */
+.check-box { -fx-text-fill: -ink; -fx-font-size: 12.5px; }
+.check-box .label { -fx-text-fill: -ink; -fx-font-size: 12.5px; }
 .eyebrow { -fx-text-fill: -ink-soft; -fx-font-size: 11px; -fx-font-weight: 700; }
 .accent { -fx-text-fill: -accent; }
 .metric-value { -fx-font-size: 27px; -fx-font-weight: 800; -fx-text-fill: -ink; }

@@ -1340,7 +1340,9 @@ Supplier<List<double[]>> content = List::of;
             this(items, null);
         }
         ListViewWithRemove(ObservableList<Stop> items, Runnable onChange) {
-            javafx.scene.control.ListView<Stop> list = new javafx.scene.control.ListView<>(items); list.setPrefHeight(172);
+            // ~3 stops tall. The old 172 left two empty row slots under a typical
+            // depot-plus-two-deliveries draft; the list still scrolls beyond this.
+            javafx.scene.control.ListView<Stop> list = new javafx.scene.control.ListView<>(items); list.setPrefHeight(112);
             list.setCellFactory(view -> new javafx.scene.control.ListCell<>() {
                 private final Label name = new Label();
                 private final Button up = miniButton("↑", "Move stop up");

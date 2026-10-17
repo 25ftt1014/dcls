@@ -64,14 +64,11 @@ final class RoutesView {
         pill.getStyleClass().add(cls);
     }
 
-    /** A tick box with its meaning spelled out: the box, a short title beside it, and
-     *  one muted line explaining what turning it off actually changes. A bare CheckBox
+    /** A tick box with its meaning spelled out: the box carrying the title, and one
+     *  muted line explaining what turning it off actually changes. A bare CheckBox
      *  cannot convey that, which is why the explanation is not a tooltip. */
-    private static VBox toggleRow(CheckBox box, String title, String hint) {
-        Label titleLabel = new Label(title);
-        titleLabel.getStyleClass().add("toggle-title");
-        titleLabel.setWrapText(true);
-        HBox row = new HBox(8, box, titleLabel);
+    private static VBox toggleRow(CheckBox box, String hint) {
+        HBox row = new HBox(8, box);
         row.setAlignment(javafx.geometry.Pos.TOP_LEFT);
         Label hintLabel = new Label(hint);
         hintLabel.getStyleClass().add("muted");
@@ -106,14 +103,11 @@ final class RoutesView {
         Button addStop = button("Add", "secondary-button"); addStop.setPrefWidth(64);
         HBox addRow = new HBox(8, place, addStop); HBox.setHgrow(place, ALWAYS);
         Button addNearby = button("Add nearby pending orders", "link-button"); addNearby.setMaxWidth(Double.MAX_VALUE);
-        // Bare checkboxes are unreadable here: the CheckBox's own label text does not paint
-    // inside this panel's ScrollPane (measured — 182px wide, unclipped, correctly
-    // placed, string intact), so a bare tick box gave no hint what it controlled. The
-    // title and explanation are real Labels, which render reliably, and the CheckBox
-    // keeps the accessible name for screen readers.
-    CheckBox clickCheck = new CheckBox(); clickCheck.setSelected(true);
+        // CheckBox carries its own title again; the .check-box rule in styles.css is what
+    // makes it paint. The explanation below it is a real Label and stays.
+    CheckBox clickCheck = new CheckBox("Place stops by clicking the map"); clickCheck.setSelected(true);
     clickCheck.setAccessibleText("Place stops by clicking the map");
-    CheckBox optimizeToggle = new CheckBox(); optimizeToggle.setSelected(true);
+    CheckBox optimizeToggle = new CheckBox("Optimize stop order"); optimizeToggle.setSelected(true);
     optimizeToggle.setAccessibleText("Optimize stop order");
         ComboBox<User> driver = app.driverCombo(); driver.setPromptText("Assign driver (optional)");
         Button saveAssign = button("Save & assign", "primary-button"); saveAssign.setMaxWidth(Double.MAX_VALUE);
@@ -520,15 +514,17 @@ RoutePlan toSave = new RoutePlan(route.id(), route.name(), driver.getValue().id(
         HBox.setHgrow(draftHeader.getChildren().get(1), ALWAYS);
         controls.getChildren().addAll(
                 stepSection(1, "Add stops"),
-                addRow, addNearby, toggleRow(clickCheck, "Place stops by clicking the map",
+                addRow, addNearby, toggleRow(clickCheck,
                         "Click the preview map to drop a delivery pin. Turn this off to pan and zoom without adding pins."), geocodeBox,
                 draftHeader, draft,
                 stepSection(2, "Route"),
-                toggleRow(optimizeToggle, "Optimize stop order",
+                toggleRow(optimizeToggle,
                         "Reorders the stops into the shortest road tour. Turn this off to visit them in the order you added them."),
                 legRows, etaBreakdown,
                 stepSection(3, "Assign & save"),
-                new Label("Route name"), name, driver, saveAssign);
+                // No separate "Route name" label: the field carries it as its prompt,
+                // so the extra node only added a blank band under the step header.
+                name, driver, saveAssign);
         ScrollPane controlScroll = new ScrollPane(controls);
         controlScroll.setFitToWidth(true);
         controlScroll.setHbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
