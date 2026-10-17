@@ -887,6 +887,8 @@ Supplier<List<double[]>> content = List::of;
             // Pre-layout frames (zero/negative size) paint nothing and must not
             // store a degenerate view: the post-layout listener repaints for real.
             if (!(w > 28 && h > 28)) return;
+            boolean probing = PerfProbe.enabled();
+            long viewStart = probing ? System.nanoTime() : 0;
             double aspect = drawableAspect(w, h);
             ViewBounds view;
             if (manual != null) {
@@ -902,8 +904,17 @@ Supplier<List<double[]>> content = List::of;
                 lastAuto = auto;
                 view = auto;
             }
+            long viewNanos = probing ? System.nanoTime() - viewStart : 0;
+            long tileStart = probing ? System.nanoTime() : 0;
             GraphicsContext g = prepareMap(canvas, view);
+            long tileNanos = probing ? System.nanoTime() - tileStart : 0;
+            long overlayStart = probing ? System.nanoTime() : 0;
             painter.accept(g, view);
+            if (probing) {
+                // "tiles" carries the whole base pass: viewport choice plus the tile loop,
+                // because both are paid before a single image is drawn.
+                PerfProbe.record(viewNanos + tileNanos, System.nanoTime() - overlayStart);
+            }
             paintedOnce = true;
         }
 
