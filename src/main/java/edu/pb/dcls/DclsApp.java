@@ -758,17 +758,6 @@ public final class DclsApp extends Application {
     static double[] ll(double lon, double lat) { return new double[] {lon, lat}; }
 
     /** Per-stop cumulative arrival times for the currently previewed route. */
-    void showEtaBreakdown(VBox box, RoutePlan plan) {
-        box.getChildren().clear();
-        List<Double> cum = routeService.cumulativeMinutes(plan.stops());
-        for (int i = 0; i < plan.stops().size(); i++) {
-            Label line = new Label((i + 1) + ". " + plan.stops().get(i).name() + " — about " + Math.round(cum.get(i)) + " min from start");
-            line.getStyleClass().add("muted");
-            line.setWrapText(true);
-            box.getChildren().add(line);
-        }
-    }
-
     /** Static symbol legend shared by the map panels. */
     VBox legendBox() {
         VBox legend = new VBox(3,

@@ -64,18 +64,79 @@ final class RoutesView {
         pill.getStyleClass().add(cls);
     }
 
-    /** A tick box with its meaning spelled out: the box carrying the title, and one
-     *  muted line explaining what turning it off actually changes. A bare CheckBox
-     *  cannot convey that, which is why the explanation is not a tooltip. */
-    private static VBox toggleRow(CheckBox box, String hint) {
+    /** A tick box with a one-line summary under it and the full explanation on hover. */
+    private static VBox toggleRow(CheckBox box, String hint, String tooltip) {
         HBox row = new HBox(8, box);
         row.setAlignment(javafx.geometry.Pos.TOP_LEFT);
         Label hintLabel = new Label(hint);
         hintLabel.getStyleClass().add("muted");
         hintLabel.setWrapText(true);
+        if (tooltip != null && !tooltip.isBlank()) box.setTooltip(new Tooltip(tooltip));
         VBox outer = new VBox(3, row, hintLabel);
         outer.setPadding(new javafx.geometry.Insets(0, 0, 0, 2));
         return outer;
+    }
+
+    /** Single stop-centric timeline: badge, stop name, arrival time, and the distance of
+     *  the leg arriving at that stop. Replaces the old leg list plus ETA breakdown, which
+     *  printed the same numbers twice. Totals stay in the status bar above the map.
+     *
+     *  <p>Hovering a row highlights the leg that reaches that stop, which is the same map
+     *  emphasis the leg list gave; leg index is one behind the stop index, and the depot
+     *  has no incoming leg. */
+    private void showRouteTimeline(VBox box, List<Stop> stops, List<Double> legKm,
+                                   int[] highlightLeg, DclsApp.MapController previewMap) {
+        box.getChildren().clear();
+        highlightLeg[0] = -1;
+        if (stops == null || stops.size() < 2) return;
+        List<TimelineRow> rows = timelineRows(stops, legKm, app.routeService.cumulativeMinutes(stops));
+        for (TimelineRow entry : rows) {
+            Label badge = new Label(String.valueOf(entry.number()));
+            badge.getStyleClass().add("timeline-index");
+            Label name = new Label(entry.name());
+            name.getStyleClass().add("timeline-name");
+            name.setWrapText(true);
+            HBox.setHgrow(name, ALWAYS);
+            Label arrival = new Label(entry.number() == 1 ? "start" : entry.arrivalMin() + " min");
+            arrival.getStyleClass().add("timeline-arrival");
+            HBox row = new HBox(8, badge, name, arrival);
+            row.setAlignment(javafx.geometry.Pos.TOP_LEFT);
+            if (entry.legKm() != null) {
+                Label km = new Label(String.format("· %.1f km", entry.legKm()));
+                km.getStyleClass().add("timeline-km");
+                row.getChildren().add(km);
+            }
+            int legIndex = entry.number() - 2;
+            row.setOnMouseEntered(event -> {
+                if (legIndex < 0) return;
+                highlightLeg[0] = legIndex;
+                previewMap.redraw();
+            });
+            row.setOnMouseExited(event -> { highlightLeg[0] = -1; previewMap.redraw(); });
+            row.getStyleClass().add("timeline-row");
+            box.getChildren().add(row);
+        }
+    }
+
+    /** One line of the route timeline: a stop, when the driver gets there, and how far
+     *  the leg arriving at it was. legKm is null for the depot, which has no incoming leg. */
+    record TimelineRow(int number, String name, int arrivalMin, Double legKm) { }
+
+    /** Pairs each stop with its arrival time and the distance of the leg reaching it.
+     *
+     *  <p>legKm holds one fewer entry than stops, so legKm.get(i - 1) arrives AT stop i.
+     *  That off-by-one is the whole reason this is separated out and tested.
+     *  Pure and headless-testable. */
+    static List<TimelineRow> timelineRows(List<Stop> stops, List<Double> legKm, List<Double> arrivalMin) {
+        if (stops == null || stops.isEmpty()) return List.of();
+        List<TimelineRow> rows = new ArrayList<>(stops.size());
+        for (int i = 0; i < stops.size(); i++) {
+            Double km = i == 0 ? null : (legKm != null && i - 1 < legKm.size() ? legKm.get(i - 1) : null);
+            Double arrival = arrivalMin != null && i < arrivalMin.size() ? arrivalMin.get(i) : null;
+            rows.add(new TimelineRow(i + 1, stops.get(i).name(),
+                    arrival == null ? 0 : (int) Math.round(arrival), km));
+        }
+        return rows;
     }
 
     VBox page() {
@@ -119,8 +180,7 @@ final class RoutesView {
         Label heroKm = new Label("—"); heroKm.getStyleClass().add("metric-value");
         Label heroMin = new Label("—"); heroMin.getStyleClass().add("metric-value");
         Label routeResult = new Label("Add at least one delivery stop after the depot."); routeResult.getStyleClass().add("muted"); routeResult.setWrapText(true);
-        VBox legRows = new VBox(2);
-        VBox etaBreakdown = new VBox(2);
+        VBox timeline = new VBox(2);
 
         DclsApp.MapController previewMap = app.new MapController(640, 480);
         final boolean[] dirty = {false};
@@ -155,17 +215,18 @@ final class RoutesView {
         // Preview-only calc on a worker: snap pins to roads, order (table solver or
         // kept order), resolve road geometry per leg. Persisted solely by Save & assign.
         final Thread[] worker = new Thread[1];
+        /** Preview for a plan we did not just calculate (a saved route picked from history):
+     *  leg distances come from the router cache, falling back to a snapped estimate. */
         Consumer<List<Stop>> showLegEstimates = stops -> {
-            legRows.getChildren().clear();
-            highlightLeg[0] = -1;
+            List<Double> legKm = new ArrayList<>();
             for (int i = 1; i < stops.size(); i++) {
                 Stop a = stops.get(i - 1), b = stops.get(i);
                 AppServices.OsrmRouter.LegResult cached =
                         AppServices.OsrmRouter.leg(a.x(), a.y(), b.x(), b.y());
-                double km = cached != null ? cached.km()
-                        : AppServices.OsrmRouter.snapKm(a.x(), a.y(), b.x(), b.y());
-                legRows.getChildren().add(legRow(i - 1, km, highlightLeg, previewMap));
+                legKm.add(cached != null ? cached.km()
+                        : AppServices.OsrmRouter.snapKm(a.x(), a.y(), b.x(), b.y()));
             }
+            showRouteTimeline(timeline, stops, legKm, highlightLeg, previewMap);
         };
         runCalcRef[0] = manual -> {
             if (gen != app.routePageGen) return;
@@ -191,9 +252,8 @@ final class RoutesView {
                 routeResult.setText("Add at least one delivery stop after the depot.");
                 heroKm.setText("—"); heroMin.setText("—");
                 setStatus(statusPill, "Add stops", "status-warn");
-                legRows.getChildren().clear();
+                timeline.getChildren().clear();
                 highlightLeg[0] = -1;
-                etaBreakdown.getChildren().clear();
                 previewMap.redraw();
                 if (manual) app.alert(Alert.AlertType.WARNING, "Route not created", "Add a depot and at least one stop.");
                 return;
@@ -289,12 +349,9 @@ final class RoutesView {
                         heroMin.setText("about " + plan.estimatedMinutes() + " min");
                         setStatus(statusPill, ready ? "Route ready" : "Approximate route (offline)",
                                 ready ? "status-good" : "status-warn");
-                        legRows.getChildren().clear();
-                        highlightLeg[0] = -1;
-                        for (int i = 0; i < legs.size(); i++) {
-                            legRows.getChildren().add(legRow(i, legs.get(i).km(), highlightLeg, previewMap));
-                        }
-                        app.showEtaBreakdown(etaBreakdown, plan);
+                        List<Double> legKm = new ArrayList<>(legs.size());
+                        for (AppServices.OsrmRouter.LegResult leg : legs) legKm.add(leg.km());
+                        showRouteTimeline(timeline, plan.stops(), legKm, highlightLeg, previewMap);
                         previewMap.manual = null;
                         previewMap.redraw();
                     });
@@ -330,9 +387,8 @@ final class RoutesView {
                     : extra + " stop" + (extra == 1 ? "" : "s") + " placed — calculating…");
             setStatus(statusPill, "Placing stops…", "status-info");
             heroKm.setText("—"); heroMin.setText("—");
-            legRows.getChildren().clear();
+            timeline.getChildren().clear();
             highlightLeg[0] = -1;
-            etaBreakdown.getChildren().clear();
             previewMap.redraw();
             refreshNearbyVisibility(addNearby);
             debounce.playFromStart();
@@ -514,13 +570,13 @@ RoutePlan toSave = new RoutePlan(route.id(), route.name(), driver.getValue().id(
         HBox.setHgrow(draftHeader.getChildren().get(1), ALWAYS);
         controls.getChildren().addAll(
                 stepSection(1, "Add stops"),
-                addRow, addNearby, toggleRow(clickCheck,
+                addRow, addNearby, toggleRow(clickCheck, "Click the map to drop a pin.",
                         "Click the preview map to drop a delivery pin. Turn this off to pan and zoom without adding pins."), geocodeBox,
                 draftHeader, draft,
                 stepSection(2, "Route"),
-                toggleRow(optimizeToggle,
+                toggleRow(optimizeToggle, "Shortest road tour.",
                         "Reorders the stops into the shortest road tour. Turn this off to visit them in the order you added them."),
-                legRows, etaBreakdown,
+                timeline,
                 stepSection(3, "Assign & save"),
                 // No separate "Route name" label: the field carries it as its prompt,
                 // so the extra node only added a blank band under the step header.
@@ -587,7 +643,6 @@ RoutePlan toSave = new RoutePlan(route.id(), route.name(), driver.getValue().id(
                 heroMin.setText("about " + selected.estimatedMinutes() + " min");
                 setStatus(statusPill, "Viewing saved route", "status-good");
                 showLegEstimates.accept(selected.stops());
-                app.showEtaBreakdown(etaBreakdown, selected);
                 previewMap.manual = null;
                 previewMap.redraw();
             }
@@ -613,8 +668,7 @@ RoutePlan toSave = new RoutePlan(route.id(), route.name(), driver.getValue().id(
             routeResult.setText("Add at least one delivery stop after the depot.");
             heroKm.setText("—"); heroMin.setText("—");
             setStatus(statusPill, "Add stops", "status-warn");
-            legRows.getChildren().clear();
-            etaBreakdown.getChildren().clear();
+            timeline.getChildren().clear();
             previewMap.manual = null;
             previewMap.redraw();
         });
@@ -753,16 +807,6 @@ RoutePlan toSave = new RoutePlan(route.id(), route.name(), driver.getValue().id(
     private static int indexById(List<Stop> stops, String id) {
         for (int i = 0; i < stops.size(); i++) if (stops.get(i).id().equals(id)) return i;
         return -1;
-    }
-
-    private Label legRow(int leg, double km, int[] highlightLeg, DclsApp.MapController previewMap) {
-        double legMin = km / AppServices.BruneiPlaces.AVG_SPEED_KMH * 60;
-        Label row = new Label((leg + 1) + "→" + (leg + 2) + "  ·  " + String.format("%.1f km", km)
-                + "  ·  ~" + Math.max(1, Math.round(legMin)) + " min");
-        row.getStyleClass().add("leg-row");
-        row.setOnMouseEntered(event -> { highlightLeg[0] = leg; previewMap.redraw(); });
-        row.setOnMouseExited(event -> { highlightLeg[0] = -1; previewMap.redraw(); });
-        return row;
     }
 
     private static int pinAt(List<Stop> shown, DclsApp.MapController previewMap, double px, double py) {
