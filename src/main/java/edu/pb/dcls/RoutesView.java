@@ -64,6 +64,23 @@ final class RoutesView {
         pill.getStyleClass().add(cls);
     }
 
+    /** A tick box with its meaning spelled out: the box, a short title beside it, and
+     *  one muted line explaining what turning it off actually changes. A bare CheckBox
+     *  cannot convey that, which is why the explanation is not a tooltip. */
+    private static VBox toggleRow(CheckBox box, String title, String hint) {
+        Label titleLabel = new Label(title);
+        titleLabel.getStyleClass().add("toggle-title");
+        titleLabel.setWrapText(true);
+        HBox row = new HBox(8, box, titleLabel);
+        row.setAlignment(javafx.geometry.Pos.TOP_LEFT);
+        Label hintLabel = new Label(hint);
+        hintLabel.getStyleClass().add("muted");
+        hintLabel.setWrapText(true);
+        VBox outer = new VBox(3, row, hintLabel);
+        outer.setPadding(new javafx.geometry.Insets(0, 0, 0, 2));
+        return outer;
+    }
+
     VBox page() {
         final int gen = ++app.routePageGen;
         // Always-blank entry: clear stale draft/preview unless arriving via order handoff.
@@ -89,10 +106,16 @@ final class RoutesView {
         Button addStop = button("Add", "secondary-button"); addStop.setPrefWidth(64);
         HBox addRow = new HBox(8, place, addStop); HBox.setHgrow(place, ALWAYS);
         Button addNearby = button("Add nearby pending orders", "link-button"); addNearby.setMaxWidth(Double.MAX_VALUE);
-        CheckBox clickCheck = new CheckBox("Place stops by clicking map"); clickCheck.setSelected(true);
+        // Bare checkboxes are unreadable here: the CheckBox's own label text does not paint
+    // inside this panel's ScrollPane (measured — 182px wide, unclipped, correctly
+    // placed, string intact), so a bare tick box gave no hint what it controlled. The
+    // title and explanation are real Labels, which render reliably, and the CheckBox
+    // keeps the accessible name for screen readers.
+    CheckBox clickCheck = new CheckBox(); clickCheck.setSelected(true);
+    clickCheck.setAccessibleText("Place stops by clicking the map");
+    CheckBox optimizeToggle = new CheckBox(); optimizeToggle.setSelected(true);
+    optimizeToggle.setAccessibleText("Optimize stop order");
         ComboBox<User> driver = app.driverCombo(); driver.setPromptText("Assign driver (optional)");
-        CheckBox optimizeToggle = new CheckBox("Optimize order"); optimizeToggle.setSelected(true);
-        optimizeToggle.setTooltip(new Tooltip("Uncheck to visit stops in the order listed"));
         Button saveAssign = button("Save & assign", "primary-button"); saveAssign.setMaxWidth(Double.MAX_VALUE);
         Button recalc = button("Recalculate", "link-button");
         Button clearLink = button("Clear", "link-button");
@@ -497,10 +520,13 @@ RoutePlan toSave = new RoutePlan(route.id(), route.name(), driver.getValue().id(
         HBox.setHgrow(draftHeader.getChildren().get(1), ALWAYS);
         controls.getChildren().addAll(
                 stepSection(1, "Add stops"),
-                addRow, addNearby, clickCheck, geocodeBox,
+                addRow, addNearby, toggleRow(clickCheck, "Place stops by clicking the map",
+                        "Click the preview map to drop a delivery pin. Turn this off to pan and zoom without adding pins."), geocodeBox,
                 draftHeader, draft,
                 stepSection(2, "Route"),
-                optimizeToggle, legRows, etaBreakdown,
+                toggleRow(optimizeToggle, "Optimize stop order",
+                        "Reorders the stops into the shortest road tour. Turn this off to visit them in the order you added them."),
+                legRows, etaBreakdown,
                 stepSection(3, "Assign & save"),
                 new Label("Route name"), name, driver, saveAssign);
         ScrollPane controlScroll = new ScrollPane(controls);
@@ -601,7 +627,8 @@ RoutePlan toSave = new RoutePlan(route.id(), route.name(), driver.getValue().id(
         // has a scene, and the panel width/height listeners above repaint after layout.
         refreshNearbyVisibility(addNearby);
         builder.getChildren().addAll(controlScroll, mapPanel, history);
-        history.getChildren().addAll(table, routeActions); page.getChildren().add(builder); return page;
+        history.getChildren().addAll(table, routeActions); page.getChildren().add(builder);
+        return page;
     }
 
     /** Rebuilds the locations panel from the current draft: one status line per
