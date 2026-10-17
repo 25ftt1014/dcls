@@ -279,3 +279,22 @@
 .scroll-bar .increment-button, .scroll-bar .decrement-button { -fx-background-color: transparent; -fx-padding: 0; }
 
 .focusable:focused { -fx-border-color: -accent; }
+
+/* ---- active-deliveries panel ------------------------------------ */
+/* Wrapping rows: -fx-cell-size -1 releases the fixed 40px row height so a
+   wrapped cell can grow instead of clipping its text. */
+.table-view.wrap-rows .table-row-cell { -fx-cell-size: -1; }
+.table-view.wrap-rows .table-cell { -fx-padding: 8 10 8 10; }
+
+.count-badge {
+    -fx-background-color: -accent;
+    -fx-text-fill: #ffffff;
+    -fx-background-radius: 20;
+    -fx-border-radius: 20;
+    -fx-padding: 1 7 1 7;
+    -fx-font-size: 11px;
+    -fx-font-weight: 700;
+}
+
+.tracking-detail .titled-pane > .title { -fx-background-color: transparent; -fx-padding: 6 0 6 0; }
+.tracking-detail .titled-pane > .content { -fx-background-color: transparent; -fx-padding: 4 0 0 0; }

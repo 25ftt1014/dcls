@@ -32,6 +32,7 @@ import static edu.pb.dcls.Domain.OrderStatus;
 import static edu.pb.dcls.Domain.RoutePlan;
 import static edu.pb.dcls.Domain.Stop;
 import static edu.pb.dcls.Domain.User;
+import static edu.pb.dcls.UiFactory.PANEL_PADDING_H;
 import static edu.pb.dcls.UiFactory.button;
 import static edu.pb.dcls.UiFactory.pageHeader;
 import static edu.pb.dcls.UiFactory.panel;
@@ -513,7 +514,9 @@ RoutePlan toSave = new RoutePlan(route.id(), route.name(), driver.getValue().id(
         HBox.setHgrow(routeResult, ALWAYS);
         mapPanel.getChildren().addAll(previewMap.canvas, previewMap.zoomBar, app.legendBox(), statusBar);
         mapPanel.setMinWidth(320); HBox.setHgrow(mapPanel, ALWAYS);
-        previewMap.canvas.widthProperty().bind(mapPanel.widthProperty().subtract(24));
+        // Sized to the padded content area (see UiFactory.PANEL_PADDING_H), not the tile
+        // inset: the old -24 overflowed the right padding by 8px.
+        previewMap.canvas.widthProperty().bind(mapPanel.widthProperty().subtract(PANEL_PADDING_H));
         // Coalesced repaints on layout: the first real frame waits for settled
         // dimensions (never the degenerate pre-layout size).
         mapPanel.widthProperty().addListener((o, a, b) -> previewMap.requestRedraw());

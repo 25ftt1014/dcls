@@ -1,12 +1,20 @@
 package edu.pb.dcls;
 
 import javafx.collections.FXCollections;
+import javafx.geometry.Pos;
 import javafx.scene.control.Alert;
 import javafx.scene.control.Button;
 import javafx.scene.control.ComboBox;
+import javafx.scene.control.ContextMenu;
 import javafx.scene.control.Label;
+import javafx.scene.control.MenuItem;
+import javafx.scene.control.ScrollPane;
+import javafx.scene.control.SeparatorMenuItem;
 import javafx.scene.control.TableView;
+import javafx.scene.control.TextField;
+import javafx.scene.control.TitledPane;
 import javafx.scene.layout.HBox;
+import javafx.scene.layout.Region;
 import javafx.scene.layout.VBox;
 import javafx.stage.FileChooser;
 
@@ -14,22 +22,75 @@ import java.io.File;
 import java.nio.file.Files;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Locale;
+import java.util.function.Function;
 
 import static edu.pb.dcls.Domain.OrderStatus;
 import static edu.pb.dcls.Domain.Shipment;
+import static edu.pb.dcls.UiFactory.PANEL_PADDING_H;
+import static edu.pb.dcls.UiFactory.chipCol;
 import static edu.pb.dcls.UiFactory.pageHeader;
 import static edu.pb.dcls.UiFactory.panel;
-import static edu.pb.dcls.UiFactory.textCol;
+import static edu.pb.dcls.UiFactory.wrapTextCol;
 import static javafx.scene.layout.Priority.ALWAYS;
 
 /**
  * Live tracking screen: real GPS (NMEA / mobile / GPX) over WiFi.
  * No simulation — markers move only when a real fix is ingested.
+ *
+ * <p>Active deliveries sit in a fixed-width panel beside the map. This was a
+ * user-draggable SplitPane, which let the panel be squeezed to any width and
+ * truncated every table column; fixing the width removes that whole class of
+ * problem, so there is nothing to drag and nothing to resize.
  */
 final class TrackingView {
     private final DclsApp app;
 
+    /** Fixed panel width in px: wide enough for the five columns to wrap rather than
+     *  clip, narrow enough to leave the map the majority of the screen. */
+    static final double PANEL_WIDTH = 420;
+
     TrackingView(DclsApp app) { this.app = app; }
+
+    // ---- pure, headlessly testable helpers ---------------------------
+
+    /** Count badge in the panel header. Zero means no badge at all. */
+    static int activeDeliveryBadge(List<Shipment> rows) {
+        return rows == null ? 0 : rows.size();
+    }
+
+    /** True when any vehicle on screen has lost its fix entirely. */
+    static boolean hasNoFixWarning(List<Shipment> rows, Function<String, String> gpsStatus) {
+        if (rows == null || gpsStatus == null) return false;
+        for (Shipment row : rows) {
+            String vehicleId = row.vehicleId();
+            if (vehicleId == null) continue;
+            String status = gpsStatus.apply(vehicleId);
+            if (status != null && status.startsWith("NO FIX")) return true;
+        }
+        return false;
+    }
+
+    /** Case-insensitive substring match over order id, plate, address and status.
+     *  A blank query matches everything. */
+    static boolean matchesFilter(Shipment row, String query, String plate) {
+        if (query == null || query.isBlank()) return true;
+        String needle = query.trim().toLowerCase(Locale.ROOT);
+        return contains(row.id(), needle)
+                || contains(plate, needle)
+                || contains(row.address(), needle)
+                || contains(row.status().label(), needle);
+    }
+
+    private static boolean contains(String haystack, String needle) {
+        return haystack != null && haystack.toLowerCase(Locale.ROOT).contains(needle);
+    }
+
+    /** Label for the show/hide toggle. Pure, so the mapping is testable without a
+     *  toolkit: the button must always offer the opposite of the current state. */
+    static String panelToggleLabel(boolean collapsed) {
+        return collapsed ? "Show deliveries" : "Hide deliveries";
+    }
 
     VBox page() {
         VBox page = pageHeader("Real-time tracking", "Live GPS via NMEA, driver mobile feed, or GPX import. Markers freeze when the fix is lost.");
@@ -65,54 +126,66 @@ final class TrackingView {
         javafx.scene.control.CheckBox follow = new javafx.scene.control.CheckBox("Follow selected");
         follow.setSelected(app.followSelected);
         follow.setOnAction(e -> app.followSelected = follow.isSelected());
-        HBox mapTools = new HBox(8, search, follow);
-        map.getChildren().addAll(app.trackingCanvas, app.trackingMaps.zoomBar, mapTools, app.focusChipBox, app.legendBox(), app.trackingLegend);
-        VBox active = panel(new javafx.scene.layout.HBox());
-        javafx.scene.layout.HBox activeHeader = (javafx.scene.layout.HBox) active.getChildren().get(0);
-        Label activeTitle = new Label("Active deliveries");
-        activeTitle.getStyleClass().add("section-title");
-        javafx.scene.layout.Region activeGap = new javafx.scene.layout.Region();
-        javafx.scene.layout.HBox.setHgrow(activeGap, ALWAYS);
-        javafx.scene.control.Button collapseBtn = new javafx.scene.control.Button(app.trackingPanelCollapsed ? "«" : "»");
-        collapseBtn.getStyleClass().add("link-button");
-        activeHeader.setAlignment(javafx.geometry.Pos.CENTER_LEFT);
-        activeHeader.getChildren().addAll(activeTitle, activeGap, collapseBtn);
-        app.trackingEta = new Label("Select a delivery to view its latest estimate."); app.trackingEta.getStyleClass().add("muted"); app.trackingEta.setWrapText(true);
-        TableView<Shipment> table = new TableView<>(); table.setPlaceholder(new Label("No active deliveries — assign an order first."));
-        table.getColumns().add(textCol("Order", Shipment::id, 90));
-        table.getColumns().add(textCol("Vehicle", s -> app.vehiclePlate(s.vehicleId()), 90));
-        table.getColumns().add(textCol("Fix", s -> s.vehicleId() == null ? "—" : app.tracking.gpsStatus(s.vehicleId()), 130));
-        table.getColumns().add(textCol("Destination", Shipment::address, 150));
-        table.getColumns().add(textCol("Status", s -> s.status().label(), 80));
+
+        // The show/hide toggle and the NO FIX warning live on the map toolbar, never
+        // inside the panel. When the panel is hidden its own header is hidden with it,
+        // so a toggle placed there could never be pressed to bring it back. Both also
+        // stay readable while the panel is collapsed, which is exactly when you want
+        // to know a vehicle has lost its fix.
+        Button panelToggle = new Button();
+        panelToggle.getStyleClass().add("secondary-button");
+        Label noFix = new Label("NO FIX");
+        noFix.getStyleClass().addAll("status-pill", "status-bad");
+        HBox mapTools = new HBox(8, search, follow, panelToggle, noFix);
+        HBox.setHgrow(search, ALWAYS);
+
         List<Shipment> activeShipments = app.visibleShipments().stream()
                 .filter(s -> s.status() == OrderStatus.IN_TRANSIT || s.status() == OrderStatus.ASSIGNED).toList();
-        table.setItems(FXCollections.observableArrayList(activeShipments)); table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY); table.setPrefHeight(220);
-        table.getSelectionModel().selectedItemProperty().addListener((o, old, selected) -> app.focusShipment(selected));
-        // Real-feed controls.
+
+        // ---- header: title and live count badge ----
+        Label activeTitle = new Label("Active deliveries");
+        activeTitle.getStyleClass().add("section-title");
+        Label countBadge = new Label();
+        countBadge.getStyleClass().add("count-badge");
+        HBox activeHeader = new HBox(8, activeTitle, countBadge);
+        activeHeader.setAlignment(Pos.CENTER_LEFT);
+
+        VBox active = panel(activeHeader);
+
+        TextField filter = new TextField();
+        filter.setPromptText("Filter orders, vehicles, destinations…");
+        filter.setAccessibleText("Filter active deliveries");
+
+        app.trackingEta = new Label("Select a delivery to view its latest estimate.");
+        app.trackingEta.getStyleClass().add("muted");
+        app.trackingEta.setWrapText(true);
+        app.feedStatusLabel = new Label(app.feedStatusText());
+        app.feedStatusLabel.getStyleClass().add("muted");
+        app.feedStatusLabel.setWrapText(true);
+
+        TableView<Shipment> table = new TableView<>();
+        // Releases the global 40px row height so a wrapped cell can grow instead of
+        // clipping its text; see .wrap-rows in styles.css.
+        table.getStyleClass().add("wrap-rows");
+        table.setPlaceholder(new Label("No active deliveries — assign an order first."));
+        // Widths sum to exactly the panel's content area. Status is deliberately not a
+        // column: every row here is either ASSIGNED or IN_TRANSIT, so it carries little
+        // and cost the Destination column enough width to truncate again. It is shown
+        // as a chip in the detail pane instead.
+        table.getColumns().add(wrapTextCol("Order", Shipment::id, 72));
+        table.getColumns().add(wrapTextCol("Vehicle", s -> app.vehiclePlate(s.vehicleId()), 80));
+        table.getColumns().add(chipCol("Fix",
+                s -> s.vehicleId() == null ? "—" : app.tracking.gpsStatus(s.vehicleId()),
+                (s, text) -> text.startsWith("NO FIX") ? "status-bad"
+                        : text.startsWith("LOST") ? "status-warn" : "status-good", 96));
+        table.getColumns().add(wrapTextCol("Destination", Shipment::address, 140));
+        table.setItems(FXCollections.observableArrayList(activeShipments));
+        table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY);
+
+        // ---- selected-row detail -------------------------------------
         ComboBox<String> feed = new ComboBox<>(FXCollections.observableArrayList("nmea", "mobile", "gpx"));
         feed.setValue(app.tracking.feedSource()); feed.setMaxWidth(Double.MAX_VALUE);
         feed.setOnAction(e -> { app.tracking.feedSource(feed.getValue()); app.setFeedStatus("Feed: " + feed.getValue()); });
-        Button importGpx = new Button("Import GPX track…");
-        importGpx.setMaxWidth(Double.MAX_VALUE);
-        importGpx.setOnAction(event -> importGpx(table.getSelectionModel().getSelectedItem()));
-        Button importNmea = new Button("Import NMEA file…");
-        importNmea.setMaxWidth(Double.MAX_VALUE);
-        importNmea.setOnAction(event -> importNmea(table.getSelectionModel().getSelectedItem()));
-        Button pollMobile = new Button("Poll mobile feed now");
-        pollMobile.setMaxWidth(Double.MAX_VALUE);
-        pollMobile.setOnAction(event -> { app.pollMobileFeed(); table.refresh(); app.drawTracking(); });
-        Button gpxExport = new Button("Export track (GPX/CSV/KML)");
-        gpxExport.setMaxWidth(Double.MAX_VALUE);
-        gpxExport.setOnAction(event -> app.exportTrack(table.getSelectionModel().getSelectedItem()));
-        Button clearHistory = new Button("Clear vehicle history…");
-        clearHistory.setMaxWidth(Double.MAX_VALUE);
-        clearHistory.setOnAction(event -> {
-            Shipment selected = table.getSelectionModel().getSelectedItem();
-            if (selected != null && selected.vehicleId() != null) {
-                app.clearVehicleHistory(selected.vehicleId());
-                table.refresh();
-            } else app.toast("Select a delivery with a vehicle first.");
-        });
         Button viewTour = new Button("View vehicle tour (fastest)");
         viewTour.setMaxWidth(Double.MAX_VALUE);
         viewTour.setOnAction(event -> {
@@ -121,42 +194,125 @@ final class TrackingView {
                 app.focusVehicleTour(selected.vehicleId(), selected.id());
             } else app.toast("Select a delivery with a vehicle first.");
         });
-        app.feedStatusLabel = new Label(app.feedStatusText()); app.feedStatusLabel.getStyleClass().add("muted"); app.feedStatusLabel.setWrapText(true);
-        active.getChildren().addAll(table, viewTour, new Label("GPS feed"), feed, importGpx, importNmea, pollMobile, gpxExport, clearHistory, app.feedStatusLabel, app.trackingEta);
+
+        ContextMenu actions = new ContextMenu();
+        MenuItem actGpx = new MenuItem("Import GPX track…");
+        actGpx.setOnAction(event -> importGpx(table.getSelectionModel().getSelectedItem()));
+        MenuItem actNmea = new MenuItem("Import NMEA file…");
+        actNmea.setOnAction(event -> importNmea(table.getSelectionModel().getSelectedItem()));
+        MenuItem actPoll = new MenuItem("Poll mobile feed now");
+        actPoll.setOnAction(event -> { app.pollMobileFeed(); table.refresh(); app.drawTracking(); });
+        MenuItem actExport = new MenuItem("Export track (GPX/CSV/KML)");
+        actExport.setOnAction(event -> app.exportTrack(table.getSelectionModel().getSelectedItem()));
+        MenuItem actClear = new MenuItem("Clear vehicle history…");
+        // clearVehicleHistory already shows its own confirmation dialog.
+        actClear.setOnAction(event -> {
+            Shipment selected = table.getSelectionModel().getSelectedItem();
+            if (selected != null && selected.vehicleId() != null) {
+                app.clearVehicleHistory(selected.vehicleId());
+                table.refresh();
+            } else app.toast("Select a delivery with a vehicle first.");
+        });
+        actions.getItems().addAll(actGpx, actNmea, actPoll, new SeparatorMenuItem(), actExport, actClear);
+        Button actionsBtn = new Button("Actions ▾");
+        actionsBtn.setMaxWidth(Double.MAX_VALUE);
+        actionsBtn.setOnAction(event -> actions.show(actionsBtn, javafx.geometry.Side.BOTTOM, 0, 0));
+
+        Label statusChip = new Label();
+        statusChip.getStyleClass().addAll("status-pill", "status-info");
+        VBox detailBox = new VBox(8, statusChip, viewTour, feed, actionsBtn, app.trackingEta, app.feedStatusLabel);
+        TitledPane detail = new TitledPane();
+        detail.setText("Delivery detail");
+        detail.setCollapsible(true);
+        detail.setExpanded(false);
+        detail.setContent(detailBox);
+        detail.getStyleClass().add("tracking-detail");
+
+        // The table scrolls; the filter and detail stay put, so the panel is a VBox
+        // with the table taking the slack rather than one tall scroll pane.
+        table.setPrefHeight(240);
+        VBox.setVgrow(table, ALWAYS);
+        active.getChildren().addAll(filter, table, detail);
+
+        // ---- live count, NO FIX, and the show/hide toggle ---------------
+        // refreshToggle must stay callable before `table` exists (the toolbar button
+        // is created above it), so it only reads the app flag, not the rows.
+        Runnable refreshToggle = () -> {
+            panelToggle.setText(panelToggleLabel(app.trackingPanelCollapsed));
+            panelToggle.setAccessibleText(app.trackingPanelCollapsed
+                    ? "Show active deliveries" : "Hide active deliveries");
+        };
+        Runnable refreshBadge = () -> {
+            int count = activeDeliveryBadge(table.getItems());
+            countBadge.setText(String.valueOf(count));
+            countBadge.setVisible(count > 0);
+            noFix.setVisible(hasNoFixWarning(table.getItems(), id -> app.tracking.gpsStatus(id)));
+            noFix.setManaged(noFix.isVisible());
+            refreshToggle.run();
+        };
+        app.addTrackingBadgeRefresh(refreshBadge);
+        refreshBadge.run();
+
+        Runnable applyCollapsed = () -> {
+            active.setVisible(!app.trackingPanelCollapsed);
+            active.setManaged(!app.trackingPanelCollapsed);
+            refreshToggle.run();
+        };
+        panelToggle.setOnAction(event -> {
+            app.trackingPanelCollapsed = !app.trackingPanelCollapsed;
+            applyCollapsed.run();
+            // The map just changed width; let it repaint on the next pulse.
+            if (app.trackingMaps != null) app.trackingMaps.requestRedraw();
+        });
+        applyCollapsed.run();
+
+        Runnable refreshFilter = () -> table.setItems(FXCollections.observableArrayList(
+                activeShipments.stream()
+                        .filter(s -> matchesFilter(s, filter.getText(), app.vehiclePlate(s.vehicleId())))
+                        .toList()));
+        filter.textProperty().addListener((o, a, b) -> {
+            refreshFilter.run();
+            refreshBadge.run();
+        });
+        refreshFilter.run();
+
+        table.getSelectionModel().selectedItemProperty().addListener((o, old, selected) -> {
+            app.focusShipment(selected);
+            if (selected == null) {
+                statusChip.setVisible(false);
+                statusChip.setManaged(false);
+                return;
+            }
+            statusChip.setText(selected.status().label());
+            statusChip.getStyleClass().setAll("status-pill",
+                    selected.status() == OrderStatus.IN_TRANSIT ? "status-info" : "status-good");
+            statusChip.setVisible(true);
+            statusChip.setManaged(true);
+            if (selected.vehicleId() == null) return;
+            // Pan to the vehicle when it actually has a fix to pan to.
+            var point = app.tracking.latestPlausibleForVehicle(selected.vehicleId());
+            if (point != null && app.trackingMaps != null) app.trackingMaps.zoomTo(point.x(), point.y());
+        });
+        statusChip.setVisible(false);
+        statusChip.setManaged(false);
+
         map.setMinWidth(280);
-        active.setMinWidth(235);
-        // Map canvas follows the panel width so the divider actually resizes the map.
-        app.trackingCanvas.widthProperty().bind(map.widthProperty().subtract(24));
+        map.getChildren().addAll(app.trackingCanvas, app.trackingMaps.zoomBar, mapTools,
+                app.focusChipBox, app.legendBox(), app.trackingLegend);
+        // Map canvas follows the panel width so collapsing really does give the space back.
+        app.trackingCanvas.widthProperty().bind(map.widthProperty().subtract(PANEL_PADDING_H));
         map.widthProperty().addListener((o, a, b) -> { if (app.trackingMaps != null) app.trackingMaps.requestRedraw(); });
         map.heightProperty().addListener((o, a, b) -> { if (app.trackingMaps != null) app.trackingMaps.requestRedraw(); });
-        javafx.scene.control.SplitPane split = new javafx.scene.control.SplitPane(map, active);
-        split.setDividerPositions(app.trackingPanelCollapsed ? 1.0 : app.trackingDividerPos);
-        javafx.scene.control.SplitPane.setResizableWithParent(map, Boolean.TRUE);
-        javafx.scene.control.SplitPane.setResizableWithParent(active, Boolean.TRUE);
-        split.getDividers().get(0).positionProperty().addListener((o, old, pos) -> {
-            double p = pos.doubleValue();
-            if (p < 1.0) {
-                app.trackingDividerPos = p;
-                app.trackingPanelCollapsed = false;
-                collapseBtn.setText("»");
-            }
-            if (app.trackingMaps != null) app.trackingMaps.requestRedraw();
-        });
-        collapseBtn.setOnAction(e -> {
-            if (app.trackingPanelCollapsed) {
-                app.trackingPanelCollapsed = false;
-                split.setDividerPositions(app.trackingDividerPos);
-                collapseBtn.setText("»");
-            } else {
-                app.trackingDividerPos = split.getDividerPositions()[0];
-                app.trackingPanelCollapsed = true;
-                split.setDividerPositions(1.0);
-                collapseBtn.setText("«");
-            }
-            if (app.trackingMaps != null) app.trackingMaps.requestRedraw();
-        });
-        VBox content = new VBox(split);
-        VBox.setVgrow(split, ALWAYS);
+
+        // Fixed width on all three properties is what makes the panel immovable:
+        // min == pref == max, so no layout can squeeze or stretch it.
+        active.setMinWidth(PANEL_WIDTH);
+        active.setPrefWidth(PANEL_WIDTH);
+        active.setMaxWidth(PANEL_WIDTH);
+        HBox row = new HBox(12, map, active);
+        HBox.setHgrow(map, ALWAYS);
+        VBox content = new VBox(row);
+        VBox.setVgrow(row, ALWAYS);
         page.getChildren().add(content);
         if (app.focusedVehicleId != null) {
             table.getItems().stream().filter(s -> app.focusedVehicleId.equals(s.vehicleId())).findFirst()

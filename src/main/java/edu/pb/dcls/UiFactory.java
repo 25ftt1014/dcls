@@ -11,6 +11,7 @@ import javafx.scene.control.TableCell;
 import javafx.scene.control.TableColumn;
 import javafx.scene.control.TableRow;
 import javafx.scene.control.TableView;
+import javafx.scene.control.Tooltip;
 import javafx.scene.layout.ColumnConstraints;
 import javafx.scene.layout.GridPane;
 import javafx.scene.layout.HBox;
@@ -19,6 +20,7 @@ import javafx.scene.layout.VBox;
 import javafx.util.StringConverter;
 
 import java.util.Optional;
+import java.util.function.BiFunction;
 import java.util.function.Consumer;
 import java.util.function.Function;
 
@@ -36,9 +38,15 @@ final class UiFactory {
         return button;
     }
 
+    /** Padding applied by {@link #panel} on each side. A node sized to its host panel must
+     *  subtract {@link #PANEL_PADDING_H}, not MapRenderer.MAP_PAD: the panel inset is
+     *  16px while MAP_PAD is the separate 14px tile/projection inset. */
+    static final double PANEL_PADDING = 16;
+    static final double PANEL_PADDING_H = PANEL_PADDING * 2;
+
     static VBox panel(Node heading) {
         VBox box = new VBox(13);
-        box.setPadding(new Insets(16));
+        box.setPadding(new Insets(PANEL_PADDING));
         box.getStyleClass().add("panel");
         box.getChildren().add(heading);
         return box;
@@ -130,6 +138,45 @@ final class UiFactory {
         TableColumn<T, String> column = new TableColumn<>(heading);
         column.setPrefWidth(width);
         column.setCellValueFactory(cell -> new SimpleStringProperty(Optional.ofNullable(value.apply(cell.getValue())).orElse("—")));
+        return column;
+    }
+
+    /** Wrapping variant of {@link #textCol} for narrow panels, where a fixed-width
+     *  single-line cell silently truncates. Rows size to their content instead, so
+     *  the column must not be given a fixed cell size, and long values carry a
+     *  tooltip as a copy-pasteable escape hatch. */
+    static <T> TableColumn<T, String> wrapTextCol(String heading, Function<T, String> value, double width) {
+        TableColumn<T, String> column = textCol(heading, value, width);
+        column.setCellFactory(col -> new TableCell<>() {
+            @Override protected void updateItem(String item, boolean empty) {
+                super.updateItem(item, empty);
+                if (empty || item == null) { setText(null); setTooltip(null); return; }
+                setText(item);
+                setWrapText(true);
+                setTooltip(new Tooltip(item));
+            }
+        });
+        return column;
+    }
+
+    /** Single-line column whose value renders as a coloured status chip, with the
+     *  full text still available as a tooltip. */
+    static <T> TableColumn<T, String> chipCol(String heading, Function<T, String> value,
+                                              BiFunction<T, String, String> tone, double width) {
+        TableColumn<T, String> column = textCol(heading, value, width);
+        column.setCellFactory(col -> new TableCell<>() {
+            private final Label chip = new Label();
+
+            @Override protected void updateItem(String item, boolean empty) {
+                super.updateItem(item, empty);
+                T row = getTableRow() == null ? null : getTableRow().getItem();
+                if (empty || item == null || row == null) { setGraphic(null); setTooltip(null); return; }
+                chip.setText(item);
+                chip.getStyleClass().setAll("status-pill", tone.apply(row, item));
+                setGraphic(chip);
+                setTooltip(new Tooltip(item));
+            }
+        });
         return column;
     }
 

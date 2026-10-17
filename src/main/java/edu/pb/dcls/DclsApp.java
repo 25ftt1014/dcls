@@ -1,7 +1,9 @@
 package edu.pb.dcls;
 
 import javafx.animation.AnimationTimer;
+import javafx.animation.FadeTransition;
 import javafx.animation.KeyFrame;
+import javafx.animation.PauseTransition;
 import javafx.animation.ScaleTransition;
 import javafx.animation.Timeline;
 import javafx.application.Application;
@@ -84,8 +86,14 @@ public final class DclsApp extends Application {
     User currentUser;
     private BorderPane shell;
     private VBox nav;
-    private Label pageHeading;
-    Label dataModeLabel;
+    /** Page scroll pane, built once and reused. Allocating a fresh one per
+     *  navigation made the vertical scrollbar re-decide its width a frame after the
+     *  page appeared, which re-bound the map canvas width and visibly rescaled the
+     *  map. A single pane keeps the viewport width stable between pages. */
+    private ScrollPane pageScroll;
+    private FadeTransition pageFade;
+    private PauseTransition pageFadeDelay;
+    private Label dataModeLabel;
     String activePage = "dashboard";
     String fleetRecordsView = "vehicles";
     private Timeline trackingTimer;
@@ -115,9 +123,13 @@ public final class DclsApp extends Application {
     boolean frameTourOnce = false;
     /** Focused-tour trail width. */
     static final double TRACK_FOCUS_WIDTH = 3.5;
-    /** Tracking SplitPane divider (map fraction) + collapsed state, kept across redraws. */
-    double trackingDividerPos = 0.72;
+    /** Active-deliveries panel collapsed state, kept across page rebuilds. The panel is a
+     *  fixed-width sibling of the map, so there is no draggable position to remember:
+     *  it is either shown or hidden. */
     boolean trackingPanelCollapsed = false;
+    /** Active-deliveries count / NO FIX refresh, registered by TrackingView for the
+     *  open page so the header badge stays live as fixes arrive. */
+    Runnable trackingBadgeRefresh;
     Label feedStatusLabel;
     String feedStatus = "Feed idle — import GPX/NMEA or poll mobile feed.";
     String lastRerouteKey = "";
@@ -308,7 +320,6 @@ public final class DclsApp extends Application {
         shell.setLeft(nav);
         BorderPane content = new BorderPane();
         content.setTop(buildTopbar());
-        pageHeading = new Label(); pageHeading.getStyleClass().add("page-title");
         shell.setCenter(content);
         showPage(page);
         Scene scene = new Scene(shell);
@@ -435,9 +446,50 @@ public final class DclsApp extends Application {
             case "tracking" -> new TrackingView(this).page();
             default -> new DashboardView(this).page();
         };
-        ScrollPane scroll = new ScrollPane(view); scroll.setFitToWidth(true); scroll.setHbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
-        scroll.setStyle("-fx-background: #f6f8fb; -fx-background-color: #f6f8fb;");
-        content.setCenter(scroll);
+        if (pageScroll == null) {
+            pageScroll = new ScrollPane();
+            pageScroll.setFitToWidth(true);
+            pageScroll.setHbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
+            pageScroll.setStyle("-fx-background: #f6f8fb; -fx-background-color: #f6f8fb;");
+            content.setCenter(pageScroll);
+        }
+        fadePageIn(pageScroll, view);
+    }
+
+    /** How long a page stays invisible while its first layout settles. */
+    private static final Duration PAGE_SETTLE_DELAY = Duration.millis(60);
+    /** The fade itself. */
+    private static final Duration PAGE_FADE = Duration.millis(150);
+
+    /** Fade a freshly built page in, on every page for a consistent feel.
+     *
+     *  <p>Applied here rather than inside each page() so the pages stay free of
+     *  presentation concerns — and because tests build page() directly with no FX
+     *  toolkit, an animation there would break them.
+     *
+     *  <p>The fade starts only after {@link #PAGE_SETTLE_DELAY}, not immediately.
+     *  The first layout after setContent is when the scrollbar and any canvas width
+     *  binding resolve; fading from that moment would show the map rescaling
+     *  underneath the fade. Starting at opacity 0 hides that settle, so the only
+     *  motion is the fade. Cancelled if another navigation starts first. */
+    private void fadePageIn(ScrollPane scroll, Node view) {
+        if (pageFadeDelay != null) pageFadeDelay.stop();
+        if (pageFade != null) {
+            // Restore the outgoing page fully before discarding it, so an interrupted
+            // fade can never leave a page stuck semi-transparent.
+            Node old = (Node) pageFade.getNode();
+            pageFade.stop();
+            if (old != null) old.setOpacity(1);
+        }
+        scroll.setContent(view);
+        view.setOpacity(0);
+        pageFade = new FadeTransition(PAGE_FADE, view);
+        pageFade.setFromValue(0.0);
+        pageFade.setToValue(1.0);
+        pageFade.setOnFinished(event -> view.setOpacity(1));
+        pageFadeDelay = new PauseTransition(PAGE_SETTLE_DELAY);
+        pageFadeDelay.setOnFinished(event -> pageFade.play());
+        pageFadeDelay.play();
     }
 
     private void profileDialog() {
@@ -516,6 +568,9 @@ public final class DclsApp extends Application {
             for (TrackingPoint p : recent) frame.add(ll(p.x(), p.y()));
         }
         trackingFrame = frame;
+        // The panel header carries a live count and a NO FIX indicator, so it needs to
+        // re-read the rows whenever the frame is rebuilt.
+        if (trackingBadgeRefresh != null) trackingBadgeRefresh.run();
         // Reframe only on explicit opt-in: one-shot tour framing or Follow mode.
         // Row clicks merely highlight + update the ETA panel; all vehicles stay in frame.
         boolean shouldFrame = frameTourOnce
@@ -590,6 +645,8 @@ public final class DclsApp extends Application {
         refreshFocusChip();
         showEta(shipment);
     }
+
+    void addTrackingBadgeRefresh(Runnable refresh) { trackingBadgeRefresh = refresh; }
 
     void clearTrackingFocus() {
         focusedShipmentId = null;
