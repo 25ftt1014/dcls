@@ -61,17 +61,9 @@ class MapAspectTest {
     }
 
     @Test
-    void zoomForRespectsProviderFetchMax() {
-        // Esri imagery ends at z19: deep zoom must never request z20 tiles that 404.
-        MapRenderer.Basemap prev = MapRenderer.basemap;
-        try {
-            MapRenderer.basemap = MapRenderer.Basemap.ESRI_IMAGERY;
-            assertTrue(MapRenderer.zoomFor(1e-9, 100_000) <= 19);
-            MapRenderer.basemap = MapRenderer.Basemap.OSM_STANDARD;
-            assertTrue(MapRenderer.zoomFor(1e-9, 100_000) <= 20);
-        } finally {
-            MapRenderer.basemap = prev;
-        }
+    void zoomForRespectsLiveFetchMax() {
+        // Beyond z20 the tiles 404, so a very deep view must never request them.
+        assertTrue(MapRenderer.zoomFor(1e-9, 100_000) <= 20);
     }
 
     @Test

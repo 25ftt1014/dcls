@@ -40,16 +40,7 @@ final class TrackingView {
         VBox map = panel(new Label("Fleet map  ·  Brunei Darussalam — scroll to zoom, drag to pan")); ((Label) map.getChildren().get(0)).getStyleClass().add("section-title");
         app.trackingLegend = new VBox(3);
         app.focusChipBox = new VBox(2);
-        // Basemap + search row (free providers only).
-        ComboBox<String> basemap = new ComboBox<>(FXCollections.observableArrayList(
-                "OSM Standard", "Esri Imagery"));
-        basemap.setValue(MapRenderer.basemap == MapRenderer.Basemap.ESRI_IMAGERY ? "Esri Imagery" : "OSM Standard");
-        basemap.setMaxWidth(Double.MAX_VALUE);
-        basemap.setOnAction(e -> {
-            MapRenderer.basemap = "Esri Imagery".equals(basemap.getValue())
-                    ? MapRenderer.Basemap.ESRI_IMAGERY : MapRenderer.Basemap.OSM_STANDARD;
-            app.trackingMaps.redraw();
-        });
+        // Search + follow row (OSM Standard is the only basemap).
         javafx.scene.control.TextField search = new javafx.scene.control.TextField();
         search.setPromptText("Search place in Brunei…");
         search.setOnAction(e -> {
@@ -74,7 +65,7 @@ final class TrackingView {
         javafx.scene.control.CheckBox follow = new javafx.scene.control.CheckBox("Follow selected");
         follow.setSelected(app.followSelected);
         follow.setOnAction(e -> app.followSelected = follow.isSelected());
-        HBox mapTools = new HBox(8, basemap, search, follow);
+        HBox mapTools = new HBox(8, search, follow);
         map.getChildren().addAll(app.trackingCanvas, app.trackingMaps.zoomBar, mapTools, app.focusChipBox, app.legendBox(), app.trackingLegend);
         VBox active = panel(new javafx.scene.layout.HBox());
         javafx.scene.layout.HBox activeHeader = (javafx.scene.layout.HBox) active.getChildren().get(0);

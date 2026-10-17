@@ -35,7 +35,7 @@ Sign in with:
 
 The sign-in screen opens with the Admin demo credentials filled in. Demo data resets when the app closes. Clear `DCLS_DEMO_MODE` to return to MySQL mode.
 
-Map data © OpenStreetMap contributors, imagery © Esri, Maxar, Earthstar Geographics: OSM Standard or Esri World Imagery (toggle in Live Tracking, zoom 3–20) with a 90-pair road-network overlay; WiFi-first real-time GPS — no simulation. Tiles cache under `~/.dcls/tiles` for transient blips only. No map keys needed.
+Map data © OpenStreetMap contributors: live OSM Standard tiles (zoom 3–20) with a 90-pair road-network overlay; WiFi-first real-time GPS — no simulation. Tiles cache under `~/.dcls/tiles` for transient blips only. No map keys needed.
 
 Live GPS feeds (Live Tracking → feed selector):
 - NMEA: import `$GPGGA/$GPRMC` `.nmea/.txt` logs (checksum-validated). Live TCP streaming is planned, not implemented — there is no `DCLS_NMEA_HOST`/`DCLS_NMEA_PORT` support yet.
@@ -49,7 +49,7 @@ Route geometry uses live OSRM routing (`router.project-osrm.org`, OSM data, no k
 $env:DCLS_OSRM_URL = 'https://your-osrm-host'
 ```
 
-Maps work with no key: the app defaults to OSM Standard, with Esri World Imagery as the satellite option in the Live Tracking basemap dropdown.
+Maps work with no key: the app uses OSM Standard tiles across every screen.
 
 ## Demo flow
 

@@ -574,10 +574,8 @@ RoutePlan toSave = new RoutePlan(route.id(), route.name(), driver.getValue().id(
             previewMap.redraw();
         });
         prefillHandoff.run();
-        // Deferred first paint: page() builds before scene layout, so painting now
-        // would use the degenerate pre-layout canvas size. The pulse-coalesced
-        // repaint fires once dimensions settle.
-        Platform.runLater(previewMap::requestRedraw);
+        // No explicit first paint here: MapController schedules its own once the page
+        // has a scene, and the panel width/height listeners above repaint after layout.
         refreshNearbyVisibility(addNearby);
         builder.getChildren().addAll(controlScroll, mapPanel, history);
         history.getChildren().addAll(table, routeActions); page.getChildren().add(builder); return page;

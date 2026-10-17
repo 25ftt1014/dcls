@@ -809,6 +809,10 @@ public final class DclsApp extends Application {
         MapController(double width, double height) {
             canvas = mapCanvas(width, height);
             addTileListener(tileRefresh);
+            // mapCanvas no longer paints eagerly: a paint here would use the
+            // placeholder size and flash it before layout settles. Every controller
+            // schedules its own first paint instead, so pages can't forget to.
+            Platform.runLater(this::requestRedraw);
             Button in = button("+", "secondary-button"), out = button("−", "secondary-button"), reset = button("Reset view", "secondary-button");
             in.setOnAction(event -> zoomAt(1.4, canvas.getWidth() / 2, canvas.getHeight() / 2));
             out.setOnAction(event -> zoomAt(1 / 1.4, canvas.getWidth() / 2, canvas.getHeight() / 2));
