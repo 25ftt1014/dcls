@@ -1,10 +1,10 @@
 # DCLS — Delivery Logistics Simulator
 
-Java 25 (LTS) and JavaFX desktop application for the DCLS mini project. MySQL is the normal data mode so app changes survive restarts. The in-memory classroom demo is available by explicit opt-in.
+Java 21 and JavaFX desktop application for the DCLS mini project. MySQL is the normal data mode so app changes survive restarts. The in-memory classroom demo is available by explicit opt-in.
 
 ## Run the app with MySQL
 
-Requirements: Java 25 (LTS) or later (JDK), Maven 3.9 or later, and a running MySQL database initialized with `src\main\resources\db\schema.sql`.
+Requirements: Java 21 (JDK), Maven 3.9 or later, and a running MySQL database initialized with `src\main\resources\db\schema.sql`.
 
 Set the database connection variables in PowerShell, then start the app:
 
@@ -73,7 +73,7 @@ The build creates `target\distribution\delivery-logistics-simulator-1.0.0.jar` a
 java -jar target\distribution\delivery-logistics-simulator-1.0.0.jar
 ```
 
-Java 25 (LTS) or later must be installed on the computer running the JAR. JavaFX runtime libraries are included in `lib` for Windows builds.
+Java 21 or later must be installed on the computer running the JAR. JavaFX runtime libraries are included in `lib` for Windows builds.
 
 ## MySQL setup
 
