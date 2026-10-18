@@ -7,8 +7,11 @@ import javafx.scene.control.Button;
 import javafx.scene.control.Label;
 import javafx.scene.control.ProgressBar;
 import javafx.scene.control.Tooltip;
+import javafx.scene.input.KeyCode;
+import javafx.scene.input.KeyEvent;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Region;
+import javafx.scene.layout.StackPane;
 import javafx.scene.layout.VBox;
 
 import java.time.LocalDate;
@@ -151,7 +154,8 @@ final class DashboardView {
         VBox page = pageHeader("", "");
         page.setSpacing(18);
         page.setPadding(new Insets(18, 24, 20, 28));
-        page.getChildren().add(0, headerRow());
+        HBox dashboardHeader = headerRow();
+        page.getChildren().add(0, dashboardHeader);
 
         HBox metrics = new HBox(12,
                 vehiclesCard.card(), activeCard.card(), pendingCard.card(), completedCard.card());
@@ -171,9 +175,31 @@ final class DashboardView {
                 g, map.canvas.getWidth(), map.canvas.getHeight(), view, List.copyOf(plots.values()));
         installHover();
 
-        VBox mapPanel = panel(new Label("Operations map"));
-        ((Label) mapPanel.getChildren().get(0)).getStyleClass().add("section-title");
-        mapPanel.getChildren().addAll(map.zoomBar, map.canvas, dotList, app.legendBox());
+        Label mapTitle = new Label("Operations map");
+        mapTitle.getStyleClass().add("section-title");
+        Button fullScreen = new Button("Full screen map");
+        fullScreen.getStyleClass().addAll("secondary-button", "dashboard-fullscreen");
+        fullScreen.setAccessibleText("Open the operations map full screen");
+        HBox mapHeader = new HBox(10, mapTitle, new Region(), fullScreen);
+        mapHeader.setAlignment(Pos.CENTER_LEFT);
+        HBox.setHgrow(mapHeader.getChildren().get(1), ALWAYS);
+        VBox mapPanel = panel(mapHeader);
+
+        StackPane mapViewport = new StackPane(map.canvas);
+        mapViewport.getStyleClass().add("dashboard-map-viewport");
+        mapViewport.setMinHeight(300);
+        mapViewport.setPrefHeight(390);
+        map.canvas.widthProperty().bind(mapViewport.widthProperty());
+        map.canvas.heightProperty().bind(mapViewport.heightProperty());
+        map.canvas.widthProperty().addListener((observable, oldWidth, newWidth) -> map.requestRedraw());
+        map.canvas.heightProperty().addListener((observable, oldHeight, newHeight) -> map.requestRedraw());
+        VBox.setVgrow(mapViewport, ALWAYS);
+
+        Node legend = app.legendBox();
+        HBox mapDetails = new HBox(20, dotList, legend);
+        mapDetails.setAlignment(Pos.TOP_LEFT);
+        HBox.setHgrow(dotList, ALWAYS);
+        mapPanel.getChildren().addAll(map.zoomBar, mapViewport, mapDetails);
 
         VBox statusPanel = panel(new Label("Order status"));
         ((Label) statusPanel.getChildren().get(0)).getStyleClass().add("section-title");
@@ -192,7 +218,45 @@ final class DashboardView {
 
         HBox content = new HBox(14, mapPanel, rightColumn);
         HBox.setHgrow(mapPanel, ALWAYS);
+        VBox.setVgrow(content, ALWAYS);
         page.getChildren().addAll(metrics, attentionPanel, content);
+
+        boolean[] fullScreenMode = {false};
+        Runnable toggleFullScreen = () -> {
+            fullScreenMode[0] = !fullScreenMode[0];
+            boolean expanded = fullScreenMode[0];
+            dashboardHeader.setVisible(!expanded);
+            dashboardHeader.setManaged(!expanded);
+            metrics.setVisible(!expanded);
+            metrics.setManaged(!expanded);
+            attentionPanel.setVisible(!expanded);
+            attentionPanel.setManaged(!expanded);
+            rightColumn.setVisible(!expanded);
+            rightColumn.setManaged(!expanded);
+            mapDetails.setVisible(!expanded);
+            mapDetails.setManaged(!expanded);
+            if (expanded) {
+                mapViewport.prefHeightProperty().bind(app.stage.heightProperty().subtract(190));
+                fullScreen.setText("Exit full screen  ·  Esc");
+                fullScreen.setAccessibleText("Exit full-screen map");
+            } else {
+                mapViewport.prefHeightProperty().unbind();
+                mapViewport.setPrefHeight(390);
+                fullScreen.setText("Full screen map");
+                fullScreen.setAccessibleText("Open the operations map full screen");
+            }
+            app.setDashboardMapFullscreen(expanded);
+            page.requestLayout();
+            map.requestRedraw();
+        };
+        fullScreen.setOnAction(event -> toggleFullScreen.run());
+        page.addEventFilter(KeyEvent.KEY_PRESSED, event -> {
+            if (fullScreenMode[0] && event.getCode() == KeyCode.ESCAPE) {
+                toggleFullScreen.run();
+                event.consume();
+            }
+        });
+
         refresh();
         return page;
     }

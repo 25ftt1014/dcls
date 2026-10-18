@@ -444,6 +444,20 @@ public final class DclsApp extends Application {
         content.setCenter(scroll);
     }
 
+    /** Hide app chrome while the dashboard map is in full-screen mode. */
+    void setDashboardMapFullscreen(boolean fullScreen) {
+        if (shell == null || stage == null) return;
+        BorderPane content = (BorderPane) shell.getCenter();
+        if (fullScreen) {
+            shell.setLeft(null);
+            content.setTop(null);
+        } else {
+            shell.setLeft(buildNav());
+            content.setTop(buildTopbar());
+        }
+        stage.setFullScreen(fullScreen);
+    }
+
     private void profileDialog() {
         TextField name = new TextField(currentUser.name()); TextField email = new TextField(currentUser.email()); TextField phone = new TextField(currentUser.phone());
         VBox form = new VBox(10, labeled("Full name", name), labeled("Email", email), labeled("Phone", phone),
