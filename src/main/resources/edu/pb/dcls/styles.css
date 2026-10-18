@@ -30,6 +30,7 @@
     -fx-border-color: -line;
     -fx-border-width: 0 1 0 0;
     -fx-effect: dropshadow(gaussian, rgba(20,27,45,0.04), 10, 0, 2, 0);
+    -fx-spacing: 7;
 }
 
 .topbar {
@@ -109,19 +110,25 @@
     -fx-background-color: transparent;
     -fx-text-fill: -ink-soft;
     -fx-alignment: center-left;
-    -fx-padding: 9 12;
-    -fx-background-radius: 10;
+    -fx-padding: 10 14;
+    -fx-background-radius: 11;
+    -fx-border-color: transparent;
+    -fx-border-width: 1;
+    -fx-border-radius: 11;
     -fx-font-size: 13.5px;
     -fx-font-weight: 600;
     -fx-cursor: hand;
 }
-.nav-button:hover { -fx-background-color: -accent-soft; -fx-text-fill: -accent; }
+.nav-button:hover { -fx-background-color: -accent-soft; -fx-text-fill: -accent-hover; }
+.nav-button:focused { -fx-border-color: -accent; }
 .nav-button.active { -fx-background-color: -accent; -fx-text-fill: #ffffff; -fx-font-weight: 700; }
+.nav-button.active:focused { -fx-border-color: -accent-hover; }
+.nav-button:pressed { -fx-background-color: -accent-hover; -fx-text-fill: #ffffff; }
 .nav-icon { -fx-background-color: -ink-soft; }
 .nav-button:hover .nav-icon { -fx-background-color: -accent; }
-.nav-button.active .nav-icon { -fx-background-color: #ffffff; }
-.brand-word { -fx-font-size: 17px; -fx-font-weight: 800; -fx-text-fill: -ink; }
-.nav-section { -fx-font-size: 10px; -fx-font-weight: 700; -fx-text-fill: #9aa6ba; -fx-padding: 4 8 2 10; }
+.nav-button.active .nav-icon, .nav-button:pressed .nav-icon { -fx-background-color: #ffffff; }
+.brand-word { -fx-font-size: 18px; -fx-font-weight: 800; -fx-text-fill: -ink; }
+.nav-section { -fx-font-size: 10px; -fx-font-weight: 700; -fx-text-fill: -ink-soft; -fx-padding: 2 8 5 10; }
 .nav-user-name { -fx-font-size: 12.5px; -fx-font-weight: 700; -fx-text-fill: -ink; }
 .nav-user-role { -fx-font-size: 11px; -fx-text-fill: -ink-soft; }
 

@@ -342,12 +342,12 @@ public final class DclsApp extends Application {
     private static final String IC_TRACKING = "M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z";
 
     private VBox buildNav() {
-        VBox sidebar = new VBox(9);
-        sidebar.setPrefWidth(204); sidebar.setMinWidth(204); sidebar.setPadding(new Insets(16, 12, 12, 12));
+        VBox sidebar = new VBox(7);
+        sidebar.setPrefWidth(204); sidebar.setMinWidth(204); sidebar.setPadding(new Insets(18, 12, 14, 12));
         sidebar.getStyleClass().add("sidebar");
 
         // Brand: logo + wordmark
-        HBox brand = new HBox(10); brand.setAlignment(Pos.CENTER_LEFT); brand.setPadding(new Insets(2, 4, 14, 6));
+        HBox brand = new HBox(10); brand.setAlignment(Pos.CENTER_LEFT); brand.setPadding(new Insets(2, 4, 18, 6));
         InputStream logo = getClass().getResourceAsStream("/edu/pb/dcls/Logo.svg");
         if (logo != null) {
             ImageView mark = new ImageView(new Image(logo));
@@ -393,7 +393,8 @@ public final class DclsApp extends Application {
     private void addNav(VBox sidebar, String page, String svgIcon, String label) {
         if (!access.canOpen(currentUser.role(), page)) return;
         Button button = new Button(label, navIcon(svgIcon));
-        button.setGraphicTextGap(12); button.setMaxWidth(Double.MAX_VALUE); button.setAlignment(Pos.CENTER_LEFT);
+        button.setGraphicTextGap(18); button.setMinHeight(44); button.setPrefHeight(44);
+        button.setMaxWidth(Double.MAX_VALUE); button.setAlignment(Pos.CENTER_LEFT);
         button.setAccessibleText(label); button.setFocusTraversable(true); button.getStyleClass().add("nav-button");
         if (activePage.equals(page)) button.getStyleClass().add("active");
         button.setOnAction(event -> showPage(page));
@@ -405,7 +406,7 @@ public final class DclsApp extends Application {
         SVGPath path = new SVGPath(); path.setContent(svg);
         Region icon = new Region();
         icon.setShape(path);
-        icon.setMinSize(18, 18); icon.setPrefSize(18, 18); icon.setMaxSize(18, 18);
+        icon.setMinSize(20, 20); icon.setPrefSize(20, 20); icon.setMaxSize(20, 20);
         icon.getStyleClass().add("nav-icon");
         return icon;
     }
