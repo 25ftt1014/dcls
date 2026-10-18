@@ -105,6 +105,9 @@ public final class DclsApp extends Application {
     MapController trackingMaps;
     VBox trackingLegend;
     VBox focusChipBox;
+    /** Live dashboard instance, ticked in place by the tracking poll. Nulled on
+     *  navigation so a detached scene graph (and its map tile listener) is collectable. */
+    DashboardView dashboard;
     String focusedShipmentId;
     String focusedVehicleId;
     List<String> pendingRouteShipmentIds = List.of();
@@ -424,6 +427,7 @@ public final class DclsApp extends Application {
         // every route to "tracking" starts it, every route away stops it.
         if ("tracking".equals(page)) startTracking(); else stopTracking();
         if (shell == null) return;
+        if (!"dashboard".equals(page)) dashboard = null;
         if (nav != null) { shell.setLeft(buildNav()); nav = (VBox) shell.getLeft(); }
         BorderPane content = (BorderPane) shell.getCenter();
         content.setTop(buildTopbar());
@@ -433,7 +437,7 @@ public final class DclsApp extends Application {
             case "orders" -> new OrdersView(this).page();
             case "routes" -> new RoutesView(this).page();
             case "tracking" -> new TrackingView(this).page();
-            default -> new DashboardView(this).page();
+            default -> { dashboard = new DashboardView(this); yield dashboard.page(); }
         };
         ScrollPane scroll = new ScrollPane(view); scroll.setFitToWidth(true); scroll.setHbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
         scroll.setStyle("-fx-background: #f6f8fb; -fx-background-color: #f6f8fb;");
@@ -1083,14 +1087,15 @@ public final class DclsApp extends Application {
         trackingTimer = new Timeline(new KeyFrame(Duration.seconds(1), event -> {
 // No simulation: GPS fixes arrive from the feed and are ingested on poll.
 // Lightweight every tick: redraw cached tours + ETA. Heavy work throttled —
-// rebuilding the dashboard scene and scanning legs every second froze the UI.
+// scanning legs every second froze the UI. The dashboard refreshes in place
+// (labels + one canvas repaint), never by rebuilding the scene.
             if (generation != trackingGeneration) return;
             trackingTick++;
             drawTracking();
             if (trackingTick % 5 == 0) checkReroute();
             Shipment focused = focusedShipment();
             if (focused != null) showEta(focused);
-            if (activePage.equals("dashboard") && trackingTick % 5 == 0) showPage("dashboard");
+            if (dashboard != null && trackingTick % 5 == 0) dashboard.refresh();
         }));
         trackingTimer.setCycleCount(Timeline.INDEFINITE); trackingTimer.play();
     }

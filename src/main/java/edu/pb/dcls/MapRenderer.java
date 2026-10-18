@@ -1059,33 +1059,21 @@ final class MapRenderer {
         mapLabel(g, label + (stale ? " · STALE" : ""), px + 12, py + 4);
     }
 
-    static void drawDashboardRoads(Canvas canvas) {
-        prepareMap(canvas, FULL_MAP);
-    }
-
     /** A single vehicle dot for the dashboard operations map. */
     record VehiclePlot(double lon, double lat, String label, String color, boolean stale) { }
 
-    /** Operations-map rendering: bare map plus vehicle dots only (no routes, no stops).
-     *  Returns the view used, so callers can hit-test hovers with project(). */
-    static ViewBounds drawVehicles(Canvas canvas, List<VehiclePlot> plots) {
-        double w = canvas.getWidth(), h = canvas.getHeight();
-        List<double[]> points = new ArrayList<>();
-        if (plots != null) for (VehiclePlot plot : plots) points.add(new double[] {plot.lon(), plot.lat()});
-        ViewBounds view = fitBounds(points, drawableAspect(w, h));
-        GraphicsContext g = prepareMap(canvas, view);
-        if (plots != null) for (VehiclePlot plot : plots) {
-            double[] p = project(plot.lon(), plot.lat(), w, h, view);
+    /** Operations-map marks only (no routes, no stops): one dot per active vehicle.
+     *  Points outside the viewport are skipped rather than edge-clamped, so a
+     *  zoomed-in map doesn't pile every off-screen vehicle onto the border. */
+    static void paintVehicleDots(GraphicsContext g, double w, double h, ViewBounds view, List<VehiclePlot> plots) {
+        if (plots == null) return;
+        for (VehiclePlot plot : plots) {
+            double[] p = projectIfVisible(plot.lon(), plot.lat(), w, h, view);
+            if (p == null) continue;
             g.setFill(Color.web(plot.color())); g.fillOval(p[0] - 9, p[1] - 9, 18, 18);
             g.setStroke(Color.WHITE); g.setLineWidth(2); g.strokeOval(p[0] - 9, p[1] - 9, 18, 18);
             mapLabel(g, plot.label() + (plot.stale() ? " · STALE" : ""), p[0] + 12, p[1] + 4);
         }
-        return view;
-    }
-
-    static Canvas activityChart() {
-        Canvas canvas = new Canvas(224, 74); GraphicsContext g = canvas.getGraphicsContext2D(); double[] values = {.34,.43,.39,.55,.74,.86,.69,.92,.84,.94,.82,1};
-        for(int i=0;i<values.length;i++){double x=4+i*18,bar=values[i]*56;g.setFill(i==values.length-1?Color.web("#315cf5"):Color.web("#e5ebff"));g.fillRoundRect(x,58-bar,14,bar,4,4);} return canvas;
     }
 
     /** Free Nominatim search for Brunei (WiFi). Ranked rooftop-first. */

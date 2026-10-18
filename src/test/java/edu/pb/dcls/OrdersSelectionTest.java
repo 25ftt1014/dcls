@@ -6,6 +6,7 @@ import edu.pb.dcls.Domain.User;
 import javafx.application.Platform;
 import javafx.collections.FXCollections;
 import javafx.scene.control.Button;
+import javafx.scene.control.ProgressBar;
 import javafx.scene.control.TableView;
 import javafx.scene.control.TextField;
 import javafx.scene.layout.VBox;
@@ -50,6 +51,7 @@ class OrdersSelectionTest {
                 assertNotNull(page.getChildren().get(0), "page must have a header");
 
                 selectionSurvivesSearch(page);
+                dashboardBuildsAndTicksInPlace(app);
             } catch (Throwable t) {
                 failure.set(t);
             } finally {
@@ -129,6 +131,39 @@ class OrdersSelectionTest {
         Button cancel = buttons.get("Cancel order");
         assertNotNull(cancel);
         assertFalse(cancel.isDisabled(), "a pending order must be cancellable");
+    }
+
+    /**
+     * The dashboard builds once and is ticked in place. The tracking poll calls
+     * refresh() every few seconds, so a rebuild there would kill hover state, the
+     * tooltip and the manual map zoom mid-use.
+     */
+    private static void dashboardBuildsAndTicksInPlace(DclsApp app) {
+        DashboardView view = new DashboardView(app);
+        VBox page = view.page();
+        assertNotNull(page, "dashboard must build");
+        assertTrue(page.getChildren().size() >= 3, "header, metrics and content must all be present");
+
+        List<javafx.scene.Node> before = List.copyOf(page.getChildren());
+        view.refresh();
+        assertEquals(before, List.copyOf(page.getChildren()),
+                "refresh() must mutate in place, never rebuild the scene graph");
+
+        List<ProgressBar> bars = new ArrayList<>();
+        find(page, node -> { if (node instanceof ProgressBar bar) bars.add(bar); });
+        assertFalse(bars.isEmpty(), "the live order-status breakdown must be on screen");
+        for (ProgressBar bar : bars) assertTrue(bar.getProgress() >= 0 && bar.getProgress() <= 1,
+                "status bars are proportions of the busiest status, so 0..1");
+
+        List<Button> buttons = new ArrayList<>();
+        find(page, node -> { if (node instanceof Button b) buttons.add(b); });
+        assertTrue(buttons.stream().anyMatch(b -> b.getText().equals("Reset view")),
+                "the ops map must expose zoom/pan controls");
+
+        List<String> texts = new ArrayList<>();
+        find(page, node -> { if (node instanceof javafx.scene.control.Label l) texts.add(l.getText()); });
+        assertTrue(texts.stream().anyMatch(t -> t.endsWith("on the road")),
+                "the fleet card must say how many vehicles are actually out, not just the fleet size: " + texts);
     }
 
     @SuppressWarnings("unchecked")

@@ -157,12 +157,33 @@
 
 /* ---- dashboard bits ------------------------------------------ */
 .activity-summary { -fx-text-fill: -accent; -fx-font-size: 11px; -fx-font-weight: 700; }
-.delivery-line {
-    -fx-padding: 8 2 6 2;
-    -fx-border-color: transparent transparent -line transparent;
-    -fx-font-family: "SF Mono", "Consolas", monospace;
-    -fx-font-size: 11px;
+.dashboard-empty { -fx-text-fill: -ink-soft; -fx-font-size: 12px; }
+.dashboard-attention {
+    -fx-background-color: -surface;
+    -fx-text-fill: -ink;
+    -fx-alignment: center-left;
+    -fx-padding: 12 14;
+    -fx-border-color: #cdd7e6;
+    -fx-border-radius: 9;
+    -fx-background-radius: 9;
+    -fx-font-weight: 700;
+    -fx-cursor: hand;
 }
+.dashboard-attention:hover { -fx-background-color: -accent-soft; -fx-border-color: -accent; }
+.dashboard-attention:focused { -fx-border-color: -accent; -fx-border-width: 2; }
+.pill-row {
+    -fx-alignment: center-left;
+    -fx-padding: 7 2;
+    -fx-border-color: transparent transparent -line transparent;
+}
+.delivery-id { -fx-font-family: "SF Mono", "Consolas", monospace; -fx-font-size: 11px; }
+
+/* order-status breakdown bars */
+.status-row { -fx-alignment: center-left; }
+.status-bar { -fx-pref-width: 118; -fx-pref-height: 6; }
+.progress-bar { -fx-background-color: -line; -fx-background-radius: 3; }
+.progress-bar > .region { -fx-background-color: -accent; -fx-background-radius: 3; }
+
 .detail-value { -fx-font-size: 12px; -fx-text-fill: -ink-soft; }
 
 /* ---- inputs --------------------------------------------------- */
