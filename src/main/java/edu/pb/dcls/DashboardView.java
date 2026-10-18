@@ -189,8 +189,22 @@ final class DashboardView {
         mapViewport.getStyleClass().add("dashboard-map-viewport");
         mapViewport.setMinHeight(300);
         mapViewport.setPrefHeight(390);
-        map.canvas.widthProperty().bind(mapViewport.widthProperty());
-        map.canvas.heightProperty().bind(mapViewport.heightProperty());
+        // Canvas is resizable but reports its current size as its preferred size.
+        // Keep it out of the viewport's layout measurement to prevent a sizing loop.
+        map.canvas.setManaged(false);
+        Runnable resizeMap = () -> {
+            double width = mapViewport.getWidth();
+            double height = mapViewport.getHeight();
+            if (width > 0 && Math.abs(map.canvas.getWidth() - width) > 0.5) {
+                map.canvas.setWidth(width);
+            }
+            if (height > 0 && Math.abs(map.canvas.getHeight() - height) > 0.5) {
+                map.canvas.setHeight(height);
+            }
+            map.canvas.relocate(0, 0);
+        };
+        mapViewport.widthProperty().addListener((observable, oldWidth, newWidth) -> resizeMap.run());
+        mapViewport.heightProperty().addListener((observable, oldHeight, newHeight) -> resizeMap.run());
         map.canvas.widthProperty().addListener((observable, oldWidth, newWidth) -> map.requestRedraw());
         map.canvas.heightProperty().addListener((observable, oldHeight, newHeight) -> map.requestRedraw());
         VBox.setVgrow(mapViewport, ALWAYS);
