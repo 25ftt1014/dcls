@@ -61,17 +61,9 @@ class MapAspectTest {
     }
 
     @Test
-    void zoomForRespectsProviderFetchMax() {
-        // Esri imagery ends at z19: deep zoom must never request z20 tiles that 404.
-        MapRenderer.Basemap prev = MapRenderer.basemap;
-        try {
-            MapRenderer.basemap = MapRenderer.Basemap.ESRI_IMAGERY;
-            assertTrue(MapRenderer.zoomFor(1e-9, 100_000) <= 19);
-            MapRenderer.basemap = MapRenderer.Basemap.OSM_STANDARD;
-            assertTrue(MapRenderer.zoomFor(1e-9, 100_000) <= 20);
-        } finally {
-            MapRenderer.basemap = prev;
-        }
+    void zoomForRespectsLiveFetchMax() {
+        // Beyond z20 the tiles 404, so a very deep view must never request them.
+        assertTrue(MapRenderer.zoomFor(1e-9, 100_000) <= 20);
     }
 
     @Test
@@ -82,5 +74,55 @@ class MapAspectTest {
         double aspect = MapRenderer.drawableAspect(900, 480);
         var refit = MapRenderer.fitAspect(pushed, aspect);
         assertEquals(1.0, ratio(refit, 900, 480), 0.03);
+    }
+
+    @Test
+    void zoomedViewIsUndistortedAndCentred() {
+        // The post-Clear view: explicit zoom on the depot. Uniform scale on both axes
+        // and the requested centre preserved.
+        double w = 750, h = 480;
+        double viewPx = w - MapRenderer.MAP_PAD * 2;
+        double aspect = MapRenderer.drawableAspect(w, h);
+        var view = MapRenderer.zoomedView(114.94, 4.89, MapRenderer.DEFAULT_ZOOM, viewPx, aspect);
+
+        assertEquals(1.0, ratio(view, w, h), 0.03, "explicit-zoom view must not squash");
+        double[] centre = MapRenderer.projectRaw(114.94, 4.89, w, h, view);
+        assertEquals(w / 2, centre[0], 1.5);
+        assertEquals(h / 2, centre[1], 1.5);
+    }
+
+    @Test
+    void zoomedViewStaysInsideTheMap() {
+        double aspect = MapRenderer.drawableAspect(750, 480);
+        var view = MapRenderer.zoomedView(114.94, 4.89, MapRenderer.DEFAULT_ZOOM,
+                750 - MapRenderer.MAP_PAD * 2, aspect);
+        assertTrue(view.lonMin() >= MapRenderer.MAP_LON_MIN - 1e-9);
+        assertTrue(view.lonMax() <= MapRenderer.MAP_LON_MAX + 1e-9);
+        assertTrue(view.latMin() >= MapRenderer.MAP_LAT_MIN - 1e-9);
+        assertTrue(view.latMax() <= MapRenderer.MAP_LAT_MAX + 1e-9);
+    }
+
+    @Test
+    void zoomedViewIsTighterThanTheWholeCountry() {
+        // Regression guard for the Clear bug: the home view must be a neighbourhood,
+        // never the all-of-Brunei extent fitBounds falls back to.
+        double aspect = MapRenderer.drawableAspect(750, 480);
+        var view = MapRenderer.zoomedView(114.94, 4.89, MapRenderer.DEFAULT_ZOOM,
+                750 - MapRenderer.MAP_PAD * 2, aspect);
+        double homeLon = view.lonMax() - view.lonMin();
+        double countryLon = MapRenderer.FULL_MAP.lonMax() - MapRenderer.FULL_MAP.lonMin();
+        assertTrue(homeLon < countryLon / 5,
+                "home view must be far tighter than the country, got " + homeLon + " vs " + countryLon);
+    }
+
+    @Test
+    void zoomedViewClampsZoomIntoTheFetchableRange() {
+        double aspect = MapRenderer.drawableAspect(750, 480);
+        double px = 750 - MapRenderer.MAP_PAD * 2;
+        for (int z : new int[] {-5, 0, 99}) {
+            var view = MapRenderer.zoomedView(114.94, 4.89, z, px, aspect);
+            assertTrue(view.lonMax() > view.lonMin() && view.latMax() > view.latMin(),
+                    "zoom " + z + " must still yield a usable view");
+        }
     }
 }

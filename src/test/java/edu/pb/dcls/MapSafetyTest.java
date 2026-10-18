@@ -37,13 +37,12 @@ class MapSafetyTest {
     }
 
     @Nested
-    @DisplayName("basemap default")
-    class BasemapDefault {
+    @DisplayName("basemap")
+    class BasemapOnly {
         @Test
-        void defaultIsAlwaysOsmStandard() {
-            assertEquals(MapRenderer.Basemap.OSM_STANDARD, MapRenderer.basemap);
-            String url = MapRenderer.tileUrl(14, 12950, 8260);
-            assertTrue(url.contains("tile.openstreetmap.org"));
+        void tileUrlsAreOsmStandard() {
+            assertEquals("https://a.tile.openstreetmap.org/14/12950/8260.png",
+                    MapRenderer.tileUrl(14, 12950, 8260));
         }
 
         @Test
@@ -52,48 +51,99 @@ class MapSafetyTest {
             assertTrue(url.startsWith("https://"));
             assertTrue(url.endsWith(".png"));
         }
+
+        @Test
+        void scopeIsTheOsmCacheDir() {
+            assertEquals("osm-v2-keyless-v2", MapRenderer.currentScopeName());
+        }
+
+        @Test
+        void removedSatelliteScopeIsNeverCurrent() {
+            assertNotEquals("esri-v1", MapRenderer.currentScopeName());
+        }
     }
 
     @Nested
-    @DisplayName("esri imagery")
-    class EsriImagery {
+    @DisplayName("osm subdomains")
+    class OsmSubdomains {
         @Test
-        void esriUrlAxisOrder() {
-            // Esri serves {z}/{y}/{x}: row before column, unlike OSM-style {z}/{x}/{y}.
-            assertEquals("https://server.arcgisonline.com/ArcGIS/rest/services"
-                    + "/World_Imagery/MapServer/tile/14/8260/12950",
-                    MapRenderer.esriImageryUrl(14, 12950, 8260));
+        void adjacentTilesSpreadAcrossHosts() {
+            // Pacing is per host, so consecutive tiles must actually reach every host
+            // or the parallel fetches would serialize on one subdomain again.
+            int first = MapRenderer.osmHostIndex(100, 200, 0);
+            int second = MapRenderer.osmHostIndex(101, 200, 0);
+            int third = MapRenderer.osmHostIndex(102, 200, 0);
+            assertEquals(3, java.util.Set.of(first, second, third).size(),
+                    "three consecutive tiles must hit all three subdomains");
+            assertEquals(0, MapRenderer.osmHostIndex(100, 200, 0));
         }
 
         @Test
-        void scopesSeparatePerProvider() {
-            MapRenderer.Basemap prev = MapRenderer.basemap;
-            try {
-                MapRenderer.basemap = MapRenderer.Basemap.OSM_STANDARD;
-                String osm = MapRenderer.currentScopeName();
-                MapRenderer.basemap = MapRenderer.Basemap.ESRI_IMAGERY;
-                assertEquals("esri-v1", MapRenderer.currentScopeName());
-                assertNotEquals(osm, MapRenderer.currentScopeName());
-            } finally {
-                MapRenderer.basemap = prev;
+        void hostShiftMovesToTheNextHost() {
+            assertEquals(1, MapRenderer.osmHostIndex(100, 200, 1));
+        }
+
+        @Test
+        void hostIndexNeverGoesNegative() {
+            // x+y can be negative near the antimeridian; floorMod must keep it in range.
+            for (int shift = -4; shift <= 4; shift++) {
+                int index = MapRenderer.osmHostIndex(-5, -5, shift);
+                assertTrue(index >= 0 && index < 3, "out of range host index " + index);
             }
         }
+    }
 
+    @Nested
+    @DisplayName("zoom level stability")
+    class ZoomStability {
         @Test
-        void memKeyPrefixesSeparateProviders() {
-            assertEquals("o/14/1/2", MapRenderer.memKey(MapRenderer.Basemap.OSM_STANDARD, "14/1/2"));
-            assertEquals("e/14/1/2", MapRenderer.memKey(MapRenderer.Basemap.ESRI_IMAGERY, "14/1/2"));
+        void holdsCurrentLevelWithinHysteresisBand() {
+            // A gesture that hovers on a threshold must not flip-flop: holding the
+            // level keeps the already-cached tiles instead of re-fetching the view.
+            assertEquals(13, MapRenderer.stableFetchZoom(12, 13, 3, 20, MapRenderer.ZOOM_HYSTERESIS));
+            assertEquals(13, MapRenderer.stableFetchZoom(14, 13, 3, 20, MapRenderer.ZOOM_HYSTERESIS));
+            assertEquals(13, MapRenderer.stableFetchZoom(13, 13, 3, 20, MapRenderer.ZOOM_HYSTERESIS));
         }
 
         @Test
-        void esriTileUrlSelected() {
-            MapRenderer.Basemap prev = MapRenderer.basemap;
-            try {
-                MapRenderer.basemap = MapRenderer.Basemap.ESRI_IMAGERY;
-                assertTrue(MapRenderer.tileUrl(14, 12950, 8260).contains("server.arcgisonline.com"));
-            } finally {
-                MapRenderer.basemap = prev;
-            }
+        void switchesWhenClearlyDifferent() {
+            // Outside the band the ideal wins outright, so real zoom moves still track.
+            assertEquals(16, MapRenderer.stableFetchZoom(16, 13, 3, 20, MapRenderer.ZOOM_HYSTERESIS));
+            assertEquals(10, MapRenderer.stableFetchZoom(10, 13, 3, 20, MapRenderer.ZOOM_HYSTERESIS));
+        }
+
+        @Test
+        void adoptsIdealWhenNoLevelYet() {
+            assertEquals(14, MapRenderer.stableFetchZoom(14, -1, 3, 20, MapRenderer.ZOOM_HYSTERESIS));
+            assertEquals(14, MapRenderer.stableFetchZoom(14, 99, 3, 20, MapRenderer.ZOOM_HYSTERESIS));
+        }
+
+        @Test
+        void neverLeavesTheLegalRange() {
+            assertEquals(20, MapRenderer.stableFetchZoom(99, 13, 3, 20, MapRenderer.ZOOM_HYSTERESIS));
+            assertEquals(3, MapRenderer.stableFetchZoom(-5, 13, 3, 20, MapRenderer.ZOOM_HYSTERESIS));
+        }
+
+        @Test
+        void smallMapDoesNotPinTheWideOneToItsCoarseLevel() {
+            // Regression: the sticky level used to be one static shared by every map,
+            // so the 430x210 dashboard settled on z11 and then held the route-planning
+            // map (ideal z12) down at z11 — it opened visibly blocky.
+            javafx.scene.canvas.Canvas small = new javafx.scene.canvas.Canvas(430, 210);
+            javafx.scene.canvas.Canvas wide = new javafx.scene.canvas.Canvas(750, 480);
+            int dashboard = MapRenderer.tileZoomFor(small, MapRenderer.FULL_MAP, 430 - MapRenderer.MAP_PAD * 2);
+            int routes = MapRenderer.tileZoomFor(wide, MapRenderer.FULL_MAP, 750 - MapRenderer.MAP_PAD * 2);
+            assertEquals(11, dashboard, "small dashboard map should sit at z11");
+            assertEquals(12, routes, "route map must not inherit the dashboard's level");
+        }
+
+        @Test
+        void eachCanvasTracksItsOwnLevelAcrossFrames() {
+            javafx.scene.canvas.Canvas canvas = new javafx.scene.canvas.Canvas(750, 480);
+            double px = 750 - MapRenderer.MAP_PAD * 2;
+            int first = MapRenderer.tileZoomFor(canvas, MapRenderer.FULL_MAP, px);
+            assertEquals(first, MapRenderer.tileZoomFor(canvas, MapRenderer.FULL_MAP, px),
+                    "a steady view must not wobble between frames");
         }
     }
 
@@ -105,30 +155,60 @@ class MapSafetyTest {
             // Narrow view: deeper tiles fit the budget -> one level deeper for crisper imagery.
             var view = new MapRenderer.ViewBounds(114.925, 114.928, 4.905, 4.908);
             int display = MapRenderer.zoomFor(0.003, 500);
-            assertEquals(display + 1, MapRenderer.fetchZoom(display, view, MapRenderer.Basemap.OSM_STANDARD));
-            assertEquals(display + 1, MapRenderer.fetchZoom(display, view, MapRenderer.Basemap.ESRI_IMAGERY));
+            assertEquals(display + 1, MapRenderer.fetchZoom(display, view));
         }
 
         @Test
         void wideViewStaysAtDisplayZoom() {
             // Whole country at z14: deeper tiles exceed the fetch budget -> stays.
-            assertEquals(14, MapRenderer.fetchZoom(14, MapRenderer.FULL_MAP, MapRenderer.Basemap.OSM_STANDARD));
+            assertEquals(14, MapRenderer.fetchZoom(14, MapRenderer.FULL_MAP));
         }
 
         @Test
         void countryViewOverzoomsForDetail() {
             // Full-country framing at z12 deepens to z13 (~192 tiles, within budget):
             // crisp coast instead of coarse overviews.
-            assertEquals(13, MapRenderer.fetchZoom(12, MapRenderer.FULL_MAP, MapRenderer.Basemap.OSM_STANDARD));
-            assertEquals(13, MapRenderer.fetchZoom(12, MapRenderer.FULL_MAP, MapRenderer.Basemap.ESRI_IMAGERY));
+            assertEquals(13, MapRenderer.fetchZoom(12, MapRenderer.FULL_MAP));
         }
 
         @Test
-        void esriCapsAt19() {
+        void deepZoomCapsAtLiveMax() {
+            // Beyond z20 the tiles 404, so the request must never go deeper.
             var view = new MapRenderer.ViewBounds(114.925, 114.928, 4.905, 4.908);
-            assertEquals(19, MapRenderer.maxFetchZoom(MapRenderer.Basemap.ESRI_IMAGERY));
-            assertEquals(20, MapRenderer.maxFetchZoom(MapRenderer.Basemap.OSM_STANDARD));
-            assertEquals(19, MapRenderer.fetchZoom(19, view, MapRenderer.Basemap.ESRI_IMAGERY));
+            assertEquals(20, MapRenderer.fetchZoom(20, view));
+            assertTrue(MapRenderer.zoomFor(1e-9, 100_000) <= 20);
+        }
+    }
+
+    @Nested
+    @DisplayName("auto view vs home")
+    class AutoViewOrHome {
+        private final MapRenderer.ViewBounds home =
+                new MapRenderer.ViewBounds(114.92, 114.96, 4.88, 4.90);
+
+        @Test
+        void emptyContentUsesHomeInsteadOfTheWholeCountry() {
+            // The Clear bug: empty content reached fitBounds, whose empty fallback is
+            // FULL_MAP, snapping the map out to all of Brunei.
+            assertEquals(home, MapRenderer.autoViewOrHome(List.of(), home, 1.6));
+            assertEquals(home, MapRenderer.autoViewOrHome(null, home, 1.6));
+        }
+
+        @Test
+        void contentWinsOverHome() {
+            var stops = List.of(new double[] {114.94, 4.89}, new double[] {114.95, 4.94});
+            var framed = MapRenderer.autoViewOrHome(stops, home, 1.6);
+            assertNotEquals(MapRenderer.FULL_MAP, framed);
+            assertTrue(framed.lonMax() > 114.95 && framed.latMax() > 4.94,
+                    "stops must be framed, not the home view");
+        }
+
+        @Test
+        void nullHomeKeepsThePlainWholeMapFallback() {
+            // Dashboard and fleet views want the old behaviour when there is nothing
+            // to frame.
+            assertEquals(MapRenderer.FULL_MAP, MapRenderer.autoViewOrHome(List.of(), null, 1.6));
+            assertEquals(MapRenderer.FULL_MAP, MapRenderer.autoViewOrHome(null, null, 1.6));
         }
     }
 

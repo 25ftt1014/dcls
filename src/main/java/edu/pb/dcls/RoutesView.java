@@ -22,7 +22,6 @@ import javafx.util.Duration;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Consumer;
@@ -32,6 +31,7 @@ import static edu.pb.dcls.Domain.OrderStatus;
 import static edu.pb.dcls.Domain.RoutePlan;
 import static edu.pb.dcls.Domain.Stop;
 import static edu.pb.dcls.Domain.User;
+import static edu.pb.dcls.UiFactory.PANEL_PADDING_H;
 import static edu.pb.dcls.UiFactory.button;
 import static edu.pb.dcls.UiFactory.pageHeader;
 import static edu.pb.dcls.UiFactory.panel;
@@ -63,6 +63,81 @@ final class RoutesView {
         pill.getStyleClass().add(cls);
     }
 
+    /** A tick box with a one-line summary under it and the full explanation on hover. */
+    private static VBox toggleRow(CheckBox box, String hint, String tooltip) {
+        HBox row = new HBox(8, box);
+        row.setAlignment(javafx.geometry.Pos.TOP_LEFT);
+        Label hintLabel = new Label(hint);
+        hintLabel.getStyleClass().add("muted");
+        hintLabel.setWrapText(true);
+        if (tooltip != null && !tooltip.isBlank()) box.setTooltip(new Tooltip(tooltip));
+        VBox outer = new VBox(3, row, hintLabel);
+        outer.setPadding(new javafx.geometry.Insets(0, 0, 0, 2));
+        return outer;
+    }
+
+    /** Single stop-centric timeline: badge, stop name, arrival time, and the distance of
+     *  the leg arriving at that stop. Replaces the old leg list plus ETA breakdown, which
+     *  printed the same numbers twice. Totals stay in the status bar above the map.
+     *
+     *  <p>Hovering a row highlights the leg that reaches that stop, which is the same map
+     *  emphasis the leg list gave; leg index is one behind the stop index, and the depot
+     *  has no incoming leg. */
+    private void showRouteTimeline(VBox box, List<Stop> stops, List<Double> legKm,
+                                   int[] highlightLeg, DclsApp.MapController previewMap) {
+        box.getChildren().clear();
+        highlightLeg[0] = -1;
+        if (stops == null || stops.size() < 2) return;
+        List<TimelineRow> rows = timelineRows(stops, legKm, app.routeService.cumulativeMinutes(stops));
+        for (TimelineRow entry : rows) {
+            Label badge = new Label(String.valueOf(entry.number()));
+            badge.getStyleClass().add("timeline-index");
+            Label name = new Label(entry.name());
+            name.getStyleClass().add("timeline-name");
+            name.setWrapText(true);
+            HBox.setHgrow(name, ALWAYS);
+            Label arrival = new Label(entry.number() == 1 ? "start" : entry.arrivalMin() + " min");
+            arrival.getStyleClass().add("timeline-arrival");
+            HBox row = new HBox(8, badge, name, arrival);
+            row.setAlignment(javafx.geometry.Pos.TOP_LEFT);
+            if (entry.legKm() != null) {
+                Label km = new Label(String.format("· %.1f km", entry.legKm()));
+                km.getStyleClass().add("timeline-km");
+                row.getChildren().add(km);
+            }
+            int legIndex = entry.number() - 2;
+            row.setOnMouseEntered(event -> {
+                if (legIndex < 0) return;
+                highlightLeg[0] = legIndex;
+                previewMap.redraw();
+            });
+            row.setOnMouseExited(event -> { highlightLeg[0] = -1; previewMap.redraw(); });
+            row.getStyleClass().add("timeline-row");
+            box.getChildren().add(row);
+        }
+    }
+
+    /** One line of the route timeline: a stop, when the driver gets there, and how far
+     *  the leg arriving at it was. legKm is null for the depot, which has no incoming leg. */
+    record TimelineRow(int number, String name, int arrivalMin, Double legKm) { }
+
+    /** Pairs each stop with its arrival time and the distance of the leg reaching it.
+     *
+     *  <p>legKm holds one fewer entry than stops, so legKm.get(i - 1) arrives AT stop i.
+     *  That off-by-one is the whole reason this is separated out and tested.
+     *  Pure and headless-testable. */
+    static List<TimelineRow> timelineRows(List<Stop> stops, List<Double> legKm, List<Double> arrivalMin) {
+        if (stops == null || stops.isEmpty()) return List.of();
+        List<TimelineRow> rows = new ArrayList<>(stops.size());
+        for (int i = 0; i < stops.size(); i++) {
+            Double km = i == 0 ? null : (legKm != null && i - 1 < legKm.size() ? legKm.get(i - 1) : null);
+            Double arrival = arrivalMin != null && i < arrivalMin.size() ? arrivalMin.get(i) : null;
+            rows.add(new TimelineRow(i + 1, stops.get(i).name(),
+                    arrival == null ? 0 : (int) Math.round(arrival), km));
+        }
+        return rows;
+    }
+
     VBox page() {
         final int gen = ++app.routePageGen;
         // Always-blank entry: clear stale draft/preview unless arriving via order handoff.
@@ -76,7 +151,7 @@ final class RoutesView {
         final Map<String, AddressGeocoder.GeocodedStop> lastGeocode = new java.util.HashMap<>();
         stopConfidence.clear();
         confirmedStops.clear();
-        VBox page = pageHeader("Route planning", handoffShipmentIds.isEmpty()
+        VBox page = pageHeader(handoffShipmentIds.isEmpty()
                 ? "Start blank — add stops or arrive from an order to auto-locate its address."
                 : "Route for " + String.join(", ", handoffShipmentIds) + " — address located by keywords.");
         HBox builder = new HBox(12);
@@ -88,10 +163,13 @@ final class RoutesView {
         Button addStop = button("Add", "secondary-button"); addStop.setPrefWidth(64);
         HBox addRow = new HBox(8, place, addStop); HBox.setHgrow(place, ALWAYS);
         Button addNearby = button("Add nearby pending orders", "link-button"); addNearby.setMaxWidth(Double.MAX_VALUE);
-        CheckBox clickCheck = new CheckBox("Place stops by clicking map"); clickCheck.setSelected(true);
+        // CheckBox carries its own title again; the .check-box rule in styles.css is what
+    // makes it paint. The explanation below it is a real Label and stays.
+    CheckBox clickCheck = new CheckBox("Place stops by clicking the map"); clickCheck.setSelected(true);
+    clickCheck.setAccessibleText("Place stops by clicking the map");
+    CheckBox optimizeToggle = new CheckBox("Optimize stop order"); optimizeToggle.setSelected(true);
+    optimizeToggle.setAccessibleText("Optimize stop order");
         ComboBox<User> driver = app.driverCombo(); driver.setPromptText("Assign driver (optional)");
-        CheckBox optimizeToggle = new CheckBox("Optimize order"); optimizeToggle.setSelected(true);
-        optimizeToggle.setTooltip(new Tooltip("Uncheck to visit stops in the order listed"));
         Button saveAssign = button("Save & assign", "primary-button"); saveAssign.setMaxWidth(Double.MAX_VALUE);
         Button recalc = button("Recalculate", "link-button");
         Button clearLink = button("Clear", "link-button");
@@ -101,13 +179,18 @@ final class RoutesView {
         Label heroKm = new Label("—"); heroKm.getStyleClass().add("metric-value");
         Label heroMin = new Label("—"); heroMin.getStyleClass().add("metric-value");
         Label routeResult = new Label("Add at least one delivery stop after the depot."); routeResult.getStyleClass().add("muted"); routeResult.setWrapText(true);
-        VBox legRows = new VBox(2);
-        VBox etaBreakdown = new VBox(2);
+        VBox timeline = new VBox(2);
 
         DclsApp.MapController previewMap = app.new MapController(640, 480);
         final boolean[] dirty = {false};
         final int[] highlightLeg = {-1};
         previewMap.content = () -> (dirty[0] ? app.routeStopsDraft : app.previewStops).stream().map(s -> new double[] {s.x(), s.y()}).toList();
+        // With no stops to frame, park on the depot at the default zoom instead of
+        // letting fitBounds fall through to FULL_MAP (all of Brunei). Built per paint
+        // so it tracks the live canvas size, like any other auto view.
+        previewMap.homeAt = (viewPx, aspect) -> MapRenderer.zoomedView(
+                AppServices.BruneiPlaces.DEPOT.x(), AppServices.BruneiPlaces.DEPOT.y(),
+                MapRenderer.DEFAULT_ZOOM, viewPx, aspect);
         previewMap.painter = (g, v) -> {
             double w = previewMap.canvas.getWidth(), h = previewMap.canvas.getHeight();
             if (dirty[0]) {
@@ -119,6 +202,10 @@ final class RoutesView {
 
         final RoutePlan[] planned = {null};
         final boolean[] saved = {false};
+        // Bumped whenever the draft changes underneath an in-flight calculation, so a
+        // result computed from the old stops is discarded instead of repainting a
+        // route the user has since cleared or edited.
+        final int[] draftEpoch = {0};
         final Consumer<Boolean>[] runCalcRef = new Consumer[1];
         PauseTransition debounce = new PauseTransition(Duration.seconds(1.5));
         debounce.setOnFinished(event -> {
@@ -127,17 +214,18 @@ final class RoutesView {
         // Preview-only calc on a worker: snap pins to roads, order (table solver or
         // kept order), resolve road geometry per leg. Persisted solely by Save & assign.
         final Thread[] worker = new Thread[1];
+        /** Preview for a plan we did not just calculate (a saved route picked from history):
+     *  leg distances come from the router cache, falling back to a snapped estimate. */
         Consumer<List<Stop>> showLegEstimates = stops -> {
-            legRows.getChildren().clear();
-            highlightLeg[0] = -1;
+            List<Double> legKm = new ArrayList<>();
             for (int i = 1; i < stops.size(); i++) {
                 Stop a = stops.get(i - 1), b = stops.get(i);
                 AppServices.OsrmRouter.LegResult cached =
                         AppServices.OsrmRouter.leg(a.x(), a.y(), b.x(), b.y());
-                double km = cached != null ? cached.km()
-                        : AppServices.OsrmRouter.snapKm(a.x(), a.y(), b.x(), b.y());
-                legRows.getChildren().add(legRow(i - 1, km, highlightLeg, previewMap));
+                legKm.add(cached != null ? cached.km()
+                        : AppServices.OsrmRouter.snapKm(a.x(), a.y(), b.x(), b.y()));
             }
+            showRouteTimeline(timeline, stops, legKm, highlightLeg, previewMap);
         };
         runCalcRef[0] = manual -> {
             if (gen != app.routePageGen) return;
@@ -163,9 +251,8 @@ final class RoutesView {
                 routeResult.setText("Add at least one delivery stop after the depot.");
                 heroKm.setText("—"); heroMin.setText("—");
                 setStatus(statusPill, "Add stops", "status-warn");
-                legRows.getChildren().clear();
+                timeline.getChildren().clear();
                 highlightLeg[0] = -1;
-                etaBreakdown.getChildren().clear();
                 previewMap.redraw();
                 if (manual) app.alert(Alert.AlertType.WARNING, "Route not created", "Add a depot and at least one stop.");
                 return;
@@ -177,6 +264,7 @@ final class RoutesView {
             List<Stop> snapshot = new ArrayList<>(app.routeStopsDraft);
             String routeName = name.getText();
             boolean optimizeOrder = optimizeToggle.isSelected();
+            int epoch = draftEpoch[0];
             Thread thread = new Thread(() -> {
                 try {
                     List<Stop> snapped = new ArrayList<>();
@@ -231,7 +319,10 @@ final class RoutesView {
                     boolean ready = allRoad;
                     int snappedCount = moved;
                     Platform.runLater(() -> {
-                        if (gen != app.routePageGen) return;
+                        // Discarded when the page was rebuilt (gen) or when the draft
+                        // changed under us (epoch): a Clear or a pin edit must never be
+                        // undone by a calculation that was already in flight.
+                        if (gen != app.routePageGen || epoch != draftEpoch[0]) return;
                         if (ordered.size() < 2 || legs.size() != ordered.size() - 1) {
                             setStatus(statusPill, "Routing failed — showing pins", "status-warn");
                             previewMap.redraw();
@@ -257,12 +348,9 @@ final class RoutesView {
                         heroMin.setText("about " + plan.estimatedMinutes() + " min");
                         setStatus(statusPill, ready ? "Route ready" : "Approximate route (offline)",
                                 ready ? "status-good" : "status-warn");
-                        legRows.getChildren().clear();
-                        highlightLeg[0] = -1;
-                        for (int i = 0; i < legs.size(); i++) {
-                            legRows.getChildren().add(legRow(i, legs.get(i).km(), highlightLeg, previewMap));
-                        }
-                        app.showEtaBreakdown(etaBreakdown, plan);
+                        List<Double> legKm = new ArrayList<>(legs.size());
+                        for (AppServices.OsrmRouter.LegResult leg : legs) legKm.add(leg.km());
+                        showRouteTimeline(timeline, plan.stops(), legKm, highlightLeg, previewMap);
                         previewMap.manual = null;
                         previewMap.redraw();
                     });
@@ -290,6 +378,7 @@ final class RoutesView {
         // Pins first, blue line later: edits refresh markers instantly and restart the auto-calc.
         Runnable markDirty = () -> {
             if (gen != app.routePageGen) return;
+            draftEpoch[0]++;
             dirty[0] = true;
             planned[0] = null; saved[0] = false;
             int extra = app.routeStopsDraft.size() - 1;
@@ -297,9 +386,8 @@ final class RoutesView {
                     : extra + " stop" + (extra == 1 ? "" : "s") + " placed — calculating…");
             setStatus(statusPill, "Placing stops…", "status-info");
             heroKm.setText("—"); heroMin.setText("—");
-            legRows.getChildren().clear();
+            timeline.getChildren().clear();
             highlightLeg[0] = -1;
-            etaBreakdown.getChildren().clear();
             previewMap.redraw();
             refreshNearbyVisibility(addNearby);
             debounce.playFromStart();
@@ -481,12 +569,17 @@ RoutePlan toSave = new RoutePlan(route.id(), route.name(), driver.getValue().id(
         HBox.setHgrow(draftHeader.getChildren().get(1), ALWAYS);
         controls.getChildren().addAll(
                 stepSection(1, "Add stops"),
-                addRow, addNearby, clickCheck, geocodeBox,
+                addRow, addNearby, toggleRow(clickCheck, "Click the map to drop a pin.",
+                        "Click the preview map to drop a delivery pin. Turn this off to pan and zoom without adding pins."), geocodeBox,
                 draftHeader, draft,
                 stepSection(2, "Route"),
-                optimizeToggle, legRows, etaBreakdown,
+                toggleRow(optimizeToggle, "Shortest road tour.",
+                        "Reorders the stops into the shortest road tour. Turn this off to visit them in the order you added them."),
+                timeline,
                 stepSection(3, "Assign & save"),
-                new Label("Route name"), name, driver, saveAssign);
+                // No separate "Route name" label: the field carries it as its prompt,
+                // so the extra node only added a blank band under the step header.
+                name, driver, saveAssign);
         ScrollPane controlScroll = new ScrollPane(controls);
         controlScroll.setFitToWidth(true);
         controlScroll.setHbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
@@ -498,7 +591,9 @@ RoutePlan toSave = new RoutePlan(route.id(), route.name(), driver.getValue().id(
         HBox.setHgrow(routeResult, ALWAYS);
         mapPanel.getChildren().addAll(previewMap.canvas, previewMap.zoomBar, app.legendBox(), statusBar);
         mapPanel.setMinWidth(320); HBox.setHgrow(mapPanel, ALWAYS);
-        previewMap.canvas.widthProperty().bind(mapPanel.widthProperty().subtract(24));
+        // Sized to the padded content area (see UiFactory.PANEL_PADDING_H), not the tile
+        // inset: the old -24 overflowed the right padding by 8px.
+        previewMap.canvas.widthProperty().bind(mapPanel.widthProperty().subtract(PANEL_PADDING_H));
         // Coalesced repaints on layout: the first real frame waits for settled
         // dimensions (never the degenerate pre-layout size).
         mapPanel.widthProperty().addListener((o, a, b) -> previewMap.requestRedraw());
@@ -518,6 +613,7 @@ RoutePlan toSave = new RoutePlan(route.id(), route.name(), driver.getValue().id(
         editRoute.setOnAction(event -> {
             RoutePlan selected = table.getSelectionModel().getSelectedItem();
             if (selected == null) return;
+            draftEpoch[0]++;
             editing[0] = selected; planned[0] = null; saved[0] = false;
             name.setText(selected.name()); app.routeStopsDraft.setAll(selected.stops());
             app.repository.users().stream().filter(user -> user.id().equals(selected.driverId())).findFirst().ifPresent(driver::setValue);
@@ -537,6 +633,7 @@ RoutePlan toSave = new RoutePlan(route.id(), route.name(), driver.getValue().id(
         table.getSelectionModel().selectedItemProperty().addListener((o, old, selected) -> {
             if (selected != null) {
                 debounce.stop();
+                draftEpoch[0]++;
                 app.previewStops = selected.stops();
                 planned[0] = null; saved[0] = false;
                 dirty[0] = false;
@@ -545,7 +642,6 @@ RoutePlan toSave = new RoutePlan(route.id(), route.name(), driver.getValue().id(
                 heroMin.setText("about " + selected.estimatedMinutes() + " min");
                 setStatus(statusPill, "Viewing saved route", "status-good");
                 showLegEstimates.accept(selected.stops());
-                app.showEtaBreakdown(etaBreakdown, selected);
                 previewMap.manual = null;
                 previewMap.redraw();
             }
@@ -555,6 +651,9 @@ RoutePlan toSave = new RoutePlan(route.id(), route.name(), driver.getValue().id(
         clearLink.setOnAction(event -> {
             debounce.stop();
             if (worker[0] != null) worker[0].interrupt();
+            // Invalidate any in-flight calculation before dropping the stops, so its
+            // result cannot repaint the route that was just cleared.
+            draftEpoch[0]++;
             app.routeStopsDraft.clear();
             app.previewStops = List.of();
             handoffShipmentIds.clear();
@@ -568,19 +667,17 @@ RoutePlan toSave = new RoutePlan(route.id(), route.name(), driver.getValue().id(
             routeResult.setText("Add at least one delivery stop after the depot.");
             heroKm.setText("—"); heroMin.setText("—");
             setStatus(statusPill, "Add stops", "status-warn");
-            legRows.getChildren().clear();
-            etaBreakdown.getChildren().clear();
+            timeline.getChildren().clear();
             previewMap.manual = null;
             previewMap.redraw();
         });
         prefillHandoff.run();
-        // Deferred first paint: page() builds before scene layout, so painting now
-        // would use the degenerate pre-layout canvas size. The pulse-coalesced
-        // repaint fires once dimensions settle.
-        Platform.runLater(previewMap::requestRedraw);
+        // No explicit first paint here: MapController schedules its own once the page
+        // has a scene, and the panel width/height listeners above repaint after layout.
         refreshNearbyVisibility(addNearby);
         builder.getChildren().addAll(controlScroll, mapPanel, history);
-        history.getChildren().addAll(table, routeActions); page.getChildren().add(builder); return page;
+        history.getChildren().addAll(table, routeActions); page.getChildren().add(builder);
+        return page;
     }
 
     /** Rebuilds the locations panel from the current draft: one status line per
@@ -709,16 +806,6 @@ RoutePlan toSave = new RoutePlan(route.id(), route.name(), driver.getValue().id(
     private static int indexById(List<Stop> stops, String id) {
         for (int i = 0; i < stops.size(); i++) if (stops.get(i).id().equals(id)) return i;
         return -1;
-    }
-
-    private Label legRow(int leg, double km, int[] highlightLeg, DclsApp.MapController previewMap) {
-        double legMin = km / AppServices.BruneiPlaces.AVG_SPEED_KMH * 60;
-        Label row = new Label((leg + 1) + "→" + (leg + 2) + "  ·  " + String.format("%.1f km", km)
-                + "  ·  ~" + Math.max(1, Math.round(legMin)) + " min");
-        row.getStyleClass().add("leg-row");
-        row.setOnMouseEntered(event -> { highlightLeg[0] = leg; previewMap.redraw(); });
-        row.setOnMouseExited(event -> { highlightLeg[0] = -1; previewMap.redraw(); });
-        return row;
     }
 
     private static int pinAt(List<Stop> shown, DclsApp.MapController previewMap, double px, double py) {

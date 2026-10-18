@@ -49,12 +49,18 @@
 }
 
 /* ---- typography ---------------------------------------------- */
-.page-title { -fx-font-size: 24px; -fx-font-weight: 800; -fx-text-fill: -ink; }
 .page-subtitle { -fx-text-fill: -ink-soft; -fx-font-size: 13px; }
 .section-title { -fx-font-size: 15px; -fx-font-weight: 700; -fx-text-fill: -ink; }
 .muted { -fx-text-fill: -ink-soft; }
+
+/* CheckBox label text. Measured: the string is intact and the control is 182px wide,
+   unclipped and correctly placed inside the panel's ScrollPane, yet no text paints
+   there while the identical controls render fine elsewhere. Setting the fill
+   explicitly at both the control and the internal label covers the case where the
+   skin's Label fails to pick up the inherited fill. */
+.check-box { -fx-text-fill: -ink; -fx-font-size: 12.5px; }
+.check-box .label { -fx-text-fill: -ink; -fx-font-size: 12.5px; }
 .eyebrow { -fx-text-fill: -ink-soft; -fx-font-size: 11px; -fx-font-weight: 700; }
-.accent { -fx-text-fill: -accent; }
 .metric-value { -fx-font-size: 27px; -fx-font-weight: 800; -fx-text-fill: -ink; }
 .metric-caption { -fx-text-fill: -ink-soft; -fx-font-size: 11px; -fx-font-weight: 700; }
 
@@ -194,6 +200,23 @@
 
 .detail-value { -fx-font-size: 12px; -fx-text-fill: -ink-soft; }
 
+
+
+/* ---- focus visibility ------------------------------------------ */
+/* Modena's default focus ring is a faint dotted line that vanishes against the
+   white cards. Every keyboard-reachable control gets an unmistakable accent ring
+   instead. Text fields already have one of their own (see .text-field:focused). */
+.button:focused, .check-box:focused, .toggle-button:focused,
+.menu-button:focused, .list-view:focused, .table-view:focused {
+    -fx-border-color: -accent;
+    -fx-border-width: 2;
+    -fx-border-radius: 9;
+}
+.check-box:focused { -fx-background-color: -accent-soft; -fx-border-radius: 9; }
+/* The canvas has no border of its own; the map panel shows the ring instead. */
+.map-focused { -fx-border-color: -accent; -fx-border-width: 2; }
+/* Disabled controls stay legible rather than fading below contrast. */
+.button:disabled, .secondary-button:disabled, .text-field:disabled { -fx-opacity: 0.55; }
 /* ---- inputs --------------------------------------------------- */
 .text-field, .password-field, .choice-box, .combo-box, .date-picker {
     -fx-background-color: #fbfcfe;
@@ -278,8 +301,20 @@
 }
 .mini-button:hover { -fx-background-color: -accent-soft; -fx-text-fill: -accent-hover; }
 .mini-button:disabled { -fx-opacity: 0.35; }
-.leg-row { -fx-padding: 5 8; -fx-background-radius: 7; -fx-font-size: 12px; -fx-text-fill: -ink-soft; }
-.leg-row:hover { -fx-background-color: -accent-soft; -fx-text-fill: -accent-hover; }
+/* Route timeline: one row per stop. The old leg list and ETA breakdown printed the
+   same numbers twice, so this collapses them into a single arrival-ordered list. */
+.timeline-row { -fx-padding: 5 8; -fx-background-radius: 7; }
+.timeline-row:hover { -fx-background-color: -accent-soft; }
+.timeline-index {
+    -fx-text-fill: -accent; -fx-font-weight: 700; -fx-font-size: 11px;
+    -fx-min-width: 14; -fx-alignment: center-right;
+}
+.timeline-name { -fx-text-fill: -ink; -fx-font-size: 12px; }
+.timeline-arrival { -fx-text-fill: -ink-soft; -fx-font-size: 11.5px; -fx-font-weight: 600; }
+.timeline-km { -fx-text-fill: -ink-soft; -fx-font-size: 11px; }
+.timeline-row:hover .timeline-index,
+.timeline-row:hover .timeline-arrival,
+.timeline-row:hover .timeline-km { -fx-text-fill: -accent-hover; }
 
 /* ---- map & misc ---------------------------------------------- */
 .map-canvas { -fx-border-color: -line; -fx-border-radius: 10; -fx-background-radius: 10; }
@@ -307,4 +342,86 @@
 .scroll-bar .thumb:hover { -fx-background-color: #b2bfd3; }
 .scroll-bar .increment-button, .scroll-bar .decrement-button { -fx-background-color: transparent; -fx-padding: 0; }
 
-.focusable:focused { -fx-border-color: -accent; }
+
+/* ---- active-deliveries panel ------------------------------------ */
+/* Wrapping rows. -fx-wrap-text makes wrapping apply even if a cell factory is replaced.
+   Row height is deliberately NOT set here: TrackingView's setFixedCellSize(-1d) owns it,
+   and the two used to disagree, leaving every cell single-line and ellipsized. */
+.table-view.wrap-rows .table-cell { -fx-padding: 8 10 8 10; -fx-wrap-text: true; }
+/* Tighter pill inside the 440px drawer so "In transit" clears the 68px Status column. */
+.tracking-drawer .status-pill { -fx-padding: 3 7; }
+
+.count-badge {
+    -fx-background-color: -accent;
+    -fx-text-fill: #ffffff;
+    -fx-background-radius: 20;
+    -fx-border-radius: 20;
+    -fx-padding: 1 7 1 7;
+    -fx-font-size: 11px;
+    -fx-font-weight: 700;
+}
+
+.tracking-detail .titled-pane > .title { -fx-background-color: transparent; -fx-padding: 6 0 6 0; }
+.tracking-detail .titled-pane > .content { -fx-background-color: transparent; -fx-padding: 4 0 0 0; }
+
+/* Drawer: right-edge panel anchored to the map container. It is positioned by
+   TranslateTransition, never by layout reflow, so nothing can drag or resize it. */
+.tracking-drawer {
+    -fx-background-color: -surface;
+    -fx-border-color: -line;
+    -fx-border-width: 1 0 0 1;
+    -fx-border-radius: 14 0 0 14;
+    -fx-background-radius: 14 0 0 14;
+    -fx-effect: dropshadow(gaussian, rgba(20,27,45,0.16), 20, 0, 0, 6);
+}
+
+/* Icon toggle: fixed position top-right of the map area, never inside the drawer. */
+.tracking-toggle {
+    -fx-background-color: -surface;
+    -fx-border-color: -line;
+    -fx-background-radius: 10;
+    -fx-border-radius: 10;
+    -fx-cursor: hand;
+    -fx-effect: dropshadow(gaussian, rgba(20,27,45,0.12), 10, 0, 0, 3);
+}
+.tracking-toggle:hover { -fx-border-color: -accent; }
+.tracking-toggle:focused { -fx-border-color: -accent; -fx-background-color: -accent-soft; }
+.tracking-toggle .glyph { -fx-font-size: 14px; -fx-text-fill: -ink; }
+
+/* Overlay-mode backdrop: dims the map, click anywhere to dismiss. */
+.drawer-scrim { -fx-background-color: rgba(20,27,45,0.34); }
+
+/* Follow-selected and NO FIX, floated over the map rather than stacked below it. */
+.map-overlay {
+    -fx-background-color: -surface;
+    -fx-background-radius: 10;
+    -fx-padding: 5 10 5 8;
+    -fx-effect: dropshadow(gaussian, rgba(20,27,45,0.10), 10, 0, 0, 3);
+}
+/* Floating legend / shortcut list. */
+.legend-popover {
+-fx-background-color: -surface;
+    -fx-background-radius: 10;
+    -fx-padding: 12;
+    -fx-effect: dropshadow(gaussian, rgba(20,27,45,0.18), 16, 0, 0, 4);
+}
+
+.drawer-close {
+    -fx-background-color: transparent;
+    -fx-text-fill: -ink-soft;
+    -fx-font-size: 13px;
+    -fx-padding: 2 6 2 6;
+    -fx-cursor: hand;
+    -fx-background-radius: 8;
+}
+.drawer-close:hover { -fx-background-color: -accent-soft; -fx-text-fill: -accent-hover; }
+
+.warning-dot {
+    -fx-background-color: #d97706;
+    -fx-background-radius: 20;
+    -fx-border-radius: 20;
+    -fx-min-width: 8px; -fx-pref-width: 8px; -fx-max-width: 8px;
+    -fx-min-height: 8px; -fx-pref-height: 8px; -fx-max-height: 8px;
+    -fx-border-color: -surface;
+    -fx-border-width: 1;
+}

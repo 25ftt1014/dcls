@@ -2,9 +2,7 @@ package edu.pb.dcls;
 
 import javafx.collections.FXCollections;
 import javafx.geometry.Pos;
-import javafx.scene.control.Alert;
 import javafx.scene.control.Button;
-import javafx.scene.control.ButtonType;
 import javafx.scene.control.ComboBox;
 import javafx.scene.control.Label;
 import javafx.scene.control.PasswordField;
@@ -16,7 +14,6 @@ import javafx.scene.layout.VBox;
 
 import java.util.List;
 import java.util.Locale;
-import java.util.Optional;
 
 import static edu.pb.dcls.AppServices.AppException;
 import static edu.pb.dcls.Domain.Role;
@@ -25,7 +22,6 @@ import static edu.pb.dcls.UiFactory.button;
 import static edu.pb.dcls.UiFactory.labeled;
 import static edu.pb.dcls.UiFactory.onRowDoubleClick;
 import static edu.pb.dcls.UiFactory.pageHeader;
-import static edu.pb.dcls.UiFactory.statusCol;
 import static edu.pb.dcls.UiFactory.textCol;
 import static javafx.scene.layout.Priority.ALWAYS;
 
@@ -36,7 +32,7 @@ final class UsersView {
     UsersView(DclsApp app) { this.app = app; }
 
     VBox page() {
-        VBox page = pageHeader("Account & role management", "Manage access, roles, and account status.");
+        VBox page = pageHeader("Manage access, roles, and account status.");
         HBox controls = new HBox(8); controls.setAlignment(Pos.CENTER_LEFT);
         TextField search = new TextField(); search.setPromptText("Search name, email, or phone"); search.setPrefWidth(320);
         ToggleButton pendingOnly = new ToggleButton("Pending only"); pendingOnly.getStyleClass().add("filter-toggle");

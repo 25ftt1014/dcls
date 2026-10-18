@@ -151,7 +151,7 @@ final class DashboardView {
     VBox page() {
         // pageHeader for its workspace class and padding; the title/subtitle args stay
         // empty because headerRow() supplies its own title line with the live timestamp.
-        VBox page = pageHeader("", "");
+        VBox page = pageHeader("");
         page.setSpacing(18);
         page.setPadding(new Insets(18, 24, 20, 28));
         HBox dashboardHeader = headerRow();

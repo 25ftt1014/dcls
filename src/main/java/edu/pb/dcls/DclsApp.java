@@ -1,7 +1,9 @@
 package edu.pb.dcls;
 
 import javafx.animation.AnimationTimer;
+import javafx.animation.FadeTransition;
 import javafx.animation.KeyFrame;
+import javafx.animation.PauseTransition;
 import javafx.animation.ScaleTransition;
 import javafx.animation.Timeline;
 import javafx.application.Application;
@@ -19,6 +21,7 @@ import javafx.scene.control.Alert;
 import javafx.scene.control.Button;
 import javafx.scene.control.ButtonType;
 import javafx.scene.control.CheckBox;
+import javafx.scene.control.CheckMenuItem;
 import javafx.scene.control.ComboBox;
 import javafx.scene.control.Dialog;
 import javafx.scene.control.Label;
@@ -26,6 +29,7 @@ import javafx.scene.control.MenuButton;
 import javafx.scene.control.MenuItem;
 import javafx.scene.control.PasswordField;
 import javafx.scene.control.ScrollPane;
+import javafx.scene.control.SeparatorMenuItem;
 import javafx.scene.control.TextField;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.HBox;
@@ -49,12 +53,10 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
-import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -84,8 +86,14 @@ public final class DclsApp extends Application {
     User currentUser;
     private BorderPane shell;
     private VBox nav;
-    private Label pageHeading;
-    Label dataModeLabel;
+    /** Page scroll pane, built once and reused. Allocating a fresh one per
+     *  navigation made the vertical scrollbar re-decide its width a frame after the
+     *  page appeared, which re-bound the map canvas width and visibly rescaled the
+     *  map. A single pane keeps the viewport width stable between pages. */
+    private ScrollPane pageScroll;
+    private FadeTransition pageFade;
+    private PauseTransition pageFadeDelay;
+    private Label dataModeLabel;
     String activePage = "dashboard";
     String fleetRecordsView = "vehicles";
     private Timeline trackingTimer;
@@ -118,9 +126,16 @@ public final class DclsApp extends Application {
     boolean frameTourOnce = false;
     /** Focused-tour trail width. */
     static final double TRACK_FOCUS_WIDTH = 3.5;
-    /** Tracking SplitPane divider (map fraction) + collapsed state, kept across redraws. */
-    double trackingDividerPos = 0.72;
+    /** Active-deliveries panel collapsed state, kept across page rebuilds. The panel is a
+     *  fixed-width sibling of the map, so there is no draggable position to remember:
+     *  it is either shown or hidden. */
     boolean trackingPanelCollapsed = false;
+    /** Reduced motion: collapses every UI animation to zero duration. Seeded from
+     *  -Ddcls.reduceMotion so it can be set without a UI, and toggleable in Settings. */
+    boolean reduceMotion = Boolean.parseBoolean(System.getProperty("dcls.reduceMotion", "false"));
+    /** Active-deliveries count / NO FIX refresh, registered by TrackingView for the
+     *  open page so the header badge stays live as fixes arrive. */
+    Runnable trackingBadgeRefresh;
     Label feedStatusLabel;
     String feedStatus = "Feed idle — import GPX/NMEA or poll mobile feed.";
     String lastRerouteKey = "";
@@ -311,7 +326,6 @@ public final class DclsApp extends Application {
         shell.setLeft(nav);
         BorderPane content = new BorderPane();
         content.setTop(buildTopbar());
-        pageHeading = new Label(); pageHeading.getStyleClass().add("page-title");
         shell.setCenter(content);
         showPage(page);
         Scene scene = new Scene(shell);
@@ -363,7 +377,15 @@ public final class DclsApp extends Application {
         sidebar.getChildren().add(identity);
 
         MenuButton settings = new MenuButton("Settings"); settings.setMaxWidth(Double.MAX_VALUE); settings.setAccessibleText("Settings and profile"); settings.getStyleClass().add("settings-button");
-        settings.getItems().addAll(menu("My profile", this::profileDialog), menu("Change password", this::passwordDialog), menu("Sign out", () -> { stopTracking(); currentUser = null; showLogin(); }));
+        CheckMenuItem reduceMotionItem = new CheckMenuItem("Reduce motion");
+        reduceMotionItem.setSelected(reduceMotion);
+
+        reduceMotionItem.setOnAction(event -> {
+            reduceMotion = reduceMotionItem.isSelected();
+            // The page fade is the other motion in the app; honour the change at once.
+            if (shell != null) showPage(activePage);
+        });
+        settings.getItems().addAll(menu("My profile", this::profileDialog), menu("Change password", this::passwordDialog), new SeparatorMenuItem(), reduceMotionItem, new SeparatorMenuItem(), menu("Sign out", () -> { stopTracking(); currentUser = null; showLogin(); }));
         sidebar.getChildren().add(settings);
         return sidebar;
     }
@@ -439,9 +461,50 @@ public final class DclsApp extends Application {
             case "tracking" -> new TrackingView(this).page();
             default -> { dashboard = new DashboardView(this); yield dashboard.page(); }
         };
-        ScrollPane scroll = new ScrollPane(view); scroll.setFitToWidth(true); scroll.setHbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
-        scroll.setStyle("-fx-background: #f6f8fb; -fx-background-color: #f6f8fb;");
-        content.setCenter(scroll);
+        if (pageScroll == null) {
+            pageScroll = new ScrollPane();
+            pageScroll.setFitToWidth(true);
+            pageScroll.setHbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
+            pageScroll.setStyle("-fx-background: #f6f8fb; -fx-background-color: #f6f8fb;");
+            content.setCenter(pageScroll);
+        }
+        fadePageIn(pageScroll, view);
+    }
+
+    /** How long a page stays invisible while its first layout settles. */
+    private static final Duration PAGE_SETTLE_DELAY = Duration.millis(60);
+    /** The fade itself. */
+    private static final Duration PAGE_FADE = Duration.millis(150);
+
+    /** Fade a freshly built page in, on every page for a consistent feel.
+     *
+     *  <p>Applied here rather than inside each page() so the pages stay free of
+     *  presentation concerns — and because tests build page() directly with no FX
+     *  toolkit, an animation there would break them.
+     *
+     *  <p>The fade starts only after {@link #PAGE_SETTLE_DELAY}, not immediately.
+     *  The first layout after setContent is when the scrollbar and any canvas width
+     *  binding resolve; fading from that moment would show the map rescaling
+     *  underneath the fade. Starting at opacity 0 hides that settle, so the only
+     *  motion is the fade. Cancelled if another navigation starts first. */
+    private void fadePageIn(ScrollPane scroll, Node view) {
+        if (pageFadeDelay != null) pageFadeDelay.stop();
+        if (pageFade != null) {
+            // Restore the outgoing page fully before discarding it, so an interrupted
+            // fade can never leave a page stuck semi-transparent.
+            Node old = (Node) pageFade.getNode();
+            pageFade.stop();
+            if (old != null) old.setOpacity(1);
+        }
+        scroll.setContent(view);
+        view.setOpacity(0);
+        pageFade = new FadeTransition(PAGE_FADE, view);
+        pageFade.setFromValue(0.0);
+        pageFade.setToValue(1.0);
+        pageFade.setOnFinished(event -> view.setOpacity(1));
+        pageFadeDelay = new PauseTransition(PAGE_SETTLE_DELAY);
+        pageFadeDelay.setOnFinished(event -> pageFade.play());
+        pageFadeDelay.play();
     }
 
     /** Hide app chrome while the dashboard map is in full-screen mode. */
@@ -534,6 +597,9 @@ public final class DclsApp extends Application {
             for (TrackingPoint p : recent) frame.add(ll(p.x(), p.y()));
         }
         trackingFrame = frame;
+        // The panel header carries a live count and a NO FIX indicator, so it needs to
+        // re-read the rows whenever the frame is rebuilt.
+        if (trackingBadgeRefresh != null) trackingBadgeRefresh.run();
         // Reframe only on explicit opt-in: one-shot tour framing or Follow mode.
         // Row clicks merely highlight + update the ETA panel; all vehicles stay in frame.
         boolean shouldFrame = frameTourOnce
@@ -608,6 +674,8 @@ public final class DclsApp extends Application {
         refreshFocusChip();
         showEta(shipment);
     }
+
+    void addTrackingBadgeRefresh(Runnable refresh) { trackingBadgeRefresh = refresh; }
 
     void clearTrackingFocus() {
         focusedShipmentId = null;
@@ -701,10 +769,12 @@ public final class DclsApp extends Application {
             if (latest != null) {
                 boolean stale = tracking.gps().isStale(vehicleId);
                 drawVehicleMarker(g, w, h, latest.x(), latest.y(), vehiclePlate(vehicleId), stale ? "#8a94a6" : color, stale, view);
-            } else if (route != null && !route.stops().isEmpty()) {
-                Stop depot = route.stops().get(0);
-                drawVehicleMarker(g, w, h, depot.x(), depot.y(), vehiclePlate(vehicleId), color, false, view);
-            }
+} else if (route != null && !route.stops().isEmpty()) {
+     // No fix at all: fall back to the depot, but draw it in the stale shape so
+       // "last known position" never masquerades as a live one.
+       Stop depot = route.stops().get(0);
+          drawVehicleMarker(g, w, h, depot.x(), depot.y(), vehiclePlate(vehicleId), "#8a94a6", true, view);
+        }
             g.setGlobalAlpha(1.0);
         }
         // Focused order with no usable fix yet: pin its preset destination.
@@ -719,62 +789,79 @@ public final class DclsApp extends Application {
     static double[] ll(double lon, double lat) { return new double[] {lon, lat}; }
 
     /** Per-stop cumulative arrival times for the currently previewed route. */
-    void showEtaBreakdown(VBox box, RoutePlan plan) {
-        box.getChildren().clear();
-        List<Double> cum = routeService.cumulativeMinutes(plan.stops());
-        for (int i = 0; i < plan.stops().size(); i++) {
-            Label line = new Label((i + 1) + ". " + plan.stops().get(i).name() + " — about " + Math.round(cum.get(i)) + " min from start");
-            line.getStyleClass().add("muted");
-            line.setWrapText(true);
-            box.getChildren().add(line);
-        }
-    }
-
     /** Static symbol legend shared by the map panels. */
     VBox legendBox() {
         VBox legend = new VBox(3,
                 legendSwatch("#17613f", "Depot / route start"),
                 legendSwatch("#176df6", "District stop · blue route"),
                 legendSwatch("#7c3aed", "Custom map pin (click-added)"),
-                legendSwatch("#8a94a6", "STALE — no live fix >15s"));
+     legendLostSwatch("#8a94a6", "STALE — no live fix >15s (crossed out)"));
         Label title = new Label("Legend"); title.getStyleClass().add("eyebrow");
         VBox box = new VBox(4, title, legend);
         box.setPadding(new Insets(4, 0, 0, 0));
         return box;
     }
 
-    /** Legend chip: colored dot + label. */
+/** Legend chip: a shape sample plus a label. The marker row mirrors
+     *  {@link MapRenderer#drawMarkerDot} so the legend shows the real thing. */
     HBox legendSwatch(String color, String label) {
         Label dot = new Label("●"); dot.setStyle("-fx-text-fill: " + color + "; -fx-font-size: 13px;");
         Label text = new Label(label); text.getStyleClass().add("muted");
-        HBox row = new HBox(6, dot, text); row.setAlignment(Pos.CENTER_LEFT);
+        HBox row = new HBox(6, dot, text);
+        row.setAlignment(Pos.CENTER_LEFT);
         return row;
     }
 
-    /** Live per-vehicle legend chips under the fleet map. */
+    /** Legend row for a stale vehicle: the crossed-out ring, drawn as a glyph. */
+    HBox legendLostSwatch(String color, String label) {
+        Label dot = new Label("⊗"); dot.setStyle("-fx-text-fill: " + color + "; -fx-font-size: 13px;");
+        Label text = new Label(label); text.getStyleClass().add("muted");
+        HBox row = new HBox(6, dot, text);
+        row.setAlignment(Pos.CENTER_LEFT);
+        return row;
+    }
+
+/** Live per-vehicle legend chips under the fleet map. */
     void updateTrackingLegend(Map<String, List<Shipment>> byVehicle) {
-        if (trackingLegend == null) return;
-        trackingLegend.getChildren().clear();
+  if (trackingLegend == null) return;
+     trackingLegend.getChildren().clear();
         if (byVehicle.isEmpty()) {
-            Label none = new Label("No vehicles on the road.");
-            none.getStyleClass().add("muted");
+      Label none = new Label("No vehicles on the road.");
+        none.getStyleClass().add("muted");
             trackingLegend.getChildren().add(none);
+    narrateMap(0, 0);
             return;
-        }
+    }
         Label title = new Label(focusedVehicleId != null ? "Showing" : "On the road"); title.getStyleClass().add("eyebrow");
         trackingLegend.getChildren().add(title);
+        int shown = 0, lost = 0;
         for (Map.Entry<String, List<Shipment>> entry : byVehicle.entrySet()) {
-            String vehicleId = entry.getKey();
+     String vehicleId = entry.getKey();
             if (focusedVehicleId != null && !focusedVehicleId.equals(vehicleId)) continue;
-            boolean stale = tracking.gps().isStale(vehicleId);
+          boolean stale = tracking.gps().isStale(vehicleId);
+            shown++;
+            if (stale) lost++;
             TrackingPoint latest = tracking.latestPlausibleForVehicle(vehicleId);
             String extra = "";
             if (latest != null) {
                 long age = Math.max(0, java.time.Duration.between(latest.recordedAt(), LocalDateTime.now()).getSeconds());
                 extra = " · " + tracking.gpsStatus(vehicleId) + " · " + age + "s ago";
             }
-            trackingLegend.getChildren().add(legendSwatch(stale ? "#8a94a6" : vehicleColor(vehicleId),
-                    vehiclePlate(vehicleId) + " · " + entry.getValue().size() + " order(s)" + extra));
+            String detail = vehiclePlate(vehicleId) + " · " + entry.getValue().size() + " order(s)";
+            trackingLegend.getChildren().add(stale
+  ? legendLostSwatch("#8a94a6", detail + " · no live fix" + extra)
+                    : legendSwatch(vehicleColor(vehicleId), detail + extra));
+        }
+// The canvas is opaque to a screen reader, so it narrates itself here — this is
+        // the one place that already knows every vehicle's fix state. Called on both
+        // paths, so the count cannot go stale when the fleet empties.
+        narrateMap(shown, lost);
+    }
+
+    /** Speak the fleet state on the tracking canvas. */
+    private void narrateMap(int shown, int lost) {
+        if (trackingCanvas != null) {
+            trackingCanvas.setAccessibleText(TrackingView.mapAccessibleSummary(shown, lost));
         }
     }
 
@@ -791,9 +878,13 @@ public final class DclsApp extends Application {
     final class MapController {
         final Canvas canvas;
         final HBox zoomBar;
-        Supplier<List<double[]>> content = List::of;
+Supplier<List<double[]>> content = List::of;
         BiConsumer<GraphicsContext, ViewBounds> painter = (g, v) -> { };
         Consumer<double[]> clickAction;
+        /** View to frame when there is no content to frame, built per paint from the
+         *  live canvas size as (viewPx, aspect). Null keeps the plain whole-map
+         *  fallback that the dashboard and fleet views want. */
+        java.util.function.BiFunction<Double, Double, ViewBounds> homeAt;
         ViewBounds manual;
         ViewBounds lastAuto = FULL_MAP;
         private double pressX, pressY;
@@ -827,7 +918,22 @@ public final class DclsApp extends Application {
         MapController(double width, double height) {
             canvas = mapCanvas(width, height);
             addTileListener(tileRefresh);
+            // mapCanvas no longer paints eagerly: a paint here would use the
+            // placeholder size and flash it before layout settles. Every controller
+            // schedules its own first paint instead, so pages can't forget to.
+            Platform.runLater(this::requestRedraw);
             Button in = button("+", "secondary-button"), out = button("−", "secondary-button"), reset = button("Reset view", "secondary-button");
+            // "+" and "−" are glyphs: without this a screen reader announces a bare symbol.
+        in.setAccessibleText("Zoom in");
+      in.setTooltip(new javafx.scene.control.Tooltip("Zoom in (+)"));
+   out.setAccessibleText("Zoom out");
+    out.setTooltip(new javafx.scene.control.Tooltip("Zoom out (−)"));
+     reset.setTooltip(new javafx.scene.control.Tooltip("Reset view (R)"));
+            canvas.setFocusTraversable(true);
+        // IMAGE_VIEW, not IMAGE: AccessibleRole has no IMAGE constant. Canvas is not a
+        // Control, so it cannot carry a tooltip — the ? overlay documents the keys.
+        canvas.setAccessibleRole(javafx.scene.AccessibleRole.IMAGE_VIEW);
+        canvas.setAccessibleText("Fleet map");
             in.setOnAction(event -> zoomAt(1.4, canvas.getWidth() / 2, canvas.getHeight() / 2));
             out.setOnAction(event -> zoomAt(1 / 1.4, canvas.getWidth() / 2, canvas.getHeight() / 2));
             reset.setOnAction(event -> { manual = null; redraw(); });
@@ -846,11 +952,41 @@ public final class DclsApp extends Application {
 
         ViewBounds currentView() { return manual != null ? manual : lastAuto; }
 
+   /** Pixels a single arrow-key press moves the map. */
+        private static final int KEY_PAN_PX = 60;
+
+        /**
+         * Keyboard equivalent of scroll-to-zoom and drag-to-pan, so the map is not
+         * mouse-only. Attached as a filter on the whole panel: that way it also fires
+         * when focus sits on the zoom bar, but it stands down for text fields, where
+         * arrows and +/- are the user's own.
+         */
+        void bindMapKeys(javafx.scene.Node host) {
+     host.addEventFilter(javafx.scene.input.KeyEvent.KEY_PRESSED, event -> {
+          if (event.isConsumed()) return;
+   if (event.getTarget() instanceof javafx.scene.control.TextInputControl) return;
+        double cx = canvas.getWidth() / 2, cy = canvas.getHeight() / 2;
+   switch (event.getCode()) {
+      case LEFT -> panBy(-KEY_PAN_PX, 0);
+     case RIGHT -> panBy(KEY_PAN_PX, 0);
+     case UP -> panBy(0, -KEY_PAN_PX);
+            case DOWN -> panBy(0, KEY_PAN_PX);
+  case ADD, EQUALS -> zoomAt(1.4, cx, cy);
+      case SUBTRACT, MINUS -> zoomAt(1 / 1.4, cx, cy);
+   case R, DIGIT0, NUMPAD0 -> { manual = null; redraw(); }
+       default -> { return; }
+      }
+    event.consume();
+       });
+        }
+
         void redraw() {
             double w = canvas.getWidth(), h = canvas.getHeight();
             // Pre-layout frames (zero/negative size) paint nothing and must not
             // store a degenerate view: the post-layout listener repaints for real.
             if (!(w > 28 && h > 28)) return;
+            boolean probing = PerfProbe.enabled();
+            long viewStart = probing ? System.nanoTime() : 0;
             double aspect = drawableAspect(w, h);
             ViewBounds view;
             if (manual != null) {
@@ -859,19 +995,31 @@ public final class DclsApp extends Application {
                 manual = fitAspect(manual, aspect);
                 view = manual;
             } else {
-                ViewBounds auto = fitAspect(fitBounds(content.get(), aspect), aspect);
+                double viewPx = w - MAP_PAD * 2;
+                ViewBounds home = homeAt == null ? null : homeAt.apply(viewPx, aspect);
+                ViewBounds auto = fitAspect(
+                        autoViewOrHome(content.get(), home, aspect), aspect);
                 lastAuto = auto;
                 view = auto;
             }
+            long viewNanos = probing ? System.nanoTime() - viewStart : 0;
+            long tileStart = probing ? System.nanoTime() : 0;
             GraphicsContext g = prepareMap(canvas, view);
+            long tileNanos = probing ? System.nanoTime() - tileStart : 0;
+            long overlayStart = probing ? System.nanoTime() : 0;
             painter.accept(g, view);
+            if (probing) {
+                // "tiles" carries the whole base pass: viewport choice plus the tile loop,
+                // because both are paid before a single image is drawn.
+                PerfProbe.record(viewNanos + tileNanos, System.nanoTime() - overlayStart);
+            }
             paintedOnce = true;
         }
 
         void zoomAt(double factor, double px, double py) {
-            ViewBounds base = currentView();
-            double w = canvas.getWidth(), h = canvas.getHeight(), pad = 14;
-            double[] cursor = unproject(px, py);
+        ViewBounds base = currentView();
+    double w = canvas.getWidth(), h = canvas.getHeight();
+    double[] cursor = unproject(px, py);
             double lonSpan = Math.min(Math.max((base.lonMax() - base.lonMin()) / factor, 0.0006), MAP_LON_MAX - MAP_LON_MIN);
             double latSpan = Math.min(Math.max((base.latMax() - base.latMin()) / factor, 0.00045), MAP_LAT_MAX - MAP_LAT_MIN);
             double lonMin = cursor[0] - (cursor[0] - base.lonMin()) / factor;
@@ -882,8 +1030,8 @@ public final class DclsApp extends Application {
         }
 
         void panBy(double dxPx, double dyPx) {
-            ViewBounds base = currentView();
-            double w = canvas.getWidth(), h = canvas.getHeight(), pad = 14;
+   ViewBounds base = currentView();
+            double w = canvas.getWidth(), h = canvas.getHeight(), pad = MapRenderer.MAP_PAD;
             double lonSpan = base.lonMax() - base.lonMin();
             double mercSpan = mercator(base.latMax()) - mercator(base.latMin());
             double dLon = dxPx / (w - pad * 2) * lonSpan;
@@ -896,8 +1044,8 @@ public final class DclsApp extends Application {
         }
 
         double[] unproject(double px, double py) {
-            ViewBounds view = currentView();
-            double w = canvas.getWidth(), h = canvas.getHeight(), pad = 14;
+      ViewBounds view = currentView();
+     double w = canvas.getWidth(), h = canvas.getHeight(), pad = MapRenderer.MAP_PAD;
             double lon = view.lonMin() + (px - pad) / (w - pad * 2) * (view.lonMax() - view.lonMin());
             double mercTop = mercator(view.latMax()), mercBottom = mercator(view.latMin());
             double lat = mercToLat(mercTop - (py - pad) / (h - pad * 2) * (mercTop - mercBottom));
@@ -1291,7 +1439,9 @@ public final class DclsApp extends Application {
             this(items, null);
         }
         ListViewWithRemove(ObservableList<Stop> items, Runnable onChange) {
-            javafx.scene.control.ListView<Stop> list = new javafx.scene.control.ListView<>(items); list.setPrefHeight(172);
+            // ~3 stops tall. The old 172 left two empty row slots under a typical
+            // depot-plus-two-deliveries draft; the list still scrolls beyond this.
+            javafx.scene.control.ListView<Stop> list = new javafx.scene.control.ListView<>(items); list.setPrefHeight(112);
             list.setCellFactory(view -> new javafx.scene.control.ListCell<>() {
                 private final Label name = new Label();
                 private final Button up = miniButton("↑", "Move stop up");

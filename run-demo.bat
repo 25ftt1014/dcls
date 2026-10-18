@@ -2,19 +2,25 @@
 setlocal
 where java >nul 2>nul
 if errorlevel 1 (
-  echo Java 21 or later is required. Install a JDK and try again.
+  echo Java 25 or later is required. Install a JDK and try again.
   pause
   exit /b 1
 )
-java -version 2>&1 | findstr /R /C:"version \"2[1-9]\." >nul
-if errorlevel 1 (
-  echo This app needs Java 21 or later. Check your installed Java version.
+for /f "tokens=2 delims==" %%V in ('java -XshowSettings:properties -version 2^>^&1 ^| findstr /C:"java.specification.version"') do set "JAVA_VERSION=%%V"
+if not defined JAVA_VERSION (
+  echo Could not determine the Java version. Check your installed JDK.
   pause
   exit /b 1
 )
-rem Prefer a JDK 21+ for Maven builds. Probes well-known installs even when
+for /f "tokens=1 delims=." %%V in ("%JAVA_VERSION%") do set /a JAVA_MAJOR=%%V
+if %JAVA_MAJOR% LSS 25 (
+  echo This app needs Java 25 or later. Check your installed Java version.
+  pause
+  exit /b 1
+)
+rem Prefer a JDK 25+ for Maven builds. Probes well-known installs even when
 rem JAVA_HOME is set but stale (points at an older JDK), newest wins.
-if exist "C:\Program Files\Java\jdk-21" set "JAVA_HOME=C:\Program Files\Java\jdk-21"
+if exist "C:\Program Files\Java\jdk-25" set "JAVA_HOME=C:\Program Files\Java\jdk-25"
 if exist "C:\Program Files\Java\jdk-26" set "JAVA_HOME=C:\Program Files\Java\jdk-26"
 rem Demo mode by default (resettable in-memory data). To use MySQL instead,
 rem set DCLS_DB_URL/DCLS_DB_USER/DCLS_DB_PASSWORD, or set DCLS_DEMO_MODE=false.

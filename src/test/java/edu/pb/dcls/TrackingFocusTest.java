@@ -23,9 +23,11 @@ class TrackingFocusTest {
     }
 
     @Test
-    void dividerDefaultsSane() {
+    void panelDefaultsExpanded() {
+        // Replaces dividerDefaultsSane: the panel is a fixed-width sibling of the map
+        // now, so there is no draggable divider position to keep sane — it is either
+        // shown or hidden, and it starts shown.
         DclsApp app = new DclsApp();
-        assertTrue(app.trackingDividerPos > 0 && app.trackingDividerPos < 1.0);
         assertFalse(app.trackingPanelCollapsed);
     }
 

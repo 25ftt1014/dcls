@@ -1,10 +1,10 @@
 # DCLS — Delivery Logistics Simulator
 
-Java 21 and JavaFX desktop application for the DCLS mini project. MySQL is the normal data mode so app changes survive restarts. The in-memory classroom demo is available by explicit opt-in.
+Java 25 (LTS) and JavaFX desktop application for the DCLS mini project. MySQL is the normal data mode so app changes survive restarts. The in-memory classroom demo is available by explicit opt-in.
 
 ## Run the app with MySQL
 
-Requirements: Java 21 (JDK), Maven 3.9 or later, and a running MySQL database initialized with `src\main\resources\db\schema.sql`.
+Requirements: Java 25 (LTS) or later (JDK), Maven 3.9 or later, and a running MySQL database initialized with `src\main\resources\db\schema.sql`.
 
 Set the database connection variables in PowerShell, then start the app:
 
@@ -35,7 +35,7 @@ Sign in with:
 
 The sign-in screen opens with the Admin demo credentials filled in. Demo data resets when the app closes. Clear `DCLS_DEMO_MODE` to return to MySQL mode.
 
-Map data © OpenStreetMap contributors, imagery © Esri, Maxar, Earthstar Geographics: OSM Standard or Esri World Imagery (toggle in Live Tracking, zoom 3–20) with a 90-pair road-network overlay; WiFi-first real-time GPS — no simulation. Tiles cache under `~/.dcls/tiles` for transient blips only. No map keys needed.
+Map data © OpenStreetMap contributors: live OSM Standard tiles (zoom 3–20) with a 90-pair road-network overlay; WiFi-first real-time GPS — no simulation. Tiles cache under `~/.dcls/tiles` for transient blips only. No map keys needed.
 
 Live GPS feeds (Live Tracking → feed selector):
 - NMEA: import `$GPGGA/$GPRMC` `.nmea/.txt` logs (checksum-validated). Live TCP streaming is planned, not implemented — there is no `DCLS_NMEA_HOST`/`DCLS_NMEA_PORT` support yet.
@@ -49,7 +49,7 @@ Route geometry uses live OSRM routing (`router.project-osrm.org`, OSM data, no k
 $env:DCLS_OSRM_URL = 'https://your-osrm-host'
 ```
 
-Maps work with no key: the app defaults to OSM Standard, with Esri World Imagery as the satellite option in the Live Tracking basemap dropdown.
+Maps work with no key: the app uses OSM Standard tiles across every screen.
 
 ## Demo flow
 
@@ -73,7 +73,7 @@ The build creates `target\distribution\delivery-logistics-simulator-1.0.0.jar` a
 java -jar target\distribution\delivery-logistics-simulator-1.0.0.jar
 ```
 
-Java 21 must be installed on the computer running the JAR. JavaFX runtime libraries are included in `lib` for Windows builds.
+Java 25 (LTS) or later must be installed on the computer running the JAR. JavaFX runtime libraries are included in `lib` for Windows builds.
 
 ## MySQL setup
 
