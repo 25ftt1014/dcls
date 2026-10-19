@@ -62,16 +62,18 @@ class TrackingPanelTest {
                         + "px scrollbar do not fit inside " + content);
     }
 
-        @Test
+@Test
     void overlayBelowTheBreakpointAndPushAbove() {
-        // Below the breakpoint the drawer floats over the map with a scrim; at or above
-        // it pushes the map aside. Measured on the map container, not the stage, because
-        // the nav sidebar already consumes ~200px.
-        assertTrue(TrackingView.drawerOverlay(0));
-        assertTrue(TrackingView.drawerOverlay(900));
-        assertTrue(TrackingView.drawerOverlay(TrackingView.PUSH_MIN_WIDTH - 0.1));
-        assertFalse(TrackingView.drawerOverlay(TrackingView.PUSH_MIN_WIDTH));
-        assertFalse(TrackingView.drawerOverlay(1600));
+        // The drawer never pushes the map any more: it is an overlay at every width.
+        // What the breakpoint decides instead is whether the layout is compact — the
+        // rail collapses into one menu button and the panels become bottom sheets.
+        // Measured on the map container, not the stage, because the nav sidebar already
+        // consumes ~200px.
+        assertTrue(TrackingView.compactLayout(0));
+        assertTrue(TrackingView.compactLayout(799));
+        assertTrue(TrackingView.compactLayout(TrackingView.COMPACT_MIN_WIDTH - 0.1));
+        assertFalse(TrackingView.compactLayout(TrackingView.COMPACT_MIN_WIDTH));
+        assertFalse(TrackingView.compactLayout(1600));
     }
 
     @Test
