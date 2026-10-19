@@ -339,7 +339,79 @@ class TileLoaderPolicyTest {
         }
     }
 
+    @Nested
+@DisplayName("no deadlocks, no stuck zoom")
+class Liveness {
+    /**
+     * Hammer the loader the way a real gesture storm does — many threads changing the
+     * view and the zoom level at once, while fetches are slow and some fail — and
+     * assert it keeps making progress rather than wedging on its own locks.
+     *
+     * <p>This is the guard for the obvious deadlock of this design: view changes take
+     * the queue lock and also schedule, cancel and reach into the source, while workers
+     * run tiles and reach back for the queue. If any of that ever became circular, this
+     * test hangs rather than passing.
+     */
     @Test
+    void concurrentViewAndZoomChurnKeepsTheLoaderLive() throws Exception {
+        FxTestKit.run(() -> { });
+        ScriptedSource source = new ScriptedSource(1);   // one failure per tile, then success
+        TileLoader loader = new TileLoader(urls(), source, () -> { }, scope(), 128, 5);
+
+        final int threads = 4;
+        final int changesPerThread = 60;
+        List<Thread> churn = new ArrayList<>();
+        for (int t = 0; t < threads; t++) {
+            final int id = t;
+            churn.add(Thread.ofPlatform().name("churn-" + t).start(() -> {
+                for (int i = 0; i < changesPerThread; i++) {
+                    int z = 13 + ((id + i) % 5);
+                    int x = 100 + ((id * 7 + i * 3) % 200);
+                    int y = 100 + ((id * 5 + i * 11) % 200);
+                    loader.viewChanged(z, List.of(new int[] {z, x, y}));
+                    try { Thread.sleep(2); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+                }
+            }));
+        }
+
+        // Only once the churn has stopped does the loader see a view that stays still.
+        // Asserting before this point would be asserting that a moving view loads, which
+        // is the opposite of what the debounce is for.
+        for (Thread thread : churn) thread.join(30_000);
+        for (Thread thread : churn) {
+            assertFalse(thread.isAlive(), "a view-changing thread never finished: the loader is stuck");
+        }
+
+        loader.viewChanged(17, List.of(new int[] {17, 200, 200}));
+        settle(loader, 17, 200, 200, 8_000);
+        assertNotNull(loader.peek(17, 200, 200),
+                "after concurrent churn the settled view must still load; attempts=" + source.attempts());
+        assertTrue(source.peakConcurrent() <= TileLoader.WORKER_THREADS,
+                "concurrency stayed bounded under churn: " + source.peakConcurrent());
+    }
+
+    /**
+     * The canvas keeps its own tile level, and the loader must never be asked to fetch a
+     * level the view has moved off — nor wait for one.
+     */
+    @Test
+    void aCanvasLevelConvergesOnTheIdealInsteadOfSticking() {
+        javafx.scene.canvas.Canvas canvas = new javafx.scene.canvas.Canvas(900, 600);
+        double px = 900 - MapRenderer.MAP_PAD * 2;
+        // A big zoom jump: the first frame has no level, later ones must catch up.
+        var wide = new MapRenderer.ViewBounds(114.43359375, 115.13671875, 4.56547355071028, 5.09094417503339);
+        var close = new MapRenderer.ViewBounds(114.9200, 114.9260, 4.8850, 4.8890);
+
+        int first = MapRenderer.tileZoomFor(canvas, close, px);
+        int wideAgain = MapRenderer.tileZoomFor(canvas, wide, px);
+        int deep = MapRenderer.tileZoomFor(canvas, close, px);
+        assertTrue(wideAgain < first, "a country-wide view must drop back a level");
+        assertEquals(first, deep,
+                "returning to the same close view must land on the same level, not get stuck behind");
+    }
+}
+
+@Test
     void userAgentIdentifiesTheApp() {
         // The OSM usage policy requires a User-Agent that names the application.
         assertTrue(TileLoader.USER_AGENT.startsWith("DCLS/"),

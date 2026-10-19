@@ -465,7 +465,7 @@ final class TileLoader {
             fetch(pending);
         } catch (Throwable unexpected) {
             // A tile task must never take a worker down with it.
-            fail(key, "error", "unexpected " + describe(unexpected), TILE_COOLDOWN_MS);
+            fail(key, "", "error", "unexpected " + describe(unexpected), TILE_COOLDOWN_MS);
         } finally {
             loading.remove(key);
         }
@@ -475,6 +475,9 @@ final class TileLoader {
         String key = pending.key();
         int z = pending.z(), x = pending.x(), y = pending.y();
         int host = MapRenderer.osmHostIndex(x, y, 0);
+        // Kept for the failure log: a tile id alone is useless when you are trying to
+        // work out which request the tile server rejected.
+        String url = urlBuilder.url(z, x, y, 0);
         if (urlLogged.compareAndSet(false, true)) {
             System.out.println("[dcls-tiles] provider: OSM Standard (no key)");
         }
@@ -491,12 +494,12 @@ final class TileLoader {
             pace(host);
             running.put(key, Boolean.TRUE);
             try {
-                store(key, download(z, x, y, 0));
+                store(key, download(z, x, y, 0, url));
             } finally {
                 running.remove(key);
             }
         } catch (TileHttpException e) {
-            handleHttpFailure(key, e);
+            handleHttpFailure(key, url, e);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         } catch (IOException e) {
@@ -510,7 +513,7 @@ final class TileLoader {
                     pace(fallback);
                     running.put(key, Boolean.TRUE);
                     try {
-                        store(key, download(z, x, y, 1));
+                        store(key, download(z, x, y, 1, urlBuilder.url(z, x, y, 1)));
                         System.out.println("[dcls-tiles] " + key + " -> recovered via fallback host");
                     } finally {
                         running.remove(key);
@@ -519,21 +522,22 @@ final class TileLoader {
                     hostPermits[fallback].release();
                 }
             } catch (TileHttpException retry) {
-                handleHttpFailure(key, retry);
+                handleHttpFailure(key, url, retry);
             } catch (InterruptedException retry) {
                 Thread.currentThread().interrupt();
             } catch (IOException retry) {
-                recordFailure(key, classifyOffline(retry), "host retry: " + describe(retry));
+                recordFailure(key, url, classifyOffline(retry), "host retry: " + describe(retry));
             }
         } catch (Throwable unexpected) {
-            fail(key, "error", "unexpected " + describe(unexpected), TILE_COOLDOWN_MS);
+            fail(key, url, "error", "unexpected " + describe(unexpected), TILE_COOLDOWN_MS);
         } finally {
             hostPermits[host].release();
         }
     }
 
-    private byte[] download(int z, int x, int y, int hostShift) throws IOException, InterruptedException {
-        return source.fetch(urlBuilder.url(z, x, y, hostShift));
+    private byte[] download(int z, int x, int y, int hostShift, String url)
+            throws IOException, InterruptedException {
+        return source.fetch(url);
     }
 
     /** Minimum spacing between fetch starts to one host, so bursts never look abusive
@@ -555,11 +559,11 @@ final class TileLoader {
     }
 
     /** HTTP statuses, each with its own meaning for retry and for the notice. */
-    private void handleHttpFailure(String key, TileHttpException e) {
+    private void handleHttpFailure(String key, String url, TileHttpException e) {
         int code = e.code();
         if (code == 404) {
             states.put(key, State.GONE);
-            fail(key, "error", "HTTP 404 (no such tile)", TILE_COOLDOWN_MS);
+            fail(key, url, "error", "HTTP 404 (no such tile)", TILE_COOLDOWN_MS);
             return;
         }
         if (code == 429 || code == 503) {
@@ -567,15 +571,15 @@ final class TileLoader {
             // this tile: hammering through the window is what gets a client blocked.
             long backoff = parseRetryAfter(e.retryAfter());
             backOffEveryone(backoff);
-            fail(key, "throttled", "HTTP " + code + " (retry in " + (backoff / 1000) + "s)", backoff);
+            fail(key, url, "throttled", "HTTP " + code + " (retry in " + (backoff / 1000) + "s)", backoff);
             return;
         }
         if (code == 401 || code == 403) {
             backOffEveryone(60_000);
-            fail(key, "denied", "HTTP " + code, 60_000);
+            fail(key, url, "denied", "HTTP " + code, 60_000);
             return;
         }
-        recordFailure(key, "error", "HTTP " + code);
+        recordFailure(key, url, "error", "HTTP " + code);
     }
 
     /** Holds every host back for a while, and says so on the notice. */
@@ -587,17 +591,17 @@ final class TileLoader {
     }
 
     /** A failure that is worth retrying: counts against the tile's tries first. */
-    private void recordFailure(String key, String kind, String detail) {
+    private void recordFailure(String key, String url, String kind, String detail) {
         int tries = triesSoFar(key) + 1;
         if (tries < MAX_TRIES) {
             long delay = retryDelayMillis(tries - 1);
             states.put(key, new State(tries, System.currentTimeMillis() + delay));
             problem = kind;
-            logFailure(key, detail + " (retry " + tries + " in " + delay + "ms)");
+            logFailure(key, url, detail + " (retry " + tries + " in " + delay + "ms)");
             scheduleRetry(delay, key);
             return;
         }
-        fail(key, kind, detail, TILE_COOLDOWN_MS);
+        fail(key, url, kind, detail, TILE_COOLDOWN_MS);
     }
 
     private int triesSoFar(String key) {
@@ -606,10 +610,10 @@ final class TileLoader {
     }
 
     /** A failure that has used up its retries: long cooldown plus a periodic retry. */
-    private void fail(String key, String kind, String detail, long cooldownMs) {
+    private void fail(String key, String url, String kind, String detail, long cooldownMs) {
         states.put(key, new State(MAX_TRIES, System.currentTimeMillis() + Math.max(cooldownMs, 1_000)));
         problem = kind;
-        logFailure(key, detail);
+        logFailure(key, url, detail);
         armRecoverySweep();
     }
 
@@ -674,10 +678,15 @@ final class TileLoader {
         }, delayMs, TimeUnit.MILLISECONDS);
     }
 
-    /** Per-tile failures are a debug signal; a burst of them is worth a warning. */
-    private void logFailure(String key, String detail) {
+    /** Per-tile failures are a debug signal; a burst of them is worth a warning.
+     *
+     *  <p>The line carries the tile id <em>and</em> the URL that was requested, with the
+     *  status and the reason: a tile id on its own tells you nothing about which request
+     *  the server rejected, and 429/403 need the URL to be actionable. */
+    private void logFailure(String key, String url, String detail) {
         if (Boolean.getBoolean("dcls.tile.debug")) {
-            System.out.println("[dcls-tiles] " + key + " -> " + detail);
+            System.out.println("[dcls-tiles] " + key + " " + (url == null || url.isEmpty() ? "" : url)
+                    + " -> " + detail);
         }
         long now = System.currentTimeMillis();
         if (now - failureWindowStart.get() > FAILURE_WINDOW_MS) {
@@ -730,7 +739,7 @@ final class TileLoader {
     private boolean store(String key, byte[] body) {
         Image img = decode(body);
         if (img == null) {
-            fail(key, "error", "decode error", TILE_COOLDOWN_MS);
+            fail(key, "", "error", "decode error", TILE_COOLDOWN_MS);
             return false;
         }
         mem.put(key, img);
