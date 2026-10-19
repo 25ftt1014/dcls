@@ -100,7 +100,8 @@ class TileLoaderStressTest {
     void aZoomAndPanStormMustNotWedgeTheLoader() throws Exception {
         FxTestKit.run(() -> { });   // Image decoding needs a toolkit
         FakeSource source = new FakeSource(1_500, 2);
-        TileLoader loader = new TileLoader(urls(), source, () -> { }, "stress-test", 512);
+        // A short debounce so the test runs in seconds; the app uses 120ms.
+        TileLoader loader = new TileLoader(urls(), source, () -> { }, "stress-test", 512, 40);
 
         // The view the user ends up looking at, known up front so the test can tell
         // "the map needed these" from "the loader went off fetching the old ones".
@@ -110,9 +111,9 @@ class TileLoaderStressTest {
         source.finalView.clear();
         source.finalView.addAll(finalKeys);
 
-        // The storm: 200 view changes, each requesting its tiles exactly as a paint does.
+        // The storm: 200 view changes, each reporting what it needs exactly as a paint does.
         for (int step = 0; step < STORM_VIEWS; step++) {
-            for (int[] tile : viewFor(step)) loader.request(tile[0], tile[1], tile[2]);
+            loader.viewChanged(viewFor(step).getFirst()[0], viewFor(step));
             Thread.sleep(STORM_INTERVAL_MS);
         }
 
@@ -138,6 +139,10 @@ class TileLoaderStressTest {
         Thread.sleep(500);
         assertEquals(staleAfterSettle, source.fetchesOutsideFinalView(),
                 "the loader is still fetching tiles for views the user has left");
+
+        // The queue is bounded, so a storm cannot grow it without limit.
+        assertTrue(loader.queued() <= TileLoader.MAX_PENDING,
+                "the request queue must stay bounded, was " + loader.queued());
     }
 
     /** Tiles of a view that are not in the memory cache yet. */
@@ -155,9 +160,9 @@ class TileLoaderStressTest {
     void aSuccessfulLoadClearsTheProblemFlag() throws Exception {
         FxTestKit.run(() -> { });
         FakeSource source = new FakeSource(0, 0);
-        TileLoader loader = new TileLoader(urls(), source, () -> { }, "stress-test", 64);
+        TileLoader loader = new TileLoader(urls(), source, () -> { }, "stress-test", 64, 10);
 
-        loader.request(14, 1, 1);
+        loader.viewChanged(14, List.of(new int[] {14, 1, 1}));
         awaitLoaded(loader, 14, 1, 1);
         assertNotNull(loader.peek(14, 1, 1), "the tile should be cached");
         assertTrue(loader.problem() == null,

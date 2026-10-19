@@ -240,6 +240,33 @@ static String tileUrl(int z, int x, int y) {
     /** What one frame actually needs: tiles drawn, still arriving, or failed-cooling. */
     private record FrameCoverage(int painted, int pending, int failed) { }
 
+    /**
+     * The line under "Map tiles unavailable", or null when there is nothing to explain.
+     *
+     * <p>Pure so the wording — in particular the rate-limit countdown, which used to be
+     * a generic "retrying automatically" — is verifiable without a canvas.
+     *
+     * @param problem   failure class from the loader: offline, denied, throttled, error
+     * @param retryInMs how long until the loader tries again, 0 when unknown
+     */
+    static String tileNotice(String problem, long retryInMs, int painted, int pending, int failed) {
+        if (painted > 0) return null;
+        if (pending == 0 && failed == 0) return null;
+        if (pending > 0) return "Tiles are still loading…";
+        String seconds = retryInMs > 0 ? Math.max(1, Math.round(retryInMs / 1000f)) + "s" : "";
+        return switch (problem == null ? "" : problem) {
+            case "denied" -> "Tile server denied the request" + waitFor(seconds) + ".";
+            case "throttled" -> "Tile server is rate limiting us" + waitFor(seconds) + ".";
+            case "offline" -> "Connect to the internet.";
+            default -> "A network error occurred — retrying automatically.";
+        };
+    }
+
+    /** " — retrying in 12s" when the wait is known, so the notice can say how long. */
+    private static String waitFor(String seconds) {
+        return seconds.isEmpty() ? " — retrying automatically" : " — retrying in " + seconds;
+    }
+
     /** Last view-zoom line already printed (drawLiveTiles runs every frame). */
     private static volatile String lastZoomLog = "";
 
@@ -331,15 +358,23 @@ static String tileUrl(int z, int x, int y) {
             }
         }
         g.restore();
-        // Prefetch one ring around the viewport (cheap: memory check, background
-        // queue on miss) so the next pan step usually finds tiles already loading.
+        // Tell the loader what this settled frame needs. It debounces, cancels work for
+        // views the user has left, and queues only these tiles plus the parents the
+        // fallback above needs — the prefetch ring is gone, because during a drag it
+        // was the bulk of the requests flooding the loader.
+        List<int[]> wanted = new ArrayList<>();
         int maxTile = (1 << z) - 1;
-        for (int x = Math.max(x0 - 1, 0); x <= Math.min(x1 + 1, maxTile); x++) {
-            for (int y = Math.max(y0 - 1, 0); y <= Math.min(y1 + 1, maxTile); y++) {
-                if (x >= x0 && x <= x1 && y >= y0 && y <= y1) continue;
-                requestTile(z, x, y);
+        for (int x = x0; x <= x1; x++) {
+            for (int y = y0; y <= y1; y++) {
+                if (x < 0 || y < 0 || x > maxTile || y > maxTile) continue;
+                wanted.add(new int[] {z, x, y});
+                // The parent quadrant is what fills the gap until this tile arrives.
+                if (z > LIVE_MIN_Z) {
+                    wanted.add(new int[] {z - 1, Math.floorDiv(x, 2), Math.floorDiv(y, 2)});
+                }
             }
         }
+        TILES.viewChanged(z, wanted);
         return new FrameCoverage(painted, pending, failed);
     }
 
@@ -574,21 +609,12 @@ static String tileUrl(int z, int x, int y) {
         g.setImageSmoothing(true);
         g.setFill(Color.web("#e8edf1")); g.fillRect(0, 0, w, h);
         FrameCoverage coverage = drawLiveTiles(g, w, h, view, tileZoomFor(canvas, view, w - MAP_PAD * 2));
-        if (coverage.painted() == 0 && (coverage.pending() > 0 || coverage.failed() > 0)) {
-            String reason;
-            if (coverage.pending() > 0) {
-                reason = "Tiles are still loading…";
-            } else {
-                String problem = TILES.problem() == null ? "" : TILES.problem();
-                reason = switch (problem) {
-                    case "denied" -> "Tile server denied the request — retrying automatically.";
-                    case "throttled" -> "Tile server is rate-limiting us — retrying automatically.";
-                    case "offline" -> "Connect to the internet.";
-                    default -> "A network error occurred — retrying automatically.";
-                };
-            }
+        String notice = tileNotice(TILES.problem(),
+                Math.max(TILES.retryAfterAt() - System.currentTimeMillis(), 0),
+                coverage.painted(), coverage.pending(), coverage.failed());
+        if (notice != null) {
             g.setFill(Color.web("#657487")); g.setFont(Font.font("Segoe UI", 12));
-            g.fillText("Map tiles unavailable — " + reason, 14, h / 2);
+            g.fillText("Map tiles unavailable — " + notice, 14, h / 2);
             g.setFont(Font.font("Segoe UI", 10));
             g.fillText("Previously visited areas load from the tile cache.", 14, h / 2 + 18);
         }
