@@ -156,8 +156,8 @@ final class MapRenderer {
         return Math.toDegrees(Math.atan(Math.sinh(Math.PI * (1 - 2.0 * y / Math.pow(2, z)))));
     }
 
-    static String tileUrl(int z, int x, int y) {
-        return tileUrl(z, x, y, 0);
+static String tileUrl(int z, int x, int y) {
+        return osmUrl(z, x, y, 0);
     }
 
     /** OSM Standard subdomains, spread round-robin so no single host takes the load. */
@@ -173,28 +173,9 @@ final class MapRenderer {
                 + ".tile.openstreetmap.org/" + z + "/" + x + "/" + y + ".png";
     }
 
-    private static String tileUrl(int z, int x, int y, int hostShift) {
-        return osmUrl(z, x, y, hostShift);
-    }
-
-    private static final Map<String, Image> TILE_MEM = Collections.synchronizedMap(new LinkedHashMap<>(384, 0.75f, true) {
-        @Override protected boolean removeEldestEntry(Map.Entry<String, Image> entry) { return size() > 320; }
-    });
-    private static final Set<String> TILE_IN_FLIGHT = Collections.synchronizedSet(new HashSet<>());
-    private static final AtomicBoolean TILE_URL_LOGGED = new AtomicBoolean();
-    /** Minimum spacing between fetch starts, one slot per OSM subdomain so the three
-     *  hosts progress in parallel at the same per-host rate a single slot allowed. */
-    private static final AtomicLong[] NEXT_FETCH_AT = {
-            new AtomicLong(), new AtomicLong(), new AtomicLong()};
-    private static final Map<String, Long> TILE_FAILED = new ConcurrentHashMap<>();
-    /** Tiles the server confirms do not exist (404): never retried within a session. */
-    private static final Set<String> TILE_GONE = ConcurrentHashMap.newKeySet();
-    private static final ExecutorService TILE_IO = Executors.newFixedThreadPool(3, runnable -> {
-        Thread thread = new Thread(runnable, "dcls-tiles"); thread.setDaemon(true); return thread;
-    });
-    private static final java.net.http.HttpClient TILE_HTTP = java.net.http.HttpClient.newBuilder()
-            .version(java.net.http.HttpClient.Version.HTTP_1_1)
-            .connectTimeout(Duration.ofSeconds(5)).proxy(tileProxy()).build();
+    /** The loader behind every map in the app. Painting decides what a frame wants;
+     *  TileLoader owns fetching, caching and failure state. */
+    private static final TileLoader TILES = TileLoader.DEFAULT;
 
     /** Proxy from HTTPS_PROXY/HTTP_PROXY (host:port, scheme optional) when set,
      *  so campus networks work; otherwise the platform default. */
@@ -217,239 +198,22 @@ final class MapRenderer {
         }
     }
 
-    private static Path tileDiskPath(String key) {
-        return Path.of(System.getProperty("user.home"), ".dcls", "tiles",
-                currentScopeName(), "osm/" + key + ".png");
-    }
-
     /** Cached tile image, or null on a miss (queues one background load: disk first,
      *  then network). Memory-only on the calling thread: disk decode and fetching
      *  never block a paint, so fast pans can't hitch on file or network I/O. */
     static Image requestTile(int z, int x, int y) {
-        String key = z + "/" + x + "/" + y;
-        Image hit = TILE_MEM.get(key);
-        if (hit != null) return hit;
-        Long retryAt = TILE_FAILED.get(key);
-        if (retryAt != null && System.currentTimeMillis() < retryAt) return null;
-        if (TILE_IN_FLIGHT.add(key)) {
-            tileProblem = null;
-            TILE_IO.submit(() -> loadTile(key, z, x, y));
-        }
-        return null;
+        return TILES.request(z, x, y);
     }
 
-    /** Background tile load: disk cache first, then one network fetch. Runs off the
-     *  UI thread; arrival triggers a repaint through the tile listeners. */
-    private static void loadTile(String key, int z, int x, int y) {
-        try {
-            if (TILE_GONE.contains(key)) return;
-            Image disk = decodeTileFile(tileDiskPath(key));
-            if (disk != null) {
-                TILE_MEM.put(key, disk);
-                TILE_FAILED.remove(key);
-                tileProblem = null;
-                Platform.runLater(MapRenderer::fireTilesUpdated);
-                return;
-            }
-            fetchTile(key, z, x, y);
-        } finally {
-            TILE_IN_FLIGHT.remove(key);
-        }
+    /** Cached tile image without blocking (memory only). Safe for fallback painting on
+     *  every frame, and never decodes on the calling thread. */
+    static Image peekTile(int z, int x, int y) {
+        return TILES.peek(z, x, y);
     }
 
-    private static void fetchTile(String key, int z, int x, int y) {
-        if (TILE_URL_LOGGED.compareAndSet(false, true)) {
-            System.out.println("[dcls-tiles] provider: OSM Standard (no key)");
-        }
-        paceFetches(osmHostIndex(x, y, 0));
-        try {
-            storeTile(key, downloadTile(z, x, y, 0));
-        } catch (TileHttpException e) {
-            int code = e.code();
-            if (code == 404) {
-                TILE_GONE.add(key);
-                failTile(key, "error", "HTTP 404 (no such tile)", 60_000);
-            } else if (code == 429) {
-                failTile(key, "throttled", "HTTP 429" + (e.retryAfter() == null ? "" : " (retry in " + e.retryAfter() + "s)"),
-                        parseRetryAfter(e.retryAfter()));
-            } else if (code == 401 || code == 403) {
-                failTile(key, "denied", "HTTP " + code, 60_000);
-            } else {
-                failTile(key, "error", "HTTP " + code, 60_000);
-            }
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            failTile(key, "error", "interrupted", 60_000);
-        } catch (IOException e) {
-            // Transport failure: retry once via the next subdomain (covers per-host
-            // DNS/adblock flakiness) before recording the failure.
-            try {
-                paceFetches(osmHostIndex(x, y, 1));
-                storeTile(key, downloadTile(z, x, y, 1));
-                System.out.println("[dcls-tiles] " + key + " -> recovered via fallback host");
-            } catch (TileHttpException retry) {
-                failTile(key, "error", "HTTP " + retry.code() + " after host retry", 60_000);
-            } catch (InterruptedException retry) {
-                Thread.currentThread().interrupt();
-                failTile(key, "error", "interrupted", 60_000);
-            } catch (IOException retry) {
-                failTile(key, classifyOffline(retry), "host retry: " + describe(retry), 60_000);
-            }
-        } catch (Exception e) {
-            failTile(key, "error", describe(e), 60_000);
-        } finally {
-            TILE_IN_FLIGHT.remove(key);
-        }
-    }
-
-    /** Minimum spacing between fetch starts to one host, so bursts never look abusive
-     *  while still letting the other subdomains work in parallel. */
-    private static void paceFetches(int hostIndex) {
-        AtomicLong slot = NEXT_FETCH_AT[Math.floorMod(hostIndex, NEXT_FETCH_AT.length)];
-        long waitUntil = slot.get();
-        long now = System.currentTimeMillis();
-        if (waitUntil > now) {
-            try {
-                Thread.sleep(waitUntil - now);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            }
-        }
-        slot.set(Math.max(System.currentTimeMillis(), waitUntil) + 150);
-    }
-
-    /** Non-200 tile response, carrying the status and any Retry-After hint. */
-    private static final class TileHttpException extends IOException {
-        private final int code;
-        private final String retryAfter;
-        TileHttpException(int code, String retryAfter) {
-            super("HTTP " + code);
-            this.code = code; this.retryAfter = retryAfter;
-        }
-        int code() { return code; }
-        String retryAfter() { return retryAfter; }
-    }
-
-    private static byte[] downloadTile(int z, int x, int y, int hostShift) throws IOException, InterruptedException {
-        HttpRequest request = HttpRequest.newBuilder(URI.create(tileUrl(z, x, y, hostShift)))
-                .timeout(Duration.ofSeconds(15))
-                .header("User-Agent", "DCLS classroom demo")
-                .GET().build();
-        HttpResponse<byte[]> response = TILE_HTTP.send(request, HttpResponse.BodyHandlers.ofByteArray());
-        if (response.statusCode() == 200 && response.body().length > 0) {
-            // Truncated bodies decode into blocky half-tiles; never cache them as good.
-            long expected = response.headers().firstValueAsLong("Content-Length").orElse(-1);
-            if (expected >= 0 && expected != response.body().length) throw new IOException("truncated tile body");
-            return response.body();
-        }
-        throw new TileHttpException(response.statusCode(),
-                response.headers().firstValue("Retry-After").orElse(null));
-    }
-
-    /** Decode tile bytes. Null when undecodable. */
-    private static Image decodeTile(byte[] body) {
-        try {
-            Image img = new Image(new ByteArrayInputStream(body));
-            return img.isError() ? null : img;
-        } catch (Exception e) {
-            return null;
-        }
-    }
-
-    /** Decode a cached tile file. Null when missing/undecodable. */
-    private static Image decodeTileFile(Path disk) {
-        try {
-            if (Files.isRegularFile(disk)) return decodeTile(Files.readAllBytes(disk));
-        } catch (Exception ignored) { }
-        return null;
-    }
-
-    /** Cache a downloaded tile; returns false (and records failure) on decode errors. */
-    private static boolean storeTile(String key, byte[] body) {
-        Image img = decodeTile(body);
-        if (img == null) {
-            failTile(key, "error", "decode error", 60_000);
-            return false;
-        }
-        TILE_MEM.put(key, img);
-        try {
-            Path disk = tileDiskPath(key);
-            Files.createDirectories(disk.getParent());
-            Files.write(disk, body);
-        } catch (Exception ignored) { }
-        TILE_FAILED.remove(key);
-        tileProblem = null;
-        Platform.runLater(MapRenderer::fireTilesUpdated);
-        return true;
-    }
-
-    private static String classifyOffline(IOException e) {
-        return (e instanceof java.net.ConnectException || e instanceof java.net.UnknownHostException
-                || e instanceof java.net.NoRouteToHostException
-                || e instanceof java.net.http.HttpConnectTimeoutException) ? "offline" : "error";
-    }
-
-    private static String describe(Exception e) {
-        String detail = e.getClass().getSimpleName();
-        if (e.getMessage() != null && !e.getMessage().isBlank()) {
-            String message = e.getMessage();
-            detail += ": " + message.substring(0, Math.min(message.length(), 120));
-        }
-        return detail;
-    }
-
-    /** Retry-After value (delta-seconds or HTTP date) in millis, capped at 10 minutes. */
-    private static long parseRetryAfter(String value) {
-        if (value == null || value.isBlank()) return 60_000;
-        try {
-            return Math.min(Long.parseLong(value.trim()) * 1000, 600_000);
-        } catch (NumberFormatException notSeconds) { }
-        try {
-            long at = java.time.ZonedDateTime.parse(value.trim(),
-                    java.time.format.DateTimeFormatter.RFC_1123_DATE_TIME).toInstant().toEpochMilli();
-            return Math.min(Math.max(at - System.currentTimeMillis(), 1000), 600_000);
-        } catch (Exception ignored) { }
-        return 60_000;
-    }
-
-    /** Last tile-failure class, for the on-canvas notice: offline, denied (401/403),
-     *  throttled (429), error, or null. */
-    private static volatile String tileProblem;
-
-    private static void failTile(String key, String problem, String detail, long cooldownMs) {
-        TILE_FAILED.put(key, System.currentTimeMillis() + Math.max(cooldownMs, 1000));
-        tileProblem = problem;
-        System.out.println("[dcls-tiles] " + key + " -> " + detail);
-        armTileRetry();
-    }
-
-    private static final ScheduledExecutorService TILE_RETRY = Executors.newSingleThreadScheduledExecutor(runnable -> {
-        Thread thread = new Thread(runnable, "dcls-tiles-retry"); thread.setDaemon(true); return thread;
-    });
-    private static final AtomicBoolean TILE_RETRY_ARMED = new AtomicBoolean();
-
-    /** One repaint after the failure cooldown, so transient blips recover without input. */
-    private static void armTileRetry() {
-        if (TILE_RETRY_ARMED.compareAndSet(false, true)) {
-            TILE_RETRY.schedule(MapRenderer::tileRetryFired, 65, TimeUnit.SECONDS);
-        }
-    }
-
-    private static void tileRetryFired() {
-        TILE_RETRY_ARMED.set(false);
-        Platform.runLater(MapRenderer::fireTilesUpdated);
-        // Chain another wake-up if any tile still waits out a longer cooldown.
-        long now = System.currentTimeMillis();
-        long earliest = Long.MAX_VALUE;
-        for (Map.Entry<String, Long> entry : List.copyOf(TILE_FAILED.entrySet())) {
-            long retryAt = entry.getValue();
-            if (retryAt <= now) TILE_FAILED.remove(entry.getKey(), retryAt);
-            else if (retryAt < earliest) earliest = retryAt;
-        }
-        if (earliest != Long.MAX_VALUE && TILE_RETRY_ARMED.compareAndSet(false, true)) {
-            TILE_RETRY.schedule(MapRenderer::tileRetryFired,
-                    Math.max(earliest - System.currentTimeMillis(), 1000), TimeUnit.MILLISECONDS);
-        }
+    /** True while the tile sits out its post-failure cooldown (no fetch in flight). */
+    static boolean tileCoolingDown(int z, int x, int y) {
+        return TILES.coolingDown(z, x, y);
     }
 
     // Repaint hooks so arrived tiles pop in. Owners keep their Runnable strongly
@@ -462,7 +226,8 @@ final class MapRenderer {
         TILE_LISTENERS.add(new WeakReference<>(refresh));
     }
 
-    private static synchronized void fireTilesUpdated() {
+    /** Package-private: TileLoader calls this when a tile lands. */
+    static synchronized void fireTilesUpdated() {
         TILE_LISTENERS.removeIf(ref -> ref.get() == null);
         for (WeakReference<Runnable> ref : List.copyOf(TILE_LISTENERS)) {
             Runnable refresh = ref.get();
@@ -522,17 +287,6 @@ final class MapRenderer {
         return chosen;
     }
 
-    /** Cached tile image without blocking (memory only). No cooldown or retry
-     *  side effects beyond queueing the normal background load: safe for fallback
-     *  painting on every frame, and never decodes on the calling thread. */
-    static Image peekTile(int z, int x, int y) {
-        String key = z + "/" + x + "/" + y;
-        Image hit = TILE_MEM.get(key);
-        if (hit != null && !hit.isError()) return hit;
-        requestTile(z, x, y);
-        return null;
-    }
-
     /** Paint live tiles; reports coverage so callers can tell loading apart from failure. */
     private static FrameCoverage drawLiveTiles(GraphicsContext g, double w, double h, ViewBounds view, int z) {
         double pad = 14;
@@ -587,17 +341,6 @@ final class MapRenderer {
             }
         }
         return new FrameCoverage(painted, pending, failed);
-    }
-
-    /** True while the tile sits out its post-failure cooldown (no fetch in flight). */
-    static boolean tileCoolingDown(int z, int x, int y) {
-        String key = z + "/" + x + "/" + y;
-        if (TILE_GONE.contains(key)) return true;
-        Long retryAt = TILE_FAILED.get(key);
-        if (retryAt == null) return false;
-        if (retryAt > System.currentTimeMillis()) return true;
-        TILE_FAILED.remove(key, retryAt);
-        return false;
     }
 
     /** Max distance from the cluster centroid for a point to frame the map.
@@ -836,7 +579,7 @@ final class MapRenderer {
             if (coverage.pending() > 0) {
                 reason = "Tiles are still loading…";
             } else {
-                String problem = tileProblem == null ? "" : tileProblem;
+                String problem = TILES.problem() == null ? "" : TILES.problem();
                 reason = switch (problem) {
                     case "denied" -> "Tile server denied the request — retrying automatically.";
                     case "throttled" -> "Tile server is rate-limiting us — retrying automatically.";
@@ -1210,7 +953,7 @@ final class MapRenderer {
                     + "&viewbox=114.0,5.4,115.5,4.0";
             var req = java.net.http.HttpRequest.newBuilder(URI.create(url))
                     .timeout(Duration.ofSeconds(8)).header("User-Agent", "DCLS classroom demo").GET().build();
-            var res = TILE_HTTP.send(req, java.net.http.HttpResponse.BodyHandlers.ofString());
+            var res = TileLoader.httpClient().send(req, java.net.http.HttpResponse.BodyHandlers.ofString());
             if (res.statusCode() != 200) return List.of();
             List<PlaceHit> parsed = parseNominatim(res.body(), q);
             if (!parsed.isEmpty()) {
