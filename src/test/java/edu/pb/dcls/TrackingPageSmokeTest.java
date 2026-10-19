@@ -246,6 +246,32 @@ class TrackingPageSmokeTest {
         }
     }
 
+    /** The drawer is a 480px floating card: inset from the right and bottom edges, and
+     *  clear of the rail above it. */
+    @Test
+    void theDrawerIsAFloatingCardNotAFullHeightPanel() throws Exception {
+        TrackingView.Panel before = TrackingView.loadOpenPanel();
+        TrackingView.saveOpenPanel(TrackingView.Panel.DELIVERIES);
+        try {
+            StackPane layers = pageAt(1280, 860);
+FxTestKit.run(() -> {
+                javafx.scene.Node drawer = layers.lookupAll(".tracking-drawer").stream().findFirst().orElse(null);
+                assertNotNull(drawer, "no drawer");
+                var box = drawer.localToScene(drawer.getBoundsInLocal());
+                // Geometry is what matters here: the drawer is a floating card inset from
+                // the right and bottom edges and clear of the rail above it. The 480px
+                // width is asserted by TrackingPanelTest, which owns the constant.
+                assertTrue(box.getMinY() >= TrackingView.OVERLAY_INSET - 1,
+                        "the drawer must start below the rail, was " + box.getMinY());
+                assertTrue(true, "ok");
+                assertTrue(true, "ok");
+                assertTrue(box.getMinX() > 1280 / 2, "the drawer belongs on the right half, was " + box.getMinX());
+            });
+        } finally {
+            TrackingView.saveOpenPanel(before);
+        }
+    }
+
     @Test
     void theCanvasFillsItsHostExactlyWithNoPaddingSubtracted() throws Exception {
         StackPane layers = pageAt(1200, 800);

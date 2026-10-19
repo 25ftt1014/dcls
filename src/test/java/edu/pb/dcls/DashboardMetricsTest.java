@@ -21,6 +21,23 @@ class DashboardMetricsTest {
                 deliveredHoursAgo == null ? null : LocalDateTime.now().minusHours(deliveredHoursAgo));
     }
 
+    /**
+     * A delivery at a given hour today. The "completed today" metric counts from
+     * midnight, so a test that says "20 hours ago" is really saying "yesterday" only
+     * when it runs before 4am — this test failed every evening. Anchoring to midnight
+     * makes the intent ("one hour into today", "one hour into yesterday") hold at any
+     * hour of any day.
+     */
+    private static LocalDateTime hoursInto(int daysAgo, int hour) {
+        return LocalDate.now().minusDays(daysAgo).atStartOfDay().plusHours(hour);
+    }
+
+    private static Shipment deliveredAt(String id, LocalDateTime when) {
+        return new Shipment(id, "Acme", "+673 000 0000", "Bandar Seri Begawan", "Boxes", 1, 10,
+                Priority.NORMAL, OrderStatus.DELIVERED, "u-driver-01", "v-1934", null,
+                LocalDateTime.now().minusDays(2), when);
+    }
+
     private static Vehicle vehicle(String id, VehicleStatus status) {
         return new Vehicle(id, "V" + id, "Model", "Van", 1000, 5000, status, "u-driver-01", 10000);
     }
@@ -28,9 +45,9 @@ class DashboardMetricsTest {
     @Test
     void completedTodayCountsOnlyToday() {
         List<Shipment> rows = List.of(
-                shipment("D-1", OrderStatus.DELIVERED, 1),      // today
-                shipment("D-2", OrderStatus.DELIVERED, 20),     // yesterday
-                shipment("D-3", OrderStatus.DELIVERED, 48),     // two days ago
+                deliveredAt("D-1", hoursInto(0, 1)),   // an hour into today
+                deliveredAt("D-2", hoursInto(1, 1)),   // an hour into yesterday
+                deliveredAt("D-3", hoursInto(2, 1)),   // two days ago
                 shipment("D-4", OrderStatus.IN_TRANSIT, null)); // not delivered at all
         assertEquals(1, DashboardView.completedToday(rows));
     }

@@ -19,7 +19,9 @@ import javafx.scene.control.Label;
 import javafx.scene.control.MenuButton;
 import javafx.scene.control.MenuItem;
 import javafx.scene.control.SeparatorMenuItem;
+import javafx.scene.control.TableColumn;
 import javafx.scene.control.TableView;
+import javafx.scene.control.ScrollPane;
 import javafx.scene.control.TextField;
 import javafx.scene.control.TextInputControl;
 import javafx.scene.control.TitledPane;
@@ -50,6 +52,7 @@ import static edu.pb.dcls.Domain.OrderStatus;
 import static edu.pb.dcls.Domain.Shipment;
 import static edu.pb.dcls.UiFactory.button;
 import static edu.pb.dcls.UiFactory.chipCol;
+import static edu.pb.dcls.UiFactory.ellipsisCol;
 import static edu.pb.dcls.UiFactory.pageHeader;
 import static edu.pb.dcls.UiFactory.panel;
 import static edu.pb.dcls.UiFactory.wrapTextCol;
@@ -83,9 +86,10 @@ final class TrackingView {
      *  to the page's own renderer once that exists. */
     private Runnable popoverRefresh = () -> { };
 
-    /** Fixed drawer width in px. Sized so all five columns fit the content area
-     *  without clipping while still leaving the map the majority of the screen. */
-    static final double PANEL_WIDTH = 440;
+    /** Drawer width in px. Sized so the four fixed columns hold their width and
+     *  Destination still has room to wrap rather than clip, while leaving the map
+     *  the majority of the screen. */
+    static final double PANEL_WIDTH = 480;
     /** Slide durations: opening eases in slightly longer than closing, which reads as
      *  responsive rather than sluggish on the way back. */
     static final double OPEN_MS = 280, CLOSE_MS = 220;
@@ -94,8 +98,10 @@ final class TrackingView {
      *  Measured on the map container, not the stage — the nav sidebar already eats
      *  ~200px, so a stage-based threshold would switch far too late. */
     static final double COMPACT_MIN_WIDTH = 800;
-    /** Gap between a floating control and the edge of the map. */
-    static final double OVERLAY_INSET = 16;
+    /** Gap between a floating control and the edge of the map. One value for the whole
+     *  overlay layer, so the rail, the search bar, the popovers and the drawer all sit
+     *  the same distance from the edges they share. */
+    static final double OVERLAY_INSET = 12;
     /** Width of the floating search bar. */
     static final double SEARCH_WIDTH = 340;
     /** Side length of the square icon buttons in the rail. */
@@ -111,8 +117,12 @@ final class TrackingView {
     /** Total height of the four-icon rail. */
     static final double RAIL_HEIGHT = 4 * RAIL_SIZE + 3 * RAIL_ITEM_GAP + 2 * RAIL_PADDING;
     /** Top inset of the drawer: it hangs below the *whole* rail, so the drawer can
-     *  never cover the icons — including the one that closes it. */
-    static final double DRAWER_TOP = OVERLAY_INSET + RAIL_HEIGHT + POPOVER_GAP;
+     *  never cover the icons — including the one that closes it. One inset above the
+     *  rail and one below it, matching the gaps on every other side. */
+    static final double DRAWER_TOP = 2 * OVERLAY_INSET + RAIL_HEIGHT;
+    /** The drawer's own margins, so it is a floating card rather than a panel welded
+     *  to the right and bottom edges. */
+    static final double DRAWER_INSET = 12;
     /** Popover fade + slide, the same in both directions. */
     static final double POPOVER_MS = 140;
     /** Bottom inset of the tour card. MapRenderer paints the scale bar MAP_PAD (14px)
@@ -295,6 +305,65 @@ final class TrackingView {
 
     private static final String PREF_OPEN = "trackingDrawerOpen";
     private static final String PREF_PANEL = "trackingOpenPanel";
+
+    /** Short, uniform label for the Fix column: one word, one height. The full GPS
+     *  string (accuracy, speed, how long ago) stays in the cell tooltip and in the
+     *  detail panel, where there is room to read it. */
+    static String fixChip(String gpsStatus) {
+        if (gpsStatus == null || gpsStatus.isBlank()) return "—";
+        String upper = gpsStatus.toUpperCase(Locale.ROOT);
+        if (upper.startsWith("NO FIX")) return "No fix";
+        if (upper.startsWith("LOST")) return "Stale";
+        return "GPS";
+    }
+
+    /** Chip tone for the Fix column. A vehicle that has never had a fix is muted, not
+     *  an alarm: red is reserved for a signal we had and lost. */
+    static String fixChipTone(String gpsStatus) {
+        if (gpsStatus == null || gpsStatus.isBlank()) return "status-muted";
+        String upper = gpsStatus.toUpperCase(Locale.ROOT);
+        if (upper.startsWith("NO FIX")) return "status-muted";
+        if (upper.startsWith("LOST")) return "status-bad";
+        return "status-good";
+    }
+
+    /** Sort order of the Fix column's chips: the rows an operator must act on first —
+     *  never fixed, then stale, then healthy. Takes the chip text, because that is what
+     *  a column comparator is handed. */
+    static int fixChipOrder(String chip) {
+        if (chip == null) return 3;
+        return switch (chip) {
+            case "No fix" -> 0;
+            case "Stale" -> 1;
+            case "GPS" -> 2;
+            default -> 3;
+        };
+    }
+
+    /** Sort rank for the Fix column: the rows an operator acts on come first. */
+    static int fixChipRank(String gpsStatus) {
+        if (gpsStatus == null || gpsStatus.isBlank()) return 3;
+        String upper = gpsStatus.toUpperCase(Locale.ROOT);
+        if (upper.startsWith("NO FIX")) return 0;
+        if (upper.startsWith("LOST")) return 1;
+        return 2;
+    }
+
+    /** Table height that fits its rows. Clamped so a two-row list does not leave a
+     *  half-empty grid and a long one does not push the detail panel out of the drawer. */
+    static double tableHeightFor(int rows) {
+        double ideal = TABLE_CHROME + TABLE_HEADER + Math.max(rows, 1) * ROW_ESTIMATE;
+        return Math.min(TABLE_MAX_HEIGHT, Math.max(TABLE_MIN_HEIGHT, ideal));
+    }
+
+    /** Fixed column widths. Their sum is what Destination has to share what is left of. */
+    static final double COL_ORDER = 72, COL_VEHICLE = 68, COL_FIX = 76, COL_STATUS = 96;
+    /** Table height bounds, in px. */
+    static final double TABLE_MIN_HEIGHT = 132, TABLE_MAX_HEIGHT = 340;
+    /** Rough per-row and chrome heights used to size the table to its rows. Rows wrap,
+     *  so this is a floor rather than an exact measurement: a long destination makes
+     *  the row taller, and the table scrolls rather than guessing again. */
+    static final double ROW_ESTIMATE = 34, TABLE_HEADER = 30, TABLE_CHROME = 10;
 
     /** Keyboard shortcuts, as shown in the Help panel and asserted by a test so the
      *  documented list cannot silently drift from the ones actually bound. */
@@ -541,14 +610,16 @@ final class TrackingView {
         countBadge.getStyleClass().add("count-badge");
         ToggleButton follow = new ToggleButton("Follow selected");
         follow.setSelected(app.followSelected);
-        follow.setTooltip(new Tooltip("Keep the map centred on the selected delivery"));
+        follow.setTooltip(new Tooltip(
+                "Selecting a delivery always pans to it once. Turn this on to keep the "
+                        + "map following it as it moves."));
         follow.setOnAction(e -> app.followSelected = follow.isSelected());
         Button closeDrawer = new Button("✕");
         closeDrawer.getStyleClass().add("drawer-close");
         closeDrawer.setAccessibleText("Close active deliveries");
         Region headerGap = new Region();
         HBox.setHgrow(headerGap, ALWAYS);
-        HBox activeHeader = new HBox(8, activeTitle, countBadge, follow, headerGap, closeDrawer);
+        HBox activeHeader = new HBox(8, activeTitle, countBadge, headerGap, follow, closeDrawer);
         activeHeader.setAlignment(Pos.CENTER_LEFT);
 
         VBox active = panel(activeHeader);
@@ -584,24 +655,46 @@ final class TrackingView {
         table.getStyleClass().add("wrap-rows");
         table.setAccessibleText("Active deliveries");
         table.setPlaceholder(new Label("No active deliveries — assign an order first."));
+        // Keyboard up/down moves the selection, so the table has to be reachable and
+        // focused for the arrows to land here rather than on the map behind it.
+        table.setFocusTraversable(true);
 
-        // Widths sum to 392, not the drawer's 408px content width: the vertical scrollbar
-        // takes ~14px, and CONSTRAINED_RESIZE_POLICY responds to that shortfall by
-        // shrinking every column, which ellipsis-clips all of them at once.
-        table.getColumns().add(wrapTextCol("Order", Shipment::id, 88));
-        table.getColumns().add(wrapTextCol("Vehicle", s -> app.vehiclePlate(s.vehicleId()), 76));
-        table.getColumns().add(chipCol("Fix",
-                s -> s.vehicleId() == null ? "—" : app.tracking.gpsStatus(s.vehicleId()),
-                (s, text) -> text.startsWith("NO FIX") ? "status-bad"
-                        : text.startsWith("LOST") ? "status-warn" : "status-good", 76));
-        table.getColumns().add(wrapTextCol("Destination", Shipment::address, 84));
-        table.getColumns().add(chipCol("Status", s -> s.status().label(),
-                (s, text) -> s.status() == OrderStatus.IN_TRANSIT ? "status-info" : "status-good", 68));
+        // Four columns hold their width; Destination takes what is left and wraps.
+        // Pinning the four is the fix for the clipped Status and Destination chips:
+        // CONSTRAINED_RESIZE_POLICY shrank *every* column once the scrollbar took its
+        // share, so a Status pill lost its last characters.
+        TableColumn<Shipment, String> orderCol = ellipsisCol("Order", Shipment::id, COL_ORDER);
+        TableColumn<Shipment, String> vehicleCol = ellipsisCol("Vehicle",
+                s -> app.vehiclePlate(s.vehicleId()), COL_VEHICLE);
+        TableColumn<Shipment, String> fixCol = chipCol("Fix",
+                s -> fixChip(s.vehicleId() == null ? null : app.tracking.gpsStatus(s.vehicleId())),
+                (s, text) -> fixChipTone(app.tracking.gpsStatus(s.vehicleId())), COL_FIX);
+        TableColumn<Shipment, String> destinationCol =
+                wrapTextCol("Destination", Shipment::address, 120);
+        TableColumn<Shipment, String> statusCol = chipCol("Status", s -> s.status().label(),
+                (s, text) -> s.status() == OrderStatus.IN_TRANSIT ? "status-info" : "status-good",
+                COL_STATUS);
+
+        // A column's comparator works on the cell's value, not on the row: JavaFX reads each
+        // row's displayed text and orders those. Sorting by the shown text is also what
+        // the operator expects — the arrow says what is on screen.
+        orderCol.setComparator(TrackingView::compareText);
+        vehicleCol.setComparator(TrackingView::compareText);
+        fixCol.setComparator((a, b) -> Integer.compare(fixChipOrder(a), fixChipOrder(b)));
+        destinationCol.setComparator(TrackingView::compareText);
+        statusCol.setComparator(TrackingView::compareText);
+        for (TableColumn<Shipment, String> column : List.of(orderCol, vehicleCol, fixCol,
+                destinationCol, statusCol)) {
+            column.setSortable(true);
+            table.getColumns().add(column);
+        }
         table.setItems(FXCollections.observableArrayList(activeShipments));
         table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY);
         // A fixed cell size is what forces one line per row, and therefore the ellipsis.
         // -1 is TableView's "let each row size itself" value.
         table.setFixedCellSize(-1d);
+        // Sorted by order id out of the box; every header toggles from there.
+        orderCol.setSortType(TableColumn.SortType.ASCENDING);
 
         // ---- selected-row detail -------------------------------------
         ComboBox<String> feed = new ComboBox<>(FXCollections.observableArrayList("nmea", "mobile", "gpx"));
@@ -641,7 +734,38 @@ final class TrackingView {
 
         Label statusChip = new Label();
         statusChip.getStyleClass().addAll("status-pill", "status-info");
-        VBox detailBox = new VBox(8, statusChip, viewTour, feed, actionsBtn, app.trackingEta, app.feedStatusLabel);
+
+        // The live facts an operator checks when a row is selected: how long until it
+        // arrives, when the last fix landed, and how fast it is moving. Updated from
+        // the same one-second tick that refreshes the map, so they never go stale.
+        Label etaValue = new Label("—");
+        Label lastFixValue = new Label("—");
+        Label speedValue = new Label("—");
+        VBox detailFacts = new VBox(8,
+                factRow("ETA", etaValue), factRow("Last fix", lastFixValue),
+                factRow("Speed", speedValue));
+        detailFacts.getStyleClass().add("detail-facts");
+
+        Label emptyState = new Label(
+                "Select a delivery to see its ETA, last fix and speed.");
+        emptyState.getStyleClass().addAll("muted", "drawer-empty");
+
+        // One status line: the sentence the tracker writes, plus the feed it is using.
+        HBox statusStrip = new HBox(10, app.trackingEta, app.feedStatusLabel);
+        statusStrip.getStyleClass().add("status-strip");
+        statusStrip.setAlignment(Pos.TOP_LEFT);
+        statusStrip.setPickOnBounds(false);
+        HBox.setHgrow(app.trackingEta, ALWAYS);
+
+        // The one thing an operator comes here for: see where the vehicle is going.
+        viewTour.getStyleClass().add("primary-button");
+        viewTour.setMaxWidth(Double.MAX_VALUE);
+        viewTour.setTooltip(new Tooltip("Frame the fastest route for the selected vehicle's tour"));
+
+        VBox detailBox = new VBox(10, statusChip, viewTour,
+                new HBox(8, feed, actionsBtn), detailFacts, statusStrip, emptyState);
+        feed.setMinWidth(120);
+        HBox.setHgrow(feed, ALWAYS);
         TitledPane detail = new TitledPane();
         detail.setText("Delivery detail");
         detail.setCollapsible(true);
@@ -649,20 +773,35 @@ final class TrackingView {
         detail.setContent(detailBox);
         detail.getStyleClass().add("tracking-detail");
 
-        // The table scrolls; the filter and detail stay put, so the panel is a VBox
-        // with the table taking the slack rather than one tall scroll pane.
-        table.setPrefHeight(240);
-        VBox.setVgrow(table, ALWAYS);
-        active.getChildren().addAll(filter, table, detail);
+        // The detail takes the space the table is not using, and scrolls when the
+        // drawer's height cannot hold it all.
+        ScrollPane detailScroll = new ScrollPane(detail);
+        detailScroll.setFitToWidth(true);
+        detailScroll.setHbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
+        detailScroll.getStyleClass().add("drawer-detail-scroll");
+        VBox.setVgrow(detailScroll, ALWAYS);
+
+        // Size the table to its rows rather than to a fixed guess, so two deliveries
+        // fill it and twenty scroll it instead of both leaving half a grid empty.
+        Runnable resizeTable = () -> table.setPrefHeight(tableHeightFor(table.getItems().size()));
+        resizeTable.run();
+
+        // Follow only means something once something is selected.
+        follow.disableProperty().bind(table.getSelectionModel().selectedItemProperty().isNull());
+        viewTour.disableProperty().bind(table.getSelectionModel().selectedItemProperty().isNull());
+        actionsBtn.disableProperty().bind(table.getSelectionModel().selectedItemProperty().isNull());
+
+        active.getChildren().addAll(filter, table, detailScroll);
 
         // The drawer hangs below the rail rather than over it, and its host is added
         // before the rail's own layers so the rail always wins a click. The host keeps
-        // the drawer's height free (it fills the map) while hugging its width, and its
-        // top padding is the band the rail occupies.
+        // the drawer's height free (it fills the map) while hugging its width; its
+        // padding is the rail band above and the margins that make the drawer a
+        // floating card rather than a panel welded to the window edge.
         StackPane drawerHost = new StackPane(active);
         StackPane.setAlignment(active, Pos.TOP_RIGHT);
         StackPane.setAlignment(drawerHost, Pos.TOP_RIGHT);
-        drawerHost.setPadding(new Insets(DRAWER_TOP, 0, 0, 0));
+        drawerHost.setPadding(drawerPadding());
         drawerHost.setPickOnBounds(false);
         drawerHost.setMaxWidth(Region.USE_PREF_SIZE);
         layers.getChildren().add(5, drawerHost);
@@ -761,7 +900,7 @@ final class TrackingView {
         // compact mode. Reading the live height keeps the sheet a full map-height slide
         // whatever the window size is.
         Runnable drawerHidden = () -> {
-            double hidden = compact[0] ? Math.max(240, active.getHeight()) : PANEL_WIDTH;
+            double hidden = compact[0] ? Math.max(240, active.getHeight()) : PANEL_WIDTH + DRAWER_INSET;
             active.setTranslateX(compact[0] ? 0 : hidden);
             active.setTranslateY(compact[0] ? hidden : 0);
         };
@@ -790,7 +929,7 @@ Runnable applyDrawer = () -> {
             if (running[0] != null) { running[0].stop(); running[0] = null; }
 
             active.setVisible(true);
-            double hiddenX = compact[0] ? 0 : PANEL_WIDTH;
+            double hiddenX = compact[0] ? 0 : PANEL_WIDTH + DRAWER_INSET;
             double hiddenY = compact[0] ? Math.max(240, active.getHeight()) : 0;
             Duration duration = motion(closing ? CLOSE_MS : OPEN_MS);
 
@@ -871,6 +1010,37 @@ Runnable applyDrawer = () -> {
         sheetHandle.setOnMousePressed(event -> { openPanel[0] = Panel.NONE; applyPanel.run(); });
 
         // ---- live count and NO FIX -------------------------------------------------
+        // The selected delivery's ETA, last fix and speed, refreshed with the same
+        // tick that redraws the map. With nothing selected the panel shows one clear
+        // message instead of a row of dashes.
+        Runnable refreshFacts = () -> {
+            Shipment selected = table.getSelectionModel().getSelectedItem();
+            boolean anySelected = selected != null;
+            boolean withVehicle = anySelected && selected.vehicleId() != null;
+            emptyState.setVisible(!anySelected);
+            emptyState.setManaged(!anySelected);
+            statusChip.setVisible(anySelected);
+            statusChip.setManaged(anySelected);
+            detailFacts.setVisible(withVehicle);
+            detailFacts.setManaged(withVehicle);
+            statusStrip.setVisible(anySelected);
+            statusStrip.setManaged(anySelected);
+            if (!anySelected) return;
+            var point = withVehicle ? app.tracking.latestPlausibleForVehicle(selected.vehicleId()) : null;
+            if (point == null) {
+                etaValue.setText(withVehicle ? "No fix yet" : "—");
+                lastFixValue.setText("—");
+                speedValue.setText("—");
+                return;
+            }
+            etaValue.setText("about " + point.etaMinutes() + " min");
+            long age = Math.max(0, java.time.Duration.between(point.recordedAt(),
+                    java.time.LocalDateTime.now()).getSeconds());
+            lastFixValue.setText(point.recordedAt().format(DclsApp.DATE_TIME)
+                    + " (" + fixAgeText(age) + ")");
+            speedValue.setText(point.speedKmh() > 0.5 ? Math.round(point.speedKmh()) + " km/h" : "stationary");
+        };
+
         Runnable refreshBadge = () -> {
             int count = activeDeliveryBadge(table.getItems());
             countBadge.setText(String.valueOf(count));
@@ -883,13 +1053,22 @@ Runnable applyDrawer = () -> {
             warningDot.setVisible(lost);
             compactDot.setVisible(lost);
         };
-        app.addTrackingBadgeRefresh(refreshBadge);
+        app.addTrackingBadgeRefresh(() -> {
+            refreshBadge.run();
+            refreshFacts.run();
+        });
         refreshBadge.run();
+        refreshFacts.run();
 
-        Runnable refreshFilter = () -> table.setItems(FXCollections.observableArrayList(
-                lostFixFirst(activeShipments.stream()
-                        .filter(s -> matchesFilter(s, filter.getText(), app.vehiclePlate(s.vehicleId())))
-                        .toList(), id -> app.tracking.gpsStatus(id))));
+        Runnable refreshFilter = () -> {
+            table.setItems(FXCollections.observableArrayList(
+                    lostFixFirst(activeShipments.stream()
+                            .filter(s -> matchesFilter(s, filter.getText(), app.vehiclePlate(s.vehicleId())))
+                            .toList(), id -> app.tracking.gpsStatus(id))));
+            // A shorter list must not leave a half-empty grid behind.
+            resizeTable.run();
+            refreshFacts.run();
+        };
         filter.textProperty().addListener((o, a, b) -> {
             refreshFilter.run();
             refreshBadge.run();
@@ -899,22 +1078,20 @@ Runnable applyDrawer = () -> {
         table.getSelectionModel().selectedItemProperty().addListener((o, old, selected) -> {
             app.focusShipment(selected);
             if (selected == null) {
-                statusChip.setVisible(false);
-                statusChip.setManaged(false);
+                refreshFacts.run();
                 return;
             }
             statusChip.setText(selected.status().label());
             statusChip.getStyleClass().setAll("status-pill",
                     selected.status() == OrderStatus.IN_TRANSIT ? "status-info" : "status-good");
-            statusChip.setVisible(true);
-            statusChip.setManaged(true);
+            refreshFacts.run();
             if (selected.vehicleId() == null) return;
-            // Pan to the vehicle when it actually has a fix to pan to.
+            // Selecting pans to the vehicle once, so the operator lands on what they
+            // clicked. Continuous following is Follow selected's job, and only that.
             var point = app.tracking.latestPlausibleForVehicle(selected.vehicleId());
             if (point != null && app.trackingMaps != null) app.trackingMaps.zoomTo(point.x(), point.y());
         });
-        statusChip.setVisible(false);
-        statusChip.setManaged(false);
+        refreshFacts.run();
 
         // ---- responsive: rail vs menu button, drawer vs bottom sheet --------------
         Runnable applyCompact = () -> {
@@ -1182,6 +1359,45 @@ Runnable applyDrawer = () -> {
             if (current == ancestor) return true;
         }
         return false;
+    }
+
+    /** Case-insensitive text order that never throws on a missing value: an order with no
+     *  address sorts first rather than blowing up the sort. */
+    static int compareText(String a, String b) {
+        if (a == null && b == null) return 0;
+        if (a == null) return -1;
+        if (b == null) return 1;
+        return a.compareToIgnoreCase(b);
+    }
+
+    /** The margins around the drawer card: clear of the rail above, and a consistent
+     *  gap from the right and bottom edges. The left inset is zero so the card still
+     *  meets the edge it is anchored to. */
+    private static Insets drawerPadding() {
+        return new Insets(DRAWER_TOP, DRAWER_INSET, DRAWER_INSET, 0);
+    }
+
+    /** One "label: value" line in the detail panel. Takes the value label so the caller
+     *  can update its text in place rather than rebuilding the row every tick. */
+    private static HBox factRow(String name, Label value) {
+        Label caption = new Label(name);
+        caption.getStyleClass().add("eyebrow");
+        value.getStyleClass().add("detail-value");
+        value.setWrapText(true);
+        HBox row = new HBox(10, caption, value);
+        row.setAlignment(Pos.TOP_LEFT);
+        row.setPickOnBounds(false);
+        HBox.setHgrow(value, ALWAYS);
+        return row;
+    }
+
+    /** How long ago a fix landed, in words. Reads better than a raw timestamp in a
+     *  panel that refreshes every second. */
+    static String fixAgeText(long seconds) {
+        if (seconds < 5) return "just now";
+        if (seconds < 60) return seconds + "s ago";
+        long minutes = seconds / 60;
+        return minutes < 60 ? minutes + " min ago" : (minutes / 60) + " h ago";
     }
 
     /** The Help popover: the map gestures that used to live in the page heading, plus

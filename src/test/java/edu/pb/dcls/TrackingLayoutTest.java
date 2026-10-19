@@ -167,6 +167,71 @@ class TrackingLayoutTest {
     }
 
     @Nested
+    @DisplayName("fix chip")
+    class FixChip {
+        @Test
+        void oneWordPerState() {
+            assertEquals("GPS", TrackingView.fixChip("GPS·±6m·28km/h"));
+            assertEquals("Stale", TrackingView.fixChip("LOST · 40s ago"));
+            assertEquals("No fix", TrackingView.fixChip("NO FIX"));
+            assertEquals("—", TrackingView.fixChip(null));
+        }
+
+        @Test
+        void neverFixedIsMutedAndLostSignalIsRed() {
+            // Red is for a signal we had and lost. A vehicle that has never had one is
+            // information, not an emergency, and painting it red cried wolf.
+            assertEquals("status-muted", TrackingView.fixChipTone("NO FIX"));
+            assertEquals("status-bad", TrackingView.fixChipTone("LOST · 40s ago"));
+            assertEquals("status-good", TrackingView.fixChipTone("GPS·±6m"));
+            assertEquals("status-muted", TrackingView.fixChipTone(null));
+        }
+
+        @Test
+        void sortsTheRowsThatNeedActionFirst() {
+            assertEquals(0, TrackingView.fixChipOrder("No fix"));
+            assertEquals(1, TrackingView.fixChipOrder("Stale"));
+            assertEquals(2, TrackingView.fixChipOrder("GPS"));
+            assertTrue(TrackingView.fixChipOrder("No fix") < TrackingView.fixChipOrder("Stale"));
+        }
+    }
+
+    @Nested
+    @DisplayName("table height")
+    class TableHeight {
+        @Test
+        void growsWithTheRowsAndStopsAtTheCeiling() {
+            assertTrue(TrackingView.tableHeightFor(2) < TrackingView.tableHeightFor(8),
+                    "more rows must make the table taller");
+            assertEquals(TrackingView.TABLE_MAX_HEIGHT, TrackingView.tableHeightFor(200));
+            assertEquals(TrackingView.TABLE_MIN_HEIGHT, TrackingView.tableHeightFor(0),
+                    "an empty list must not collapse the table to nothing");
+        }
+
+        @Test
+        void neverCollapsesOrSwallowsTheDrawer() {
+            for (int rows = 0; rows <= 300; rows += 7) {
+                double height = TrackingView.tableHeightFor(rows);
+                assertTrue(height >= TrackingView.TABLE_MIN_HEIGHT && height <= TrackingView.TABLE_MAX_HEIGHT,
+                        "height " + height + " out of bounds for " + rows + " rows");
+            }
+        }
+    }
+
+    @Nested
+    @DisplayName("drawer margins")
+    class Drawer {
+        @Test
+        void sitsBelowTheRailWithAnEvenGap() {
+            assertEquals(TrackingView.RAIL_HEIGHT + 2 * TrackingView.OVERLAY_INSET,
+                    TrackingView.DRAWER_TOP,
+                    "the drawer should start one inset below the rail");
+            assertEquals(TrackingView.OVERLAY_INSET, TrackingView.DRAWER_INSET,
+                    "the drawer's own margins should match every other floating control");
+        }
+    }
+
+    @Nested
     @DisplayName("search prompt encoding")
     class Encoding {
         @Test

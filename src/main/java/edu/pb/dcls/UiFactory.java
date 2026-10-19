@@ -165,6 +165,28 @@ final class UiFactory {
         return column;
     }
 
+    /** Single-line column whose value ellipsizes rather than wrapping, with the full text
+ *  always available as a tooltip. Used where a value is an identifier: an order id is
+ *  recognisable at a glance and cheap to copy from a tooltip, whereas letting it wrap
+ *  makes every row two lines tall for no gain. */
+    static <T> TableColumn<T, String> ellipsisCol(String heading, Function<T, String> value, double width) {
+        TableColumn<T, String> column = textCol(heading, value, width);
+        // Pinned on both sides: the fixed columns must not be squeezed by
+        // CONSTRAINED_RESIZE_POLICY, which is what used to clip Status and Destination.
+        column.setMinWidth(width);
+        column.setMaxWidth(width);
+        column.setCellFactory(col -> new TableCell<>() {
+            @Override protected void updateItem(String item, boolean empty) {
+                super.updateItem(item, empty);
+                if (empty || item == null) { setText(null); setTooltip(null); return; }
+                setText(item);
+                setWrapText(false);
+                setTooltip(new Tooltip(item));
+            }
+        });
+        return column;
+    }
+
     /** Single-line column whose value renders as a coloured status chip, with the
      *  full text still available as a tooltip. */
     static <T> TableColumn<T, String> chipCol(String heading, Function<T, String> value,

@@ -105,6 +105,26 @@
 .link-button { -fx-background-color: transparent; -fx-text-fill: -accent; -fx-font-weight: 700; -fx-cursor: hand; -fx-padding: 4 2; }
 .link-button:hover { -fx-text-fill: -accent-hover; -fx-underline: true; }
 
+/* Toggle buttons carry their own on/off state; an unstyled toggle looked identical
+   either way, so "Follow selected" gave no clue whether it was armed. */
+.toggle-button {
+    -fx-background-color: -surface;
+    -fx-text-fill: #273349;
+    -fx-border-color: #d3dbe8;
+    -fx-border-radius: 9;
+    -fx-padding: 6 12 6 12;
+    -fx-font-size: 12px;
+    -fx-cursor: hand;
+}
+.toggle-button:hover { -fx-background-color: -accent-soft; -fx-border-color: -accent; }
+.toggle-button:selected {
+    -fx-background-color: -accent;
+    -fx-text-fill: #ffffff;
+    -fx-border-color: -accent;
+    -fx-font-weight: 700;
+}
+.toggle-button:disabled { -fx-opacity: 0.55; -fx-cursor: default; }
+
 /* ---- navigation ---------------------------------------------- */
 .nav-button {
     -fx-background-color: transparent;
@@ -355,8 +375,36 @@
    Row height is deliberately NOT set here: TrackingView's setFixedCellSize(-1d) owns it,
    and the two used to disagree, leaving every cell single-line and ellipsized. */
 .table-view.wrap-rows .table-cell { -fx-padding: 8 10 8 10; -fx-wrap-text: true; }
-/* Tighter pill inside the 440px drawer so "In transit" clears the 68px Status column. */
-.tracking-drawer .status-pill { -fx-padding: 3 7; }
+/* Tighter cells in the drawer buy the columns back; four of them are pinned. */
+.tracking-drawer .table-cell { -fx-padding: 6 8 6 8; }
+/* One chip size everywhere in the drawer, so a row is one height. */
+.tracking-drawer .status-pill {
+    -fx-padding: 3 8;
+    -fx-min-height: 20px;
+    -fx-font-size: 10px;
+}
+/* A vehicle that has never had a fix is information, not an alarm: red stays reserved
+   for a signal we had and lost. */
+.status-muted { -fx-background-color: #eef1f6; -fx-text-fill: #5d6b85; }
+
+/* Selected row: unmistakably selected. The accent bar on the first cell keeps it
+   readable on the striped background as well as the accent fill. */
+.table-row-cell:selected {
+    -fx-background-color: #dbe6ff;
+    -fx-text-background-color: -ink;
+    -fx-font-weight: 700;
+}
+.table-row-cell:selected:hover { -fx-background-color: #cfdfff; }
+.tracking-drawer .table-row-cell:selected .table-cell:first-child {
+    -fx-border-color: -accent;
+    -fx-border-width: 0 0 0 3;
+}
+
+/* Sortable headers. The default arrow is oversized for a compact drawer. */
+.table-view .column-header { -fx-cursor: hand; -fx-size: 30px; }
+.table-view .column-header:hover { -fx-background-color: #eef3fb; }
+.column-header > .sort-order { -fx-scale: 0.7; -fx-fill: -accent; }
+.column-header > .sort-order > .arrow { -fx-scale: 0.8; }
 
 .count-badge {
     -fx-background-color: -accent;
@@ -371,15 +419,29 @@
 .tracking-detail .titled-pane > .title { -fx-background-color: transparent; -fx-padding: 6 0 6 0; }
 .tracking-detail .titled-pane > .content { -fx-background-color: transparent; -fx-padding: 4 0 0 0; }
 
-/* Drawer: right-edge panel anchored to the map container. It is positioned by
-   TranslateTransition, never by layout reflow, so nothing can drag or resize it. */
+/* Detail panel: live facts and one status line, both inside a scroll pane so the
+   drawer never has to grow past its height. */
+.detail-facts { -fx-padding: 2 0 2 0; }
+.detail-facts .eyebrow { -fx-min-width: 64px; }
+.status-strip {
+    -fx-background-color: #f6f8fb;
+    -fx-background-radius: 8;
+    -fx-padding: 8 10 8 10;
+}
+.status-strip .label { -fx-font-size: 11px; }
+.drawer-empty { -fx-padding: 6 0 2 0; -fx-font-size: 12px; }
+.drawer-detail-scroll { -fx-background-color: transparent; -fx-padding: 0; }
+
+/* Drawer: a floating card, inset from the right and bottom edges and clear of the
+   rail above it. It is positioned by TranslateTransition, never by layout reflow, so
+   nothing can drag or resize it. */
 .tracking-drawer {
     -fx-background-color: -surface;
     -fx-border-color: -line;
-    -fx-border-width: 1 0 0 1;
-    -fx-border-radius: 14 0 0 14;
-    -fx-background-radius: 14 0 0 14;
-    -fx-effect: dropshadow(gaussian, rgba(20,27,45,0.16), 20, 0, 0, 6);
+    -fx-border-width: 1;
+    -fx-border-radius: 14;
+    -fx-background-radius: 14;
+    -fx-effect: dropshadow(gaussian, rgba(20,27,45,0.18), 22, 0, 0, 8);
 }
 
 .drawer-close {
