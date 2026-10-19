@@ -119,6 +119,9 @@ public final class DclsApp extends Application {
     DashboardView dashboard;
     String focusedShipmentId;
     String focusedVehicleId;
+    /** Vehicles the Layers panel has unticked. Empty means "draw the whole fleet";
+     *  containing every vehicle means a clean map. */
+    final java.util.Set<String> hiddenVehicles = new java.util.LinkedHashSet<>();
     List<String> pendingRouteShipmentIds = List.of();
     final Map<String, Double> routeStopConfidence = new java.util.HashMap<>();
     final java.util.Set<String> routeStopConfirmed = new java.util.HashSet<>();
@@ -762,17 +765,66 @@ public final class DclsApp extends Application {
     /** Vehicles drawn on the map: solo focused tour, or the whole fleet.
      *  Pure and headless-testable. Unknown focus falls back to show-all. */
     static List<String> visibleVehicles(String focusedId, java.util.Set<String> vehicleIds) {
+        return visibleVehicles(focusedId, vehicleIds, java.util.Set.of());
+    }
+
+    /**
+     * Vehicles drawn on the map, combining two independent things:
+     * <ul>
+     *   <li><b>Solo focus</b> — a focused delivery or vehicle shows only its own tour,
+     *       trail and marker.</li>
+     *   <li><b>Layers ticks</b> — the Live tracking Layers panel unticks vehicles, and
+     *       unticked vehicles are dropped whatever else is going on.</li>
+     * </ul>
+     * Solo wins when the focused vehicle is still ticked, because "follow this one
+     * delivery" is the stronger intent. Hiding every vehicle leaves a clean map: no
+     * routes, no trails, no markers.
+     *
+     * <p>Pure and headless-testable, and the only thing that decides what the tracking
+     * map iterates over.
+     */
+    static List<String> visibleVehicles(String focusedId, java.util.Set<String> vehicleIds,
+                                         java.util.Set<String> hiddenIds) {
         if (vehicleIds == null) return List.of();
-        if (focusedId == null || !vehicleIds.contains(focusedId)) return new ArrayList<>(vehicleIds);
-        return List.of(focusedId);
+        java.util.Set<String> hidden = hiddenIds == null ? java.util.Set.of() : hiddenIds;
+        if (focusedId != null && vehicleIds.contains(focusedId) && !hidden.contains(focusedId)) {
+            return List.of(focusedId);
+        }
+        List<String> shown = new ArrayList<>();
+        for (String vehicleId : vehicleIds) {
+            if (!hidden.contains(vehicleId)) shown.add(vehicleId);
+        }
+        return shown;
+    }
+
+    /** Applies one Layers tick. Solo focus is dropped so the ticks are what the map
+     *  obeys — otherwise an earlier focus silently overrides the panel. The zoom is
+     *  left alone: unticking a vehicle is not a request to reframe the map. */
+    void setVehicleVisible(String vehicleId, boolean visible) {
+        if (vehicleId == null) return;
+        if (visible) hiddenVehicles.remove(vehicleId);
+        else hiddenVehicles.add(vehicleId);
+        focusedVehicleId = null;
+        focusedShipmentId = null;
+        drawTracking();
+        refreshFocusChip();
+    }
+
+    /** The Layers panel's "Show all": every vehicle visible again, no solo focus. */
+    void showAllVehicles() {
+        hiddenVehicles.clear();
+        focusedVehicleId = null;
+        focusedShipmentId = null;
+        drawTracking();
+        refreshFocusChip();
     }
 
     void paintTracking(GraphicsContext g, double w, double h, ViewBounds view) {
         Shipment focused = focusedShipment();
         String focusVehicle = focusedVehicleId != null ? focusedVehicleId
                 : (focused == null ? null : focused.vehicleId());
-        // Solo mode: a focused delivery shows only its own tour, trail and marker.
-        for (String vehicleId : visibleVehicles(focusVehicle, trackingTrails.keySet())) {
+        // Solo focus, minus whatever the Layers panel has unticked.
+        for (String vehicleId : visibleVehicles(focusVehicle, trackingTrails.keySet(), hiddenVehicles)) {
             g.setGlobalAlpha(1.0);
             String color = vehicleColor(vehicleId);
             RoutePlan route = trackingRoutes.get(vehicleId);
@@ -867,9 +919,20 @@ public final class DclsApp extends Application {
         Label title = new Label(focusedVehicleId != null ? "Showing" : "On the road"); title.getStyleClass().add("eyebrow");
         trackingLegend.getChildren().add(title);
         int shown = 0, lost = 0;
-        for (Map.Entry<String, List<Shipment>> entry : byVehicle.entrySet()) {
+        // "On the road" with every vehicle unticked would be a heading over nothing.
+        if (!hiddenVehicles.isEmpty() && visibleVehicles(null, byVehicle.keySet(), hiddenVehicles).isEmpty()) {
+            Label none = new Label("No vehicles shown — the map is showing layers only.");
+            none.getStyleClass().add("muted");
+            trackingLegend.getChildren().add(none);
+            narrateMap(0, 0);
+            return;
+        }
+for (Map.Entry<String, List<Shipment>> entry : byVehicle.entrySet()) {
      String vehicleId = entry.getKey();
-            if (focusedVehicleId != null && !focusedVehicleId.equals(vehicleId)) continue;
+     // The legend has to describe what is actually drawn, so it obeys the same
+     // visibility rule as the map: solo focus, and the Layers panel's unticked vehicles.
+     if (hiddenVehicles.contains(vehicleId)) continue;
+     if (focusedVehicleId != null && !focusedVehicleId.equals(vehicleId)) continue;
           boolean stale = tracking.gps().isStale(vehicleId);
             shown++;
             if (stale) lost++;

@@ -139,6 +139,34 @@ class TrackingLayoutTest {
     }
 
     @Nested
+    @DisplayName("layers scope line")
+    class Scope {
+        @Test
+        void countsWhatIsActuallyShown() {
+            assertEquals("Showing all 3 vehicles.", TrackingView.scopeText(3, 3, null));
+            assertEquals("Showing 2 of 3 vehicles.", TrackingView.scopeText(2, 3, null));
+            assertEquals("Showing all 1 vehicle.", TrackingView.scopeText(1, 1, null));
+        }
+
+        @Test
+        void noTicksIsACleanMapNotAnError() {
+            assertEquals("No vehicles shown — the map is showing layers only.",
+                    TrackingView.scopeText(0, 3, null));
+        }
+
+        @Test
+        void anEmptyFleetSaysSo() {
+            assertEquals("No vehicles on an active delivery.", TrackingView.scopeText(0, 0, null));
+        }
+
+        @Test
+        void soloFocusExplainsItself() {
+            assertEquals("Following one vehicle · untick to show more.",
+                    TrackingView.scopeText(1, 3, "v-b"));
+        }
+    }
+
+    @Nested
     @DisplayName("search prompt encoding")
     class Encoding {
         @Test

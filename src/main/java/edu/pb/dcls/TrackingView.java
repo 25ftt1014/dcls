@@ -78,6 +78,10 @@ import static javafx.scene.layout.Priority.ALWAYS;
  */
 final class TrackingView {
     private final DclsApp app;
+    /** Rebuilds the open popover in place. The Layers panel calls this after every tick
+     *  so its checkboxes and counts can never describe a state the map is not in. Wired
+     *  to the page's own renderer once that exists. */
+    private Runnable popoverRefresh = () -> { };
 
     /** Fixed drawer width in px. Sized so all five columns fit the content area
      *  without clipping while still leaving the map the majority of the screen. */
@@ -666,6 +670,11 @@ final class TrackingView {
         // ---- panel state: exactly one open at a time --------------------------------
         final Panel[] openPanel = {Panel.NONE};
         final boolean[] compact = {false};
+        /** Whether the drawer is actually on screen right now. Tracked separately from
+         *  {@code app.trackingPanelCollapsed} (what was asked for) because those two
+         *  drift apart mid-animation, and deciding the animation from the requested
+         *  state alone left the open path doing nothing at all. */
+        final boolean[] drawerShown = {false};
         final javafx.animation.Transition[] running = {null};
         final Map<Panel, Button> railButtons = Map.of(
                 Panel.DELIVERIES, deliveriesBtn,
@@ -704,6 +713,9 @@ final class TrackingView {
                 default -> { }
             }
         };
+        // The Layers panel rebuilds itself through this rather than through a captured
+        // local, which a lambda cannot reference inside its own initializer.
+        popoverRefresh = renderPopover;
 
         Runnable hidePopover = () -> {
             if (!popoverHost.isVisible()) return;
@@ -770,11 +782,31 @@ final class TrackingView {
                 active.setTranslateX(0);
                 active.setTranslateY(0);
             }
+            drawerShown[0] = !closed;
         };
 
-        Runnable applyDrawer = () -> {
+Runnable applyDrawer = () -> {
             boolean closing = app.trackingPanelCollapsed;
             if (running[0] != null) { running[0].stop(); running[0] = null; }
+
+            active.setVisible(true);
+            double hiddenX = compact[0] ? 0 : PANEL_WIDTH;
+            double hiddenY = compact[0] ? Math.max(240, active.getHeight()) : 0;
+            Duration duration = motion(closing ? CLOSE_MS : OPEN_MS);
+
+            // Reduced motion: place the panel at its resting position instead of playing
+            // a transition. A zero-length TranslateTransition does not reliably apply
+            // its end value, which left the drawer "open" but parked off-screen.
+            if (duration.toMillis() <= 0) {
+                active.setCache(false);
+                active.setTranslateX(closing ? hiddenX : 0);
+                active.setTranslateY(closing ? hiddenY : 0);
+                active.setMouseTransparent(closing);
+                if (closing) active.setVisible(false);
+                drawerShown[0] = !closing;
+                (closing ? deliveriesBtn : filter).requestFocus();
+                return;
+            }
 
             // Cache the drawer for the duration only: a cached subtree repaints from a
             // snapshot, so the slide costs no re-layout. Cleared afterwards so the text
@@ -782,11 +814,7 @@ final class TrackingView {
             active.setCache(true);
             active.setCacheHint(javafx.scene.CacheHint.SPEED);
 
-            active.setVisible(true);
-            double hiddenX = compact[0] ? 0 : PANEL_WIDTH;
-            double hiddenY = compact[0] ? Math.max(240, active.getHeight()) : 0;
-            Duration duration = motion(closing ? CLOSE_MS : OPEN_MS);
-            TranslateTransition slide = new TranslateTransition(duration, active);
+            javafx.animation.TranslateTransition slide = new javafx.animation.TranslateTransition(duration, active);
             slide.setInterpolator(Interpolator.EASE_BOTH);
             slide.setFromX(active.getTranslateX());
             slide.setToX(closing ? hiddenX : 0);
@@ -801,6 +829,7 @@ final class TrackingView {
             });
             running[0] = group;
             group.play();
+            drawerShown[0] = !closing;
             // Hand focus across the boundary so the keyboard never gets stranded
             // behind a 440px panel: into the filter when the drawer opens, back to
             // the button that opened it when it closes.
@@ -814,8 +843,11 @@ final class TrackingView {
             app.trackingPanelCollapsed = !drawerOpen;
             // Both panel kinds live in the same overlay layer as siblings of the map, so
             // switching between them is pure translation — no reflow of anything below.
-            if (drawerOpen) hidePopover.run();
-            else if (active.isVisible() && !active.isMouseTransparent()) applyDrawer.run();
+            // The drawer is driven by whether it is *actually* on screen, so both the
+            // open and the close path animate; deciding from the requested state alone
+            // silently skipped the animation on the way in, which is exactly the bug
+            // where clicking the Deliveries icon did nothing.
+            if (drawerShown[0] != drawerOpen) applyDrawer.run();
             if (popoverOpen) {
                 renderPopover.run();
                 showPopover.run();
@@ -1167,42 +1199,70 @@ final class TrackingView {
         return List.of(title, gestures, keys);
     }
 
-    /** The Layers/Filters popover: solo/show-all plus a visibility toggle per vehicle.
-     *  Solo mode is what the map already supports, so a toggle is just focus state —
-     *  no marker or painting logic changes behind it. */
+    /** The Layers/Filters popover: one tick per vehicle, plus the basemap note.
+     *
+     *  <p>The ticks are the map's truth: {@code app.hiddenVehicles} is the same set
+     *  {@code paintTracking} filters on, and the panel is re-rendered after every action
+     *  so a checkbox can never show a state the map is not in. Ticking several vehicles
+     *  shows several routes; unticking them all leaves a clean map.
+     *
+     *  <p>The panel rebuilds itself after every action (via {@link #popoverRefresh}), so
+     *  a checkbox can never show a state the map is not in. */
     private List<Node> layersContent(List<Shipment> activeShipments) {
         Label title = new Label("Layers and filters");
         title.getStyleClass().add("section-title");
-        boolean solo = app.focusedVehicleId != null;
-        Label scope = new Label(solo ? "Showing only " + app.vehiclePlate(app.focusedVehicleId) : "Showing all vehicles");
+
+        List<String> vehicles = vehiclesOn(activeShipments);
+        int total = vehicles.size();
+        int shown = (int) vehicles.stream().filter(v -> !app.hiddenVehicles.contains(v)).count();
+        // The scope line states exactly what is on the map, including the empty case:
+        // unticking everything is a legitimate state, not an error to paper over.
+        Label scope = new Label(scopeText(shown, total, app.focusedVehicleId));
         scope.getStyleClass().add("muted");
+        scope.setMaxWidth(Double.MAX_VALUE);
+        scope.setWrapText(true);
         Button showAll = button("Show all", "link-button");
-        showAll.setOnAction(event -> { app.clearTrackingFocus(); app.drawTracking(); });
+        showAll.setDisable(total == 0);
+        showAll.setOnAction(event -> {
+            app.showAllVehicles();
+            popoverRefresh.run();
+        });
         HBox scopeRow = new HBox(8, scope, showAll);
         scopeRow.setAlignment(Pos.CENTER_LEFT);
         scopeRow.setPickOnBounds(false);
-        Label vehicles = new Label("Vehicles");
-        vehicles.getStyleClass().add("eyebrow");
+
+        Label vehiclesTitle = new Label("Vehicles");
+        vehiclesTitle.getStyleClass().add("eyebrow");
         VBox toggles = new VBox(4);
-        for (String vehicleId : vehiclesOn(activeShipments)) {
+        for (String vehicleId : vehicles) {
             CheckBox toggle = new CheckBox(app.vehiclePlate(vehicleId) + " · "
                     + (app.tracking.gpsStatus(vehicleId) == null ? "—" : app.tracking.gpsStatus(vehicleId)));
-            toggle.setSelected(!solo || app.focusedVehicleId.equals(vehicleId));
+            toggle.setSelected(!app.hiddenVehicles.contains(vehicleId));
             toggle.setOnAction(event -> {
-                if (toggle.isSelected()) {
-                    app.focusedVehicleId = vehicleId;
-                } else if (vehicleId.equals(app.focusedVehicleId)) {
-                    app.focusedVehicleId = null;
-                }
-                app.drawTracking();
-                app.refreshFocusChip();
+                app.setVehicleVisible(vehicleId, toggle.isSelected());
+                popoverRefresh.run();
             });
             toggles.getChildren().add(toggle);
+        }
+        if (vehicles.isEmpty()) {
+            Label none = new Label("No vehicles on an active delivery.");
+            none.getStyleClass().add("muted");
+            toggles.getChildren().add(none);
         }
         toggles.setPickOnBounds(false);
         Label options = new Label("Basemap: OpenStreetMap Standard");
         options.getStyleClass().add("muted");
-        return List.of(title, scopeRow, vehicles, toggles, options);
+        return List.of(title, scopeRow, vehiclesTitle, toggles, options);
+    }
+
+    /** What the Layers panel says the map is showing. Kept pure so the wording and the
+     *  counts cannot drift apart, and so "no ticks" reads as a deliberate clean map. */
+    static String scopeText(int shown, int total, String focusedVehicleId) {
+        if (total == 0) return "No vehicles on an active delivery.";
+        if (shown == 0) return "No vehicles shown — the map is showing layers only.";
+        if (focusedVehicleId != null) return "Following one vehicle · untick to show more.";
+        if (shown == total) return "Showing all " + total + " vehicle" + (total == 1 ? "" : "s") + ".";
+        return "Showing " + shown + " of " + total + " vehicles.";
     }
 
     /** Distinct vehicles with an active delivery, in first-seen order. */

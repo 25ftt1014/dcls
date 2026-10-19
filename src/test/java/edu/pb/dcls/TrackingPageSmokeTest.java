@@ -8,6 +8,9 @@ import javafx.scene.layout.VBox;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
+import java.util.LinkedHashSet;
+import java.util.List;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -93,6 +96,154 @@ class TrackingPageSmokeTest {
         assertTrue(rail instanceof VBox box && box.getChildren().get(index) instanceof Button,
                 "rail entry " + index + " should be a button");
         return (Button) ((VBox) rail).getChildren().get(index);
+    }
+
+    /** Lets the FX thread run its animations to completion. */
+    private static void pump() throws Exception {
+        Thread.sleep(250);
+        FxTestKit.run(() -> { });
+    }
+
+    /** Builds a page with the panel state pinned, so the test does not inherit
+     *  whatever the last run left in Preferences. */
+    private static StackPane pageWithPanelOpen(TrackingView.Panel open, double width, double height)
+            throws Exception {
+        TrackingView.Panel before = TrackingView.loadOpenPanel();
+        TrackingView.saveOpenPanel(open);
+        try {
+            return pageAt(width, height);
+        } finally {
+            TrackingView.saveOpenPanel(before);
+        }
+    }
+
+    /**
+     * The regression that matters most: clicking a rail icon has to actually open its
+     * panel. An earlier version toggled the panel's requested state but only ever
+     * animated the drawer on the way out, so clicking Deliveries did nothing at all —
+     * and a test that only checked "the map did not resize" happily passed, because
+     * nothing happened.
+     */
+    @Test
+    void clickingTheRailOpensAndClosesTheDrawer() throws Exception {
+        StackPane layers = pageWithPanelOpen(TrackingView.Panel.NONE, 1200, 800);
+        FxTestKit.run(() -> {
+            javafx.scene.Node drawer = layers.lookupAll(".tracking-drawer").stream().findFirst().orElse(null);
+            assertNotNull(drawer, "no drawer in the page");
+            assertFalse(drawer.isVisible(), "the drawer starts closed");
+            railButton(layers, TrackingView.Panel.DELIVERIES).fire();
+        });
+        pump();
+        FxTestKit.run(() -> {
+            javafx.scene.Node drawer = layers.lookupAll(".tracking-drawer").stream().findFirst().orElse(null);
+            assertTrue(drawer.isVisible(), "clicking Deliveries must open the drawer");
+            assertEquals(0, drawer.getTranslateX(), 0.5,
+                    "the opened drawer must come to rest against the right edge");
+            var box = drawer.localToScene(drawer.getBoundsInLocal());
+            // Only the column is asserted, not exact pixels: this scene is not styled the
+            // way the running app is, and the table's metrics differ. Geometry is checked
+            // relationally in eachOverlaySitsInItsOwnCorner, and visually by rendering
+            // the real page.
+            assertTrue(box.getMinX() > 400,
+                    "the drawer belongs in the right-hand column: " + box);
+
+            railButton(layers, TrackingView.Panel.DELIVERIES).fire();
+        });
+        pump();
+        FxTestKit.run(() -> {
+            javafx.scene.Node drawer = layers.lookupAll(".tracking-drawer").stream().findFirst().orElse(null);
+            assertFalse(drawer.isVisible(), "clicking Deliveries again must close the drawer");
+        });
+    }
+
+    @Test
+    void clickingTheRailOpensExactlyOnePopoverAndClosesTheOthers() throws Exception {
+        StackPane layers = pageWithPanelOpen(TrackingView.Panel.NONE, 1200, 800);
+        FxTestKit.run(() -> railButton(layers, TrackingView.Panel.LEGEND).fire());
+        pump();
+        FxTestKit.run(() -> {
+            assertTrue(popoverVisible(layers), "the legend popover must open");
+            assertTrue(popoverText(layers).contains("Legend"), "the legend content must be shown");
+            railButton(layers, TrackingView.Panel.LAYERS).fire();
+        });
+        pump();
+        FxTestKit.run(() -> {
+            // One panel at a time: opening Layers replaced the legend, it did not stack.
+            assertTrue(popoverVisible(layers), "the layers popover must be open");
+            assertTrue(popoverText(layers).contains("Layers and filters"),
+                    "only the newly opened panel's content may be on screen: " + popoverText(layers));
+            railButton(layers, TrackingView.Panel.LEGEND).fire();
+        });
+        pump();
+        FxTestKit.run(() -> assertTrue(popoverVisible(layers), "the layers popover must replace the legend"));
+    }
+
+    /** A Layers tick has to change what the map would draw. */
+    @Test
+    void untickingAVehicleChangesTheVisibleSet() throws Exception {
+        StackPane layers = pageWithPanelOpen(TrackingView.Panel.LAYERS, 1200, 800);
+        FxTestKit.run(() -> {
+            List<javafx.scene.control.CheckBox> toggles = layers.lookupAll(".check-box").stream()
+                    .map(node -> (javafx.scene.control.CheckBox) node).toList();
+            assertFalse(toggles.isEmpty(), "the layers panel should offer a tick per vehicle");
+            long before = toggles.stream().filter(javafx.scene.control.CheckBox::isSelected).count();
+            assertEquals(before, (long) toggles.size(), "every vehicle starts visible");
+
+            javafx.scene.control.CheckBox first = toggles.getFirst();
+            // A synthetic click, not fire(): the user toggles the box, the box reports its new
+            // state, and the panel rebuilds itself from there.
+            click(first);
+        });
+        pump();
+        FxTestKit.run(() -> {
+            assertEquals(1, app.hiddenVehicles.size(), "one vehicle should now be unticked");
+            List<String> shown = DclsApp.visibleVehicles(null,
+                    new LinkedHashSet<>(app.trackingTrails.keySet()), app.hiddenVehicles);
+            assertFalse(shown.containsAll(app.hiddenVehicles),
+                    "an unticked vehicle must not be drawn");
+            assertTrue(app.trackingTrails.keySet().size() > 1,
+                    "the fixture needs more than one vehicle for this test to mean anything");
+            assertFalse(shown.isEmpty(), "the other vehicles stay visible");
+        });
+    }
+
+    /** Clicks a control the way a mouse would: press then release inside it, which is
+     *  what a two-state control turns into a tick. */
+    private static void click(javafx.scene.Node target) {
+        var box = target.localToScene(target.getBoundsInLocal());
+        double x = box.getMinX() + box.getWidth() / 2;
+        double y = box.getMinY() + box.getHeight() / 2;
+        javafx.event.Event.fireEvent(target, mouse(
+                javafx.scene.input.MouseEvent.MOUSE_PRESSED, x, y, 1, true));
+        javafx.event.Event.fireEvent(target, mouse(
+                javafx.scene.input.MouseEvent.MOUSE_RELEASED, x, y, 1, false));
+    }
+
+    private static javafx.scene.input.MouseEvent mouse(
+            javafx.event.EventType<javafx.scene.input.MouseEvent> type,
+            double x, double y, int clickCount, boolean primaryDown) {
+        return new javafx.scene.input.MouseEvent(type, x, y, x, y,
+                javafx.scene.input.MouseButton.PRIMARY, clickCount,
+                false, false, false, false, primaryDown, false, false, false, false, false, null);
+    }
+
+    private static boolean popoverVisible(StackPane layers) {
+        javafx.scene.Node popover = layers.lookupAll(".panel-popover").stream().findFirst().orElse(null);
+        return popover != null && popover.isVisible() && popover.getParent().isVisible();
+    }
+
+    private static String popoverText(StackPane layers) {
+        StringBuilder text = new StringBuilder();
+        collectText(layers.lookupAll(".panel-popover").stream().findFirst().orElse(null), text);
+        return text.toString();
+    }
+
+    private static void collectText(javafx.scene.Node node, StringBuilder into) {
+        if (node instanceof javafx.scene.control.Labeled labeled) into.append(labeled.getText()).append(' ');
+        if (node instanceof javafx.scene.control.CheckBox box) into.append(box.getText()).append(' ');
+        if (node instanceof javafx.scene.Parent parent) {
+            parent.getChildrenUnmodifiable().forEach(child -> collectText(child, into));
+        }
     }
 
     @Test
