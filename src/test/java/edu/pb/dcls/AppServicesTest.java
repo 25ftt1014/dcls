@@ -1,0 +1,520 @@
+package edu.pb.dcls;
+
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
+
+import java.time.LocalDate;
+import java.util.List;
+import java.util.OptionalDouble;
+
+import static edu.pb.dcls.AppServices.AccessService;
+import static edu.pb.dcls.AppServices.AppException;
+import static edu.pb.dcls.AppServices.AuthService;
+import static edu.pb.dcls.AppServices.FleetService;
+import static edu.pb.dcls.AppServices.OrderService;
+import static edu.pb.dcls.AppServices.RouteService;
+import static edu.pb.dcls.Domain.OrderStatus;
+import static edu.pb.dcls.Domain.FuelRecord;
+import static edu.pb.dcls.Domain.MaintenanceRecord;
+import static edu.pb.dcls.Domain.Priority;
+import static edu.pb.dcls.Domain.Repository;
+import static edu.pb.dcls.Domain.Role;
+import static edu.pb.dcls.Domain.RoutePlan;
+import static edu.pb.dcls.Domain.Shipment;
+import static edu.pb.dcls.Domain.User;
+import static edu.pb.dcls.Domain.Vehicle;
+import static edu.pb.dcls.Domain.VehicleStatus;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+/**
+ * Behavior lock for the service layer before the UI restructure. Each test uses a fresh
+ * seeded {@link MockRepository}, so the assertions double as documentation of the seeded demo state.
+ */
+class AppServicesTest {
+
+    private Repository repo;
+
+    @BeforeEach
+    void setUp() {
+        repo = new MockRepository();
+    }
+
+    private User admin() {
+        return repo.userByEmail("admin@dcls.local").orElseThrow();
+    }
+
+    private User driver01() {
+        return repo.userByEmail("driver@dcls.local").orElseThrow();
+    }
+
+    @Nested
+    @DisplayName("AuthService")
+    class Auth {
+        private AuthService auth;
+
+        @BeforeEach
+        void init() {
+            auth = new AuthService(repo);
+        }
+
+        @Test
+        void loginWithValidCredentials() {
+            User user = auth.login("admin@dcls.local", "demo1234".toCharArray());
+            assertEquals(Role.ADMIN, user.role());
+        }
+
+        @Test
+        void loginIsCaseInsensitiveOnEmailAndTrims() {
+            User user = auth.login("  ADMIN@dcls.local  ", "demo1234".toCharArray());
+            assertEquals("admin@dcls.local", user.email());
+        }
+
+        @Test
+        void loginWrongPasswordThrows() {
+            assertThrows(AppException.class, () -> auth.login("admin@dcls.local", "nope".toCharArray()));
+        }
+
+        @Test
+        void loginBlankInputThrows() {
+            assertThrows(AppException.class, () -> auth.login("", "demo1234".toCharArray()));
+        }
+
+        @Test
+        void loginInactiveAccountThrows() {
+            User user = admin();
+            user.setActive(false);
+            repo.saveUser(user);
+            assertThrows(AppException.class, () -> auth.login("admin@dcls.local", "demo1234".toCharArray()));
+        }
+
+        @Test
+        void registerCreatesPendingAccount() {
+            User user = auth.register("New Person", "new@dcls.local", "+673 000",
+                    "password1".toCharArray());
+            assertEquals(Role.DRIVER, user.role());
+            assertFalse(user.active(), "a self-registered account must not be able to sign in yet");
+            assertTrue(user.pending(), "a self-registered account must await administrator approval");
+            assertTrue(repo.userByEmail("new@dcls.local").isPresent());
+        }
+
+        @Test
+        void firstAccountOnEmptyRepositoryBootstrapsAdministrator() {
+            repo.users().forEach(user -> repo.deleteUser(user.id()));
+            User first = auth.register("Database Owner", "owner@dcls.local", "+673 000",
+                    "password1".toCharArray());
+            assertEquals(Role.ADMIN, first.role());
+            assertTrue(first.active());
+            assertFalse(first.pending());
+            assertEquals(Role.ADMIN, auth.login("owner@dcls.local", "password1".toCharArray()).role());
+        }
+
+        @Test
+        void registeredUserCannotSignInUntilApproved() {
+            auth.register("New Person", "new@dcls.local", "+673 000", "password1".toCharArray());
+            assertThrows(AppException.class, () -> auth.login("new@dcls.local", "password1".toCharArray()));
+
+            User stored = repo.userByEmail("new@dcls.local").orElseThrow();
+            stored.setRole(Role.MANAGER);
+            stored.setActive(true);
+            stored.setPending(false);
+            repo.saveUser(stored);
+
+            User signedIn = auth.login("new@dcls.local", "password1".toCharArray());
+            assertEquals("New Person", signedIn.name());
+            assertEquals(Role.MANAGER, signedIn.role());
+            assertFalse(signedIn.pending());
+        }
+
+        @Test
+        void registerDuplicateEmailThrows() {
+            assertThrows(AppException.class,
+                    () -> auth.register("Dup", "admin@dcls.local", "+673", "password1".toCharArray()));
+        }
+
+        @Test
+        void registerShortPasswordThrows() {
+            assertThrows(AppException.class,
+                    () -> auth.register("Shorty", "shorty@dcls.local", "+673", "123".toCharArray()));
+        }
+
+        @Test
+        void registerInvalidEmailThrows() {
+            assertThrows(AppException.class,
+                    () -> auth.register("Bad", "not-an-email", "+673", "password1".toCharArray()));
+        }
+
+        @Test
+        void changePasswordRequiresCorrectCurrent() {
+            assertThrows(AppException.class,
+                    () -> auth.changePassword(admin(), "wrong".toCharArray(), "password1".toCharArray()));
+        }
+
+        @Test
+        void changePasswordUpdatesCredential() {
+            auth.changePassword(admin(), "demo1234".toCharArray(), "password1".toCharArray());
+            assertNotNull(auth.login("admin@dcls.local", "password1".toCharArray()));
+            assertThrows(AppException.class, () -> auth.login("admin@dcls.local", "demo1234".toCharArray()));
+        }
+    }
+
+    @Nested
+    @DisplayName("AccessService")
+    class Access {
+        private final AccessService access = new AccessService();
+
+        @Test
+        void adminOpensEverything() {
+            assertTrue(access.canOpen(Role.ADMIN, "users"));
+            assertTrue(access.canOpen(Role.ADMIN, "fleet"));
+        }
+
+        @Test
+        void managerCannotOpenUsers() {
+            assertFalse(access.canOpen(Role.MANAGER, "users"));
+            assertTrue(access.canOpen(Role.MANAGER, "fleet"));
+        }
+
+        @Test
+        void dispatcherHasNoFleet() {
+            assertFalse(access.canOpen(Role.DISPATCHER, "fleet"));
+            assertTrue(access.canOpen(Role.DISPATCHER, "orders"));
+        }
+
+        @Test
+        void driverIsLimited() {
+            assertFalse(access.canOpen(Role.DRIVER, "routes"));
+            assertTrue(access.canOpen(Role.DRIVER, "orders"));
+        }
+
+        @Test
+        void capabilityGates() {
+            assertTrue(access.canManageUsers(Role.ADMIN));
+            assertFalse(access.canManageUsers(Role.MANAGER));
+            assertTrue(access.canManageFleet(Role.MANAGER));
+            assertFalse(access.canManageFleet(Role.DISPATCHER));
+            assertTrue(access.canDispatch(Role.DISPATCHER));
+            assertFalse(access.canDispatch(Role.DRIVER));
+            assertTrue(access.canUpdateDelivery(Role.DRIVER));
+        }
+    }
+
+    @Nested
+    @DisplayName("FleetService")
+    class Fleet {
+        private FleetService fleet;
+
+        @BeforeEach
+        void init() {
+            fleet = new FleetService(repo);
+        }
+
+        @Test
+        void saveRejectsBlankPlate() {
+            Vehicle v = new Vehicle(AppServices.id(), "", "Model", "Light truck", 1000, 0, VehicleStatus.AVAILABLE, null, 5000);
+            assertThrows(AppException.class, () -> fleet.save(v));
+        }
+
+        @Test
+        void saveRejectsDuplicatePlate() {
+            Vehicle v = new Vehicle(AppServices.id(), "BQ 1934", "Model", "Light truck", 1000, 0, VehicleStatus.AVAILABLE, null, 5000);
+            assertThrows(AppException.class, () -> fleet.save(v));
+        }
+
+        @Test
+        void saveNormalisesPlateToUpperCase() {
+            Vehicle v = new Vehicle(AppServices.id(), "bq 9999", "Model", "Light truck", 1000, 0, VehicleStatus.AVAILABLE, null, 5000);
+            fleet.save(v);
+            assertEquals("BQ 9999", repo.vehicle(v.id()).orElseThrow().plate());
+        }
+
+        @Test
+        void setStatusRejectsNull() {
+            Vehicle v = repo.vehicle("v-3310").orElseThrow();
+            assertThrows(AppException.class, () -> fleet.setStatus(v, null));
+        }
+
+        @Test
+        void saveRejectsNullVehicleAndNullStatus() {
+            assertEquals("Vehicle details are required.",
+                    assertThrows(AppException.class, () -> fleet.save(null)).getMessage());
+            Vehicle noStatus = new Vehicle(AppServices.id(), "BQ 0001", "Model", "Light truck", 1000, 0, null, null, 5000);
+            assertEquals("Choose a vehicle status.",
+                    assertThrows(AppException.class, () -> fleet.save(noStatus)).getMessage());
+            Vehicle negativeMileage = new Vehicle(AppServices.id(), "BQ 0001", "Model", "Light truck", 1000, -1, VehicleStatus.AVAILABLE, null, 5000);
+            assertThrows(AppException.class, () -> fleet.save(negativeMileage));
+        }
+
+        @Test
+        void saveTreatsNullTypeAsEmpty() {
+            Vehicle v = new Vehicle(AppServices.id(), "BQ 0002", "Model", null, 1000, 0, VehicleStatus.AVAILABLE, null, 5000);
+            fleet.save(v);
+            assertEquals("", repo.vehicle(v.id()).orElseThrow().type());
+        }
+
+        @Test
+        void setStatusRejectsNullVehicleAndInDelivery() {
+            Vehicle v = repo.vehicle("v-3310").orElseThrow();
+            assertEquals("Choose a vehicle first.",
+                    assertThrows(AppException.class, () -> fleet.setStatus(null, VehicleStatus.AVAILABLE)).getMessage());
+            assertEquals("Vehicles enter In Delivery only when assigned to an order.",
+                    assertThrows(AppException.class, () -> fleet.setStatus(v, VehicleStatus.IN_DELIVERY)).getMessage());
+        }
+
+        @Test
+        void logMaintenanceAndLogFuelSplitValidationMessages() {
+            Vehicle v = repo.vehicle("v-3310").orElseThrow(); // 31840 km
+            assertEquals("Choose a vehicle first.",
+                    assertThrows(AppException.class, () -> fleet.logMaintenance(null, LocalDate.now(), 32000, "Oil", 50)).getMessage());
+            assertEquals("Choose a service date.",
+                    assertThrows(AppException.class, () -> fleet.logMaintenance(v, null, 32000, "Oil", 50)).getMessage());
+            assertEquals("Choose a vehicle first.",
+                    assertThrows(AppException.class, () -> fleet.logFuel(null, LocalDate.now(), 32000, 48, 40)).getMessage());
+            assertEquals("Choose a refuel date.",
+                    assertThrows(AppException.class, () -> fleet.logFuel(v, null, 32000, 48, 40)).getMessage());
+        }
+
+        @Test
+        void updateMaintenanceAndUpdateFuelSplitValidationMessages() {
+            Vehicle v = repo.vehicle("v-3310").orElseThrow(); // 31840 km
+            fleet.logMaintenance(v, LocalDate.now(), 32000, "Oil change", 60);
+            MaintenanceRecord maintenance = repo.maintenanceRecords().getLast();
+            assertEquals("Choose a maintenance record first.",
+                    assertThrows(AppException.class, () -> fleet.updateMaintenance(null, LocalDate.now(), 32000, "x", 1)).getMessage());
+            assertEquals("Choose a service date.",
+                    assertThrows(AppException.class, () -> fleet.updateMaintenance(maintenance, null, 32000, "x", 1)).getMessage());
+
+            fleet.logFuel(repo.vehicle("v-3310").orElseThrow(), LocalDate.now(), 32000, 48, 40);
+            FuelRecord fuel = repo.fuelRecords().getLast();
+            assertEquals("Choose a fuel record first.",
+                    assertThrows(AppException.class, () -> fleet.updateFuel(null, LocalDate.now(), 32000, 48, 40)).getMessage());
+            assertEquals("Choose a refuel date.",
+                    assertThrows(AppException.class, () -> fleet.updateFuel(fuel, null, 32000, 48, 40)).getMessage());
+        }
+
+        @Test
+        void maintenanceStatusFlagsTiers() {
+            Vehicle ok = new Vehicle(AppServices.id(), "BQ 0100", "Model", "Van", 1000, 1000, VehicleStatus.AVAILABLE, null, 5000);
+            Vehicle soon = new Vehicle(AppServices.id(), "BQ 0101", "Model", "Van", 1000, 4600, VehicleStatus.AVAILABLE, null, 5000);
+            Vehicle overdue = new Vehicle(AppServices.id(), "BQ 0102", "Model", "Van", 1000, 5200, VehicleStatus.AVAILABLE, null, 5000);
+            assertEquals(FleetService.MaintenanceStatus.OK, fleet.maintenanceStatus(ok));
+            assertEquals(FleetService.MaintenanceStatus.DUE_SOON, fleet.maintenanceStatus(soon));
+            assertEquals(FleetService.MaintenanceStatus.OVERDUE, fleet.maintenanceStatus(overdue));
+            assertThrows(AppException.class, () -> fleet.maintenanceStatus(null));
+        }
+
+        @Test
+        void maintenanceDueIncludesOverdueVehicles() {
+            Vehicle overdue = new Vehicle(AppServices.id(), "BQ 0103", "Model", "Van", 1000, 6000, VehicleStatus.AVAILABLE, null, 5000);
+            fleet.save(overdue);
+            assertTrue(fleet.maintenanceDue().stream().anyMatch(v -> v.id().equals(overdue.id())));
+        }
+
+        @Test
+        void fuelEfficiencyNeedsTwoRecordsAndFuel() {
+            Vehicle v = new Vehicle(AppServices.id(), "BQ 0104", "Model", "Van", 1000, 31840, VehicleStatus.AVAILABLE, null, 50000);
+            fleet.save(v);
+            assertTrue(fleet.fuelEfficiencyKmPerL(v.id()).isEmpty());
+            fleet.logFuel(repo.vehicle(v.id()).orElseThrow(), LocalDate.now(), 32000, 48, 40);
+            assertTrue(fleet.fuelEfficiencyKmPerL(v.id()).isEmpty(), "a single record cannot bracket consumption");
+            fleet.logFuel(repo.vehicle(v.id()).orElseThrow(), LocalDate.now(), 32500, 50, 42);
+            OptionalDouble efficiency = fleet.fuelEfficiencyKmPerL(v.id());
+            assertTrue(efficiency.isPresent());
+            assertEquals(500.0 / 98.0, efficiency.getAsDouble(), 1e-9);
+            assertTrue(fleet.fuelEfficiencyKmPerL("v-3310").isEmpty(), "seeded single record yields no figure");
+        }
+
+        @Test
+        void maintenanceDueFlagsVehiclesNearService() {
+            // Seeded: only v-5201 (52870 km, next 53000) is within the 500 km window.
+            List<Vehicle> due = fleet.maintenanceDue();
+            assertEquals(1, due.size());
+            assertEquals("v-5201", due.get(0).id());
+        }
+
+        @Test
+        void logMaintenanceRejectsMileageBelowCurrent() {
+            Vehicle v = repo.vehicle("v-3310").orElseThrow(); // 31840 km
+            assertThrows(AppException.class,
+                    () -> fleet.logMaintenance(v, LocalDate.now(), 100, "Oil", 50));
+        }
+
+        @Test
+        void logMaintenanceRecordsAndReturnsVehicleToService() {
+            Vehicle v = repo.vehicle("v-5201").orElseThrow(); // UNDER_MAINTENANCE, 52870 km
+            int before = repo.maintenanceRecords().size();
+            fleet.logMaintenance(v, LocalDate.now(), 53000, "Full service", 400);
+            assertEquals(before + 1, repo.maintenanceRecords().size());
+            assertEquals(VehicleStatus.AVAILABLE, repo.vehicle(v.id()).orElseThrow().status());
+        }
+
+        @Test
+        void maintenanceAndFuelRecordsCanBeUpdatedAndDeleted() {
+            Vehicle vehicle = repo.vehicle("v-3310").orElseThrow();
+            fleet.logMaintenance(vehicle, LocalDate.now(), 32000, "Oil change", 60);
+            MaintenanceRecord maintenance = repo.maintenanceRecords().getLast();
+            fleet.updateMaintenance(maintenance, LocalDate.now().minusDays(1), 31900, "Corrected service", 55);
+            assertEquals("Corrected service", repo.maintenanceRecords().stream().filter(r -> r.id().equals(maintenance.id())).findFirst().orElseThrow().description());
+            assertEquals(32000, repo.vehicle(vehicle.id()).orElseThrow().mileageKm(), "editing a historical record must not roll back the odometer");
+            fleet.deleteMaintenance(maintenance.id());
+            assertFalse(repo.maintenanceRecords().stream().anyMatch(r -> r.id().equals(maintenance.id())));
+
+            fleet.logFuel(repo.vehicle("v-3310").orElseThrow(), LocalDate.now(), 32000, 48, 40);
+            FuelRecord fuel = repo.fuelRecords().getLast();
+            fleet.updateFuel(fuel, LocalDate.now().minusDays(1), 31950, 46, 39);
+            assertEquals(46, repo.fuelRecords().stream().filter(r -> r.id().equals(fuel.id())).findFirst().orElseThrow().litres());
+            assertEquals(32000, repo.vehicle(vehicle.id()).orElseThrow().mileageKm());
+            fleet.deleteFuel(fuel.id());
+            assertFalse(repo.fuelRecords().stream().anyMatch(r -> r.id().equals(fuel.id())));
+        }
+
+        @Test
+        void deleteVehicleProtectsLinkedRecordsAndAllowsUnusedVehicles() {
+            assertThrows(AppException.class, () -> fleet.deleteVehicle("v-1934"));
+            fleet.deleteVehicle("v-8817");
+            assertTrue(repo.vehicle("v-8817").isEmpty());
+        }
+    }
+
+    @Nested
+    @DisplayName("OrderService")
+    class Orders {
+        private OrderService orders;
+
+        @BeforeEach
+        void init() {
+            orders = new OrderService(repo);
+        }
+
+        @Test
+        void saveRejectsMissingFields() {
+            Shipment s = new Shipment(AppServices.id(), "", "+673", "", "", 1, 0,
+                    Priority.NORMAL, OrderStatus.PENDING, null, null, null, java.time.LocalDateTime.now(), null);
+            assertThrows(AppException.class, () -> orders.save(s));
+        }
+
+        @Test
+        void assignSetsOrderAndVehicleStatuses() {
+            Shipment pending = repo.shipment("DCLS-2403").orElseThrow(); // 64 kg, PENDING
+            Vehicle available = repo.vehicle("v-8817").orElseThrow();     // AVAILABLE, 1600 kg
+            orders.assign(pending, driver01(), available, null);
+            assertEquals(OrderStatus.ASSIGNED, repo.shipment(pending.id()).orElseThrow().status());
+            assertEquals(VehicleStatus.IN_DELIVERY, repo.vehicle(available.id()).orElseThrow().status());
+        }
+
+        @Test
+        void assignRejectsOverweightShipment() {
+            Shipment heavy = new Shipment(AppServices.id(), "Big", "+673", "Somewhere", "Steel", 1, 5000,
+                    Priority.HIGH, OrderStatus.PENDING, null, null, null, java.time.LocalDateTime.now(), null);
+            repo.saveShipment(heavy);
+            Vehicle small = repo.vehicle("v-8817").orElseThrow(); // 1600 kg
+            assertThrows(AppException.class, () -> orders.assign(heavy, driver01(), small, null));
+        }
+
+        @Test
+        void assignRejectsUnavailableVehicle() {
+            Shipment pending = repo.shipment("DCLS-2403").orElseThrow();
+            Vehicle inMaintenance = repo.vehicle("v-5201").orElseThrow(); // UNDER_MAINTENANCE
+            assertThrows(AppException.class, () -> orders.assign(pending, driver01(), inMaintenance, null));
+        }
+
+        @Test
+        void transitionPendingWithoutAssignmentThrows() {
+            Shipment pending = repo.shipment("DCLS-2403").orElseThrow();
+            assertThrows(AppException.class, () -> orders.transition(pending, OrderStatus.IN_TRANSIT, admin()));
+        }
+
+        @Test
+        void transitionAssignedToInTransit() {
+            Shipment assigned = repo.shipment("DCLS-2402").orElseThrow(); // ASSIGNED
+            orders.transition(assigned, OrderStatus.IN_TRANSIT, admin());
+            assertEquals(OrderStatus.IN_TRANSIT, repo.shipment(assigned.id()).orElseThrow().status());
+        }
+
+        @Test
+        void deliveringFreesTheVehicle() {
+            Shipment transit = repo.shipment("DCLS-2401").orElseThrow(); // IN_TRANSIT, vehicle v-1934
+            orders.transition(transit, OrderStatus.DELIVERED, admin());
+            assertEquals(OrderStatus.DELIVERED, repo.shipment(transit.id()).orElseThrow().status());
+            assertEquals(VehicleStatus.AVAILABLE, repo.vehicle("v-1934").orElseThrow().status());
+        }
+
+        @Test
+        void driverCannotTouchOthersDeliveries() {
+            Shipment others = repo.shipment("DCLS-2402").orElseThrow(); // driver u-driver-02
+            assertThrows(AppException.class, () -> orders.transition(others, OrderStatus.IN_TRANSIT, driver01()));
+        }
+
+        @Test
+        void onlyPendingOrdersCanBeCancelled() {
+            Shipment pending = repo.shipment("DCLS-2403").orElseThrow(); // PENDING
+            orders.transition(pending, OrderStatus.CANCELLED, admin());
+            assertEquals(OrderStatus.CANCELLED, repo.shipment(pending.id()).orElseThrow().status());
+            assertThrows(AppException.class, () -> orders.transition(repo.shipment("DCLS-2402").orElseThrow(), OrderStatus.CANCELLED, admin()));
+            assertEquals(OrderStatus.ASSIGNED, repo.shipment("DCLS-2402").orElseThrow().status());
+        }
+
+        @Test
+        void deliveredOrderCannotBeCancelled() {
+            Shipment delivered = repo.shipment("DCLS-2398").orElseThrow(); // DELIVERED
+            assertThrows(AppException.class, () -> orders.transition(delivered, OrderStatus.CANCELLED, admin()));
+        }
+
+        @Test
+        void pendingOrderCanBeDeletedButActiveAndDeliveredOrdersAreRetained() {
+            Shipment pending = repo.shipment("DCLS-2403").orElseThrow();
+            orders.delete(pending);
+            assertTrue(repo.shipment(pending.id()).isEmpty());
+            assertThrows(AppException.class, () -> orders.delete(repo.shipment("DCLS-2402").orElseThrow()));
+            assertThrows(AppException.class, () -> orders.delete(repo.shipment("DCLS-2398").orElseThrow()));
+        }
+    }
+
+    @Nested
+    @DisplayName("RouteService")
+    class Routes {
+        private RouteService routes;
+
+        @BeforeEach
+        void init() {
+            routes = new RouteService(repo);
+        }
+
+        @Test
+        void optimizeRequiresAtLeastTwoStops() {
+            assertThrows(AppException.class, () -> routes.optimize("Solo", List.of("DCLS Depot"), null));
+        }
+
+        @Test
+        void optimizeRejectsUnknownPlace() {
+            assertThrows(AppException.class, () -> routes.optimize("Bad", List.of("DCLS Depot", "Atlantis"), null));
+        }
+
+        @Test
+        void optimizeBuildsAndPersistsRoute() {
+            int before = repo.routes().size();
+            RoutePlan plan = routes.optimize("Test run", List.of("DCLS Depot", "Berakas", "Kiulap"), null);
+            assertEquals(3, plan.stops().size());
+            assertTrue(plan.distanceKm() > 0);
+            assertTrue(plan.estimatedMinutes() >= 1);
+            assertEquals("DCLS Depot", plan.stops().get(0).name()); // starts from the first supplied stop
+            assertEquals(before + 1, repo.routes().size());
+        }
+
+        @Test
+        void routeCanBeDeletedOnlyWhenNoShipmentUsesIt() {
+            RoutePlan unused = new RoutePlan(AppServices.id(), "Unused route", null,
+                    List.of(AppServices.BruneiPlaces.DEPOT, AppServices.BruneiPlaces.places().get("Kiulap")), 2, 4, false, java.time.LocalDateTime.now());
+            repo.saveRoute(unused);
+            routes.delete(unused);
+            assertTrue(repo.routes().stream().noneMatch(route -> route.id().equals(unused.id())));
+            RoutePlan linked = repo.routes().stream().filter(route -> route.id().equals("r-1001")).findFirst().orElseThrow();
+            assertThrows(AppException.class, () -> routes.delete(linked));
+        }
+    }
+}

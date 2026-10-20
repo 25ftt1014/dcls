@@ -1,0 +1,281 @@
+package edu.pb.dcls;
+
+import javafx.beans.property.SimpleStringProperty;
+import javafx.collections.FXCollections;
+import javafx.geometry.Insets;
+import javafx.scene.Node;
+import javafx.scene.control.Button;
+import javafx.scene.control.ChoiceBox;
+import javafx.scene.control.Label;
+import javafx.scene.control.TableCell;
+import javafx.scene.control.TableColumn;
+import javafx.scene.control.TableRow;
+import javafx.scene.control.TableView;
+import javafx.scene.control.Tooltip;
+import javafx.scene.layout.ColumnConstraints;
+import javafx.scene.layout.GridPane;
+import javafx.scene.layout.HBox;
+import javafx.scene.layout.Region;
+import javafx.scene.layout.VBox;
+import javafx.util.StringConverter;
+
+import java.util.Optional;
+import java.util.function.BiFunction;
+import java.util.function.Consumer;
+import java.util.function.Function;
+
+/**
+ * Stateless builders for the common JavaFX widgets used across every screen
+ * (buttons, panels, labelled fields, metric cards, table columns, form grids).
+ * Screens pull these in with {@code import static edu.pb.dcls.UiFactory.*;}.
+ */
+final class UiFactory {
+    private UiFactory() { }
+
+    static Button button(String text, String style) {
+        Button button = new Button(text);
+        button.getStyleClass().add(style);
+        return button;
+    }
+
+    /** Padding applied by {@link #panel} on each side. A node sized to its host panel must
+     *  subtract {@link #PANEL_PADDING_H}, not MapRenderer.MAP_PAD: the panel inset is
+     *  16px while MAP_PAD is the separate 14px tile/projection inset. */
+    static final double PANEL_PADDING = 16;
+    static final double PANEL_PADDING_H = PANEL_PADDING * 2;
+
+    static VBox panel(Node heading) {
+        VBox box = new VBox(13);
+        box.setPadding(new Insets(PANEL_PADDING));
+        box.getStyleClass().add("panel");
+        box.getChildren().add(heading);
+        return box;
+    }
+
+    static HBox labeled(String label, Node control) {
+        VBox item = new VBox(5);
+        Label text = new Label(label);
+        text.getStyleClass().add("eyebrow");
+        item.getChildren().addAll(text, control);
+        return new HBox(item);
+    }
+
+    /** A metric card plus handles on the two labels the dashboard ticks live. */
+    record Metric(VBox card, Label value, Label caption) { }
+
+    static Metric metric(String title, String value, String caption) {
+        VBox card = new VBox(8);
+        card.setPadding(new Insets(12, 14, 12, 14));
+        card.setMinWidth(140);
+        card.setMinHeight(80);
+        card.getStyleClass().add("panel-tight");
+        Label t = new Label(title);
+        t.getStyleClass().add("metric-caption");
+        Label v = new Label(value);
+        v.getStyleClass().add("metric-value");
+        Label c = new Label(caption == null ? "" : caption);
+        c.getStyleClass().add("muted");
+        c.setStyle("-fx-font-size: 11px;");
+        c.setWrapText(true);
+        card.getChildren().addAll(t, v, c);
+        return new Metric(card, v, c);
+    }
+
+/** Page header block. There is deliberately no title Label here: the page name is
+     *  already rendered in the top bar (see DclsApp's heading), and duplicating it in
+     *  the page repeated the name on every screen. */
+    static VBox pageHeader(String subtitle) {
+        VBox page = new VBox(14);
+        page.setPadding(new Insets(15, 24, 22, 28));
+        page.getStyleClass().add("workspace");
+        // Render the (previously discarded) descriptive subtitle so each screen
+        // has a clear heading hierarchy, not just a bare toolbar.
+        if (subtitle != null && !subtitle.isBlank()) {
+            Label caption = new Label(subtitle);
+            caption.getStyleClass().add("page-subtitle");
+            caption.setWrapText(true);
+            page.getChildren().add(caption);
+        }
+        return page;
+    }
+
+    /** Maps a human status label to a pill style class, so colour is consistent everywhere. */
+    static String pillClassFor(String label) {
+        if (label == null) return "status-info";
+        return switch (label) {
+            case "Available", "Delivered", "Active" -> "status-good";
+            case "In Delivery", "In Transit", "Assigned" -> "status-info";
+            case "Under Maintenance", "Pending" -> "status-warn";
+            case "Unavailable", "Cancelled", "Inactive" -> "status-bad";
+            default -> "status-info";
+        };
+    }
+
+    /** A table column that renders its value as a coloured status pill instead of plain text. */
+    static <T> TableColumn<T, String> statusCol(String heading, Function<T, String> value, double width) {
+        TableColumn<T, String> column = new TableColumn<>(heading);
+        column.setPrefWidth(width);
+        column.setCellValueFactory(cell -> new SimpleStringProperty(Optional.ofNullable(value.apply(cell.getValue())).orElse("—")));
+        column.setCellFactory(col -> new TableCell<>() {
+            @Override protected void updateItem(String item, boolean empty) {
+                super.updateItem(item, empty);
+                if (empty || item == null) { setGraphic(null); setText(null); return; }
+                Label pill = new Label(item);
+                pill.getStyleClass().addAll("status-pill", pillClassFor(item));
+                setGraphic(pill);
+                setText(null);
+            }
+        });
+        return column;
+    }
+
+    static Node detailField(String title, String value) {
+        VBox box = new VBox(4);
+        Label heading = new Label(title);
+        heading.getStyleClass().add("eyebrow");
+        Label content = new Label(value == null || value.isBlank() ? "—" : value);
+        content.setWrapText(true);
+        content.getStyleClass().add("detail-value");
+        box.getChildren().addAll(heading, content);
+        return box;
+    }
+
+    static <T> TableColumn<T, String> textCol(String heading, Function<T, String> value, double width) {
+        TableColumn<T, String> column = new TableColumn<>(heading);
+        column.setPrefWidth(width);
+        column.setCellValueFactory(cell -> new SimpleStringProperty(Optional.ofNullable(value.apply(cell.getValue())).orElse("—")));
+        return column;
+    }
+
+    /** Wrapping variant of {@link #textCol} for narrow panels, where a fixed-width
+     *  single-line cell silently truncates. Rows size to their content instead, so
+     *  the column must not be given a fixed cell size, and long values carry a
+     *  tooltip as a copy-pasteable escape hatch. */
+    static <T> TableColumn<T, String> wrapTextCol(String heading, Function<T, String> value, double width) {
+        TableColumn<T, String> column = textCol(heading, value, width);
+        column.setCellFactory(col -> new TableCell<>() {
+            @Override protected void updateItem(String item, boolean empty) {
+                super.updateItem(item, empty);
+                if (empty || item == null) { setText(null); setTooltip(null); return; }
+                setText(item);
+                setWrapText(true);
+                setTooltip(new Tooltip(item));
+            }
+        });
+        return column;
+    }
+
+    /** Single-line column whose value ellipsizes rather than wrapping, with the full text
+ *  always available as a tooltip. Used where a value is an identifier: an order id is
+ *  recognisable at a glance and cheap to copy from a tooltip, whereas letting it wrap
+ *  makes every row two lines tall for no gain. */
+    static <T> TableColumn<T, String> ellipsisCol(String heading, Function<T, String> value, double width) {
+        TableColumn<T, String> column = textCol(heading, value, width);
+        // Pinned on both sides: the fixed columns must not be squeezed by
+        // CONSTRAINED_RESIZE_POLICY, which is what used to clip Status and Destination.
+        column.setMinWidth(width);
+        column.setMaxWidth(width);
+        column.setCellFactory(col -> new TableCell<>() {
+            @Override protected void updateItem(String item, boolean empty) {
+                super.updateItem(item, empty);
+                if (empty || item == null) { setText(null); setTooltip(null); return; }
+                setText(item);
+                setWrapText(false);
+                setTooltip(new Tooltip(item));
+            }
+        });
+        return column;
+    }
+
+    /** Single-line column whose value renders as a coloured status chip, with the
+     *  full text still available as a tooltip. */
+    static <T> TableColumn<T, String> chipCol(String heading, Function<T, String> value,
+                                              BiFunction<T, String, String> tone, double width) {
+        TableColumn<T, String> column = textCol(heading, value, width);
+        column.setCellFactory(col -> new TableCell<>() {
+            private final Label chip = new Label();
+
+            @Override protected void updateItem(String item, boolean empty) {
+                super.updateItem(item, empty);
+                T row = getTableRow() == null ? null : getTableRow().getItem();
+                if (empty || item == null || row == null) { setGraphic(null); setTooltip(null); return; }
+                chip.setText(item);
+                chip.getStyleClass().setAll("status-pill", tone.apply(row, item));
+                setGraphic(chip);
+                setTooltip(new Tooltip(item));
+            }
+        });
+        return column;
+    }
+
+    static <E extends Enum<E>> ChoiceBox<E> enumFilter(E[] values, String allLabel) {
+        ChoiceBox<E> choice = new ChoiceBox<>(FXCollections.observableArrayList(values));
+        choice.getItems().add(0, null);
+        choice.setValue(null);
+        choice.setConverter(new StringConverter<>() {
+            public String toString(E value) { return value == null ? allLabel : value.toString(); }
+            public E fromString(String value) { return null; }
+        });
+        return choice;
+    }
+
+    static GridPane formGrid() {
+        GridPane grid = new GridPane();
+        grid.setHgap(12);
+        grid.setVgap(10);
+        ColumnConstraints left = new ColumnConstraints(145), right = new ColumnConstraints(280);
+        grid.getColumnConstraints().addAll(left, right);
+        return grid;
+    }
+
+    /** Opens {@code action} for a row when it is double-clicked (a common, expected table affordance). */
+    static <T> void onRowDoubleClick(TableView<T> table, Consumer<T> action) {
+        table.setRowFactory(tv -> {
+            TableRow<T> row = new TableRow<>();
+            row.setOnMouseClicked(event -> { if (event.getClickCount() == 2 && !row.isEmpty()) action.accept(row.getItem()); });
+            return row;
+        });
+    }
+
+    static void addField(GridPane grid, int row, String label, Node field) {
+        grid.add(new Label(label), 0, row);
+        grid.add(field, 1, row);
+        if (field instanceof Region region) region.setMaxWidth(Double.MAX_VALUE);
+    }
+
+    static javafx.scene.Node passwordInput(javafx.scene.control.PasswordField password) {
+        javafx.scene.control.TextField revealed = new javafx.scene.control.TextField();
+        revealed.setPromptText(password.getPromptText());
+        revealed.setAccessibleText(password.getAccessibleText());
+        revealed.textProperty().bindBidirectional(password.textProperty());
+        password.setPadding(new javafx.geometry.Insets(6, 56, 6, 8));
+        revealed.setPadding(new javafx.geometry.Insets(6, 56, 6, 8));
+        revealed.setManaged(false);
+        revealed.setVisible(false);
+
+        javafx.scene.control.Button toggle = button("Show", "password-toggle");
+        toggle.setAccessibleText("Show password");
+        toggle.setFocusTraversable(true);
+        toggle.setStyle("-fx-background-color: transparent; -fx-text-fill: #176df6; -fx-font-size: 11px; -fx-font-weight: 700; -fx-padding: 5 7; -fx-cursor: hand;");
+        javafx.scene.layout.StackPane input = new javafx.scene.layout.StackPane(password, revealed, toggle);
+        javafx.scene.layout.StackPane.setAlignment(toggle, javafx.geometry.Pos.CENTER_RIGHT);
+        javafx.scene.layout.StackPane.setMargin(toggle, new javafx.geometry.Insets(0, 5, 0, 0));
+        toggle.setOnAction(event -> {
+            boolean show = !revealed.isVisible();
+            password.setVisible(!show);
+            password.setManaged(!show);
+            revealed.setVisible(show);
+            revealed.setManaged(show);
+            toggle.setText(show ? "Hide" : "Show");
+            toggle.setAccessibleText(show ? "Hide password" : "Show password");
+            if (show) {
+                revealed.requestFocus();
+                revealed.positionCaret(revealed.getText().length());
+            } else {
+                password.requestFocus();
+                password.positionCaret(password.getText().length());
+            }
+        });
+        return input;
+    }
+}

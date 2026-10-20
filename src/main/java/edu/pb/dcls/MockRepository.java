@@ -39,10 +39,10 @@ public final class MockRepository implements Repository {
                 VehicleStatus.AVAILABLE, null, 25000));
 
         List<Stop> routeStops = List.of(
-                new Stop("s-depot", "DCLS Depot", .08, .76),
-                new Stop("s-kiulap", "Kiulap", .40, .52),
-                new Stop("s-gadong", "Gadong Central", .67, .35),
-                new Stop("s-berakas", "Berakas", .88, .18));
+                new Stop("s-depot", "DCLS Depot", 114.9400, 4.8900),
+                new Stop("s-kiulap", "Kiulap", 114.9160, 4.9020),
+                new Stop("s-gadong", "Gadong Central", 114.9280, 4.9080),
+                new Stop("s-berakas", "Berakas", 114.9500, 4.9400));
         RoutePlan route = new RoutePlan("r-1001", "North District Run", "u-driver-01", routeStops, 18.6, 42, false, LocalDateTime.now().minusMinutes(24));
         routes.put(route.id(), route);
 
@@ -62,12 +62,12 @@ public final class MockRepository implements Repository {
         maintenance.add(new MaintenanceRecord("m-02", "v-1934", LocalDate.now().minusDays(22), 23000, "Tyre replacement", 310));
         fuel.add(new FuelRecord("f-01", "v-1934", LocalDate.now().minusDays(1), 24420, 52, 39.50));
         fuel.add(new FuelRecord("f-02", "v-3310", LocalDate.now().minusDays(2), 31780, 66, 49.80));
-        tracking.add(new TrackingPoint("t-01", "v-1934", "DCLS-2401", .42, .51, 18, now.minusMinutes(5)));
+        tracking.add(new TrackingPoint("t-01", "v-1934", "DCLS-2401", 114.9180, 4.9010, 18, now.minusMinutes(5)));
     }
 
     private void addUser(String id, String name, String email, String phone, Role role, String password) {
         Security.Credentials credentials = Security.credentials(password.toCharArray());
-        users.put(id, new User(id, name, email, phone, credentials.hash(), credentials.salt(), role, true));
+        users.put(id, new User(id, name, email, phone, credentials.hash(), credentials.salt(), role, true, false));
     }
 
     @Override public List<User> users() { return new ArrayList<>(users.values()); }
@@ -77,20 +77,67 @@ public final class MockRepository implements Repository {
     @Override public List<Vehicle> vehicles() { return new ArrayList<>(vehicles.values()); }
     @Override public Optional<Vehicle> vehicle(String id) { return Optional.ofNullable(vehicles.get(id)); }
     @Override public void saveVehicle(Vehicle vehicle) { vehicles.put(vehicle.id(), vehicle); }
-    @Override public void deleteVehicle(String id) { vehicles.remove(id); }
+    @Override public void deleteVehicle(String id) {
+        // Mirror the JDBC foreign-key protection so demo and MySQL behave alike.
+        if (shipments.values().stream().anyMatch(s -> id.equals(s.vehicleId()))
+                || maintenance.stream().anyMatch(r -> id.equals(r.vehicleId()))
+                || fuel.stream().anyMatch(r -> id.equals(r.vehicleId()))) {
+            throw new AppServices.AppException("This record is still linked to other data such as orders, routes or history. Remove those links first, then try again.");
+        }
+        vehicles.remove(id);
+    }
     @Override public List<Shipment> shipments() { return new ArrayList<>(shipments.values()); }
     @Override public Optional<Shipment> shipment(String id) { return Optional.ofNullable(shipments.get(id)); }
     @Override public void saveShipment(Shipment shipment) { shipments.put(shipment.id(), shipment); }
     @Override public void saveAssignment(Shipment shipment, Vehicle vehicle) { saveShipment(shipment); saveVehicle(vehicle); }
     @Override public void saveShipmentAndVehicle(Shipment shipment, Vehicle vehicle) { saveShipment(shipment); saveVehicle(vehicle); }
-    @Override public void deleteShipment(String id) { shipments.remove(id); }
+    @Override public void deleteShipment(String id) {
+        shipments.remove(id);
+        tracking.removeIf(p -> id.equals(p.shipmentId())); // match ON DELETE CASCADE
+    }
     @Override public List<RoutePlan> routes() { return new ArrayList<>(routes.values()); }
-    @Override public void saveRoute(RoutePlan route) { routes.put(route.id(), route); }
+    @Override public void saveRoute(RoutePlan route) {
+        if (route == null) throw new AppServices.AppException("Route details are required.");
+        if (route.stops() == null || route.stops().size() < 2) throw new AppServices.AppException("Add a depot and at least one stop.");
+        for (Domain.Stop stop : route.stops()) {
+            if (stop == null || stop.id() == null || stop.name() == null) throw new AppServices.AppException("Every route stop needs a name and location.");
+            AppServices.requireServiceArea(stop.x(), stop.y(), "Route stop '" + stop.name() + "'");
+        }
+        routes.put(route.id(), route);
+    }
+    @Override public void deleteRoute(String id) {
+        if (shipments.values().stream().anyMatch(s -> id.equals(s.routeId()))) {
+            throw new AppServices.AppException("This record is still linked to other data such as orders, routes or history. Remove those links first, then try again.");
+        }
+        routes.remove(id);
+    }
     @Override public List<MaintenanceRecord> maintenanceRecords() { return new ArrayList<>(maintenance); }
     @Override public void saveMaintenance(MaintenanceRecord record) { maintenance.removeIf(item -> item.id().equals(record.id())); maintenance.add(record); }
+    @Override public void saveMaintenanceAndVehicle(MaintenanceRecord record, Vehicle vehicle) { saveMaintenance(record); saveVehicle(vehicle); }
+    @Override public void deleteMaintenance(String id) { maintenance.removeIf(item -> item.id().equals(id)); }
     @Override public List<FuelRecord> fuelRecords() { return new ArrayList<>(fuel); }
     @Override public void saveFuel(FuelRecord record) { fuel.removeIf(item -> item.id().equals(record.id())); fuel.add(record); }
+    @Override public void saveFuelAndVehicle(FuelRecord record, Vehicle vehicle) { saveFuel(record); saveVehicle(vehicle); }
+    @Override public void deleteFuel(String id) { fuel.removeIf(item -> item.id().equals(id)); }
+    /** Demo memory cap: keep the latest fixes only (mirrors the JDBC prune). */
+    static final int TRACKING_CAP = 2000;
+
+    @Override public void deleteTrackingForVehicle(String vehicleId) {
+        tracking.removeIf(p -> vehicleId.equals(p.vehicleId()));
+    }
+
     @Override public List<TrackingPoint> trackingHistory() { return new ArrayList<>(tracking); }
-    @Override public void saveTrackingPoint(TrackingPoint point) { tracking.add(point); }
+    @Override public void saveTrackingPoint(TrackingPoint point) {
+        if (point == null) throw new AppServices.AppException("GPS fix details are required.");
+        if (point.vehicleId() == null || point.vehicleId().isBlank()) throw new AppServices.AppException("Choose a vehicle for this GPS fix.");
+        AppServices.requireServiceArea(point.x(), point.y(), "Tracking fix");
+        TrackingPoint stored = point.recordedAt() == null
+                ? new TrackingPoint(point.id(), point.vehicleId(), point.shipmentId(), point.x(), point.y(),
+                        point.etaMinutes(), LocalDateTime.now(), point.speedKmh(), point.headingDeg(),
+                        point.accuracyM(), point.fixType(), point.source())
+                : point;
+        tracking.add(stored);
+        while (tracking.size() > TRACKING_CAP) tracking.removeFirst();
+    }
     @Override public boolean persistent() { return false; }
 }

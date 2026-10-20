@@ -50,10 +50,11 @@ public final class Domain {
         private String passwordSalt;
         private Role role;
         private boolean active;
+        private boolean pending;
 
-        public User(String id, String name, String email, String phone, String passwordHash, String passwordSalt, Role role, boolean active) {
+        public User(String id, String name, String email, String phone, String passwordHash, String passwordSalt, Role role, boolean active, boolean pending) {
             this.id = id; this.name = name; this.email = email; this.phone = phone;
-            this.passwordHash = passwordHash; this.passwordSalt = passwordSalt; this.role = role; this.active = active;
+            this.passwordHash = passwordHash; this.passwordSalt = passwordSalt; this.role = role; this.active = active; this.pending = pending;
         }
         public String id() { return id; }
         public String name() { return name; }
@@ -63,10 +64,12 @@ public final class Domain {
         public String passwordSalt() { return passwordSalt; }
         public Role role() { return role; }
         public boolean active() { return active; }
+        public boolean pending() { return pending; }
         public void updateProfile(String name, String email, String phone) { this.name = name; this.email = email; this.phone = phone; }
         public void setPassword(String hash, String salt) { passwordHash = hash; passwordSalt = salt; }
         public void setRole(Role role) { this.role = role; }
         public void setActive(boolean active) { this.active = active; }
+        public void setPending(boolean pending) { this.pending = pending; }
     }
 
     public static final class Vehicle {
@@ -171,7 +174,20 @@ public final class Domain {
     }
     public record MaintenanceRecord(String id, String vehicleId, LocalDate date, double mileageKm, String description, double cost) { }
     public record FuelRecord(String id, String vehicleId, LocalDate date, double mileageKm, double litres, double cost) { }
-    public record TrackingPoint(String id, String vehicleId, String shipmentId, double x, double y, int etaMinutes, LocalDateTime recordedAt) { }
+    public enum FixType {
+        GPS("GPS"), WIFI("WiFi"), CELL("Cell"), NONE("No fix");
+        private final String label;
+        FixType(String label) { this.label = label; }
+        public String label() { return label; }
+        @Override public String toString() { return label; }
+    }
+
+    public record TrackingPoint(String id, String vehicleId, String shipmentId, double x, double y, int etaMinutes, LocalDateTime recordedAt,
+                                double speedKmh, Double headingDeg, Double accuracyM, FixType fixType, String source) {
+        public TrackingPoint(String id, String vehicleId, String shipmentId, double x, double y, int etaMinutes, LocalDateTime recordedAt) {
+            this(id, vehicleId, shipmentId, x, y, etaMinutes, recordedAt, 0, null, null, FixType.GPS, "nmea");
+        }
+    }
 
     public interface Repository extends AutoCloseable {
         List<User> users();
@@ -190,12 +206,18 @@ public final class Domain {
         void deleteShipment(String id);
         List<RoutePlan> routes();
         void saveRoute(RoutePlan route);
+        void deleteRoute(String id);
         List<MaintenanceRecord> maintenanceRecords();
         void saveMaintenance(MaintenanceRecord record);
+        void saveMaintenanceAndVehicle(MaintenanceRecord record, Vehicle vehicle);
+        void deleteMaintenance(String id);
         List<FuelRecord> fuelRecords();
         void saveFuel(FuelRecord record);
+        void saveFuelAndVehicle(FuelRecord record, Vehicle vehicle);
+        void deleteFuel(String id);
         List<TrackingPoint> trackingHistory();
         void saveTrackingPoint(TrackingPoint point);
+        void deleteTrackingForVehicle(String vehicleId);
         boolean persistent();
         @Override default void close() { }
     }
