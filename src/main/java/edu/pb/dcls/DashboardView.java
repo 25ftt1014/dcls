@@ -60,6 +60,14 @@ final class DashboardView {
     private final Map<String, Shipment> activeByVehicle = new LinkedHashMap<>();
 
     private final UiFactory.Metric vehiclesCard, activeCard, pendingCard, completedCard;
+    /** Vehicle the operator just clicked on the ops map; drawn with a pulse and panned to. */
+    private String highlightedVehicle;
+    /** Whether the initial auto-fit has happened; refreshes never re-fit after this. */
+    private boolean framed;
+    /** Popup shown when a vehicle marker is clicked. */
+    private javafx.stage.Popup mapPopup;
+    /** Notice shown over the map when no vehicle has a fix. */
+    private final Label noFixNotice = new Label("No live GPS from any vehicle");
     private final VBox dotList = new VBox(3);
     private final VBox statusBars = new VBox(7);
     private final VBox deliveryRows = new VBox(0);
@@ -173,6 +181,8 @@ final class DashboardView {
                 .map(plot -> new double[] {plot.lon(), plot.lat()}).toList();
         map.painter = (g, view) -> MapRenderer.paintVehicleDots(
                 g, map.canvas.getWidth(), map.canvas.getHeight(), view, List.copyOf(plots.values()));
+        // Read-only map: clicks open a popup, they never place pins or edit routes.
+        map.clickAction = point -> openMarkerPopup(point);
         installHover();
 
         Label mapTitle = new Label("Operations map");
@@ -180,15 +190,32 @@ final class DashboardView {
         Button fullScreen = new Button("Full screen map");
         fullScreen.getStyleClass().addAll("secondary-button", "dashboard-fullscreen");
         fullScreen.setAccessibleText("Open the operations map full screen");
-        HBox mapHeader = new HBox(10, mapTitle, new Region(), fullScreen);
+        Button resetView = new Button("Reset view");
+        resetView.getStyleClass().add("secondary-button");
+        resetView.setAccessibleText("Reset the map view");
+        resetView.setOnAction(e -> {
+            map.manual = null;
+            framed = false;
+            map.redraw();
+            framed = true;
+            map.manual = map.currentView();
+            noFixNotice.setVisible(!anyHasFix());
+        });
+        HBox mapHeader = new HBox(10, mapTitle, new Region(), resetView, fullScreen);
         mapHeader.setAlignment(Pos.CENTER_LEFT);
         HBox.setHgrow(mapHeader.getChildren().get(1), ALWAYS);
         VBox mapPanel = panel(mapHeader);
 
         StackPane mapViewport = new StackPane(map.canvas);
         mapViewport.getStyleClass().add("dashboard-map-viewport");
-        mapViewport.setMinHeight(300);
-        mapViewport.setPrefHeight(390);
+        mapViewport.setMinHeight(420);
+        mapViewport.setPrefHeight(520);
+        noFixNotice.getStyleClass().addAll("dashboard-map-notice", "muted");
+        noFixNotice.setManaged(false);
+        noFixNotice.setVisible(false);
+        noFixNotice.setMouseTransparent(true);
+        mapViewport.getChildren().add(noFixNotice);
+        StackPane.setAlignment(noFixNotice, Pos.CENTER);
         // Canvas is resizable but reports its current size as its preferred size.
         // Keep it out of the viewport's layout measurement to prevent a sizing loop.
         map.canvas.setManaged(false);
@@ -209,11 +236,34 @@ final class DashboardView {
         map.canvas.heightProperty().addListener((observable, oldHeight, newHeight) -> map.requestRedraw());
         VBox.setVgrow(mapViewport, ALWAYS);
 
-        Node legend = app.legendBox();
-        HBox mapDetails = new HBox(20, dotList, legend);
-        mapDetails.setAlignment(Pos.TOP_LEFT);
-        HBox.setHgrow(dotList, ALWAYS);
-        mapPanel.getChildren().addAll(map.zoomBar, mapViewport, mapDetails);
+        // Zoom controls as a floating overlay in the corner, plus a compact chip row
+        // and a single-line legend popover instead of three text lines under the map.
+        StackPane zoomHost = new StackPane(map.zoomStack);
+        zoomHost.setPickOnBounds(false);
+        zoomHost.setMaxSize(Region.USE_PREF_SIZE, Region.USE_PREF_SIZE);
+        mapViewport.getChildren().add(zoomHost);
+        StackPane.setAlignment(zoomHost, Pos.TOP_RIGHT);
+        zoomHost.setPadding(new Insets(10, 10, 0, 0));
+
+        HBox chipRow = new HBox(8);
+        chipRow.getStyleClass().add("dashboard-chip-row");
+        chipRow.setAlignment(Pos.CENTER_LEFT);
+        chipRow.setPickOnBounds(false);
+        mapPanel.getChildren().addAll(mapViewport, chipRow);
+
+        Button legendButton = new Button("Legend");
+        legendButton.getStyleClass().addAll("secondary-button", "dashboard-legend-toggle");
+        legendButton.setAccessibleText("Show map legend");
+        VBox legendContent = new VBox(4, app.legendBox());
+        legendContent.setPadding(new Insets(8));
+        legendContent.getStyleClass().add("legend-popover");
+        javafx.stage.Popup legendPopover = new javafx.stage.Popup();
+        legendPopover.getContent().add(legendContent);
+        legendButton.setOnAction(e -> {
+            if (legendPopover.isShowing()) legendPopover.hide();
+            else legendPopover.show(legendButton, 0, legendButton.getHeight());
+        });
+        chipRow.getChildren().add(legendButton);
 
         VBox statusPanel = panel(new Label("Order status"));
         ((Label) statusPanel.getChildren().get(0)).getStyleClass().add("section-title");
@@ -227,8 +277,8 @@ final class DashboardView {
         listPanel.getChildren().addAll(summary, deliveryRows);
 
         VBox rightColumn = new VBox(14, statusPanel, listPanel);
-        rightColumn.setPrefWidth(264);
-        rightColumn.setMinWidth(264);
+        rightColumn.setPrefWidth(300);
+        rightColumn.setMinWidth(300);
 
         HBox content = new HBox(14, mapPanel, rightColumn);
         HBox.setHgrow(mapPanel, ALWAYS);
@@ -247,15 +297,13 @@ final class DashboardView {
             attentionPanel.setManaged(!expanded);
             rightColumn.setVisible(!expanded);
             rightColumn.setManaged(!expanded);
-            mapDetails.setVisible(!expanded);
-            mapDetails.setManaged(!expanded);
             if (expanded) {
-                mapViewport.prefHeightProperty().bind(app.stage.heightProperty().subtract(190));
+                mapViewport.prefHeightProperty().bind(app.stage.heightProperty().subtract(120));
                 fullScreen.setText("Exit full screen  ·  Esc");
                 fullScreen.setAccessibleText("Exit full-screen map");
             } else {
                 mapViewport.prefHeightProperty().unbind();
-                mapViewport.setPrefHeight(390);
+                mapViewport.setPrefHeight(520);
                 fullScreen.setText("Full screen map");
                 fullScreen.setAccessibleText("Open the operations map full screen");
             }
@@ -318,6 +366,78 @@ final class DashboardView {
 
     /** Hover detail on the ops map. Hit-testing reads the live view, not a captured one,
      *  so it stays correct after a zoom or pan. */
+    /** True when at least one vehicle on the map has a live fix. */
+    private boolean anyHasFix() {
+        for (VehiclePlot plot : plots.values()) if (!plot.stale()) return true;
+        return false;
+    }
+
+    /** Opens the click popup for the vehicle nearest to the click, if any. */
+    private void openMarkerPopup(double[] point) {
+        if (mapPopup != null && mapPopup.isShowing()) mapPopup.hide();
+        String hit = nearestVehicle(point);
+        if (hit == null) return;
+        highlightVehicle(hit);
+        Shipment duty = activeByVehicle.get(hit);
+        Vehicle vehicle = app.repository.vehicle(hit).orElse(null);
+        TrackingPoint fix = currentTrackingSnapshot.byVehicle().get(hit);
+        VBox content = new VBox(6);
+        content.setPadding(new Insets(10));
+        content.getStyleClass().add("legend-popover");
+        Label title = new Label(app.vehiclePlate(hit));
+        title.getStyleClass().add("section-title");
+        Label driver = new Label("Driver: " + (vehicle == null ? "—" : app.driverName(vehicle.driverId())));
+        driver.getStyleClass().add("muted");
+        Label order = new Label("Order: " + (duty == null ? "—" : duty.id()));
+        order.getStyleClass().add("muted");
+        Label status = new Label("Status: " + (duty == null ? "—" : duty.status().label()));
+        status.getStyleClass().add("muted");
+        Label eta = new Label("ETA: " + (fix == null ? "—" : fix.etaMinutes() + " min"));
+        eta.getStyleClass().add("muted");
+        Label lastFix = new Label("Last fix: " + (fix == null ? "no fix" : fix.recordedAt().format(DclsApp.DATE_TIME)));
+        lastFix.getStyleClass().add("muted");
+        Button openTracking = new Button("Open in Live tracking");
+        openTracking.getStyleClass().add("primary-button");
+        openTracking.setMaxWidth(Double.MAX_VALUE);
+        openTracking.setOnAction(e -> {
+            if (mapPopup != null) mapPopup.hide();
+            app.focusVehicleTour(hit, duty == null ? null : duty.id());
+        });
+        content.getChildren().addAll(title, driver, order, status, eta, lastFix, openTracking);
+        mapPopup = new javafx.stage.Popup();
+        mapPopup.getContent().add(content);
+        mapPopup.setAutoHide(true);
+        mapPopup.show(map.canvas, 0, 0);
+        mapPopup.setX(map.canvas.localToScreen(map.canvas.getWidth() / 2, 0).getX());
+    }
+
+    /** Pans and highlights a vehicle on the map. Used by marker clicks, delivery rows and attention items. */
+    void highlightVehicle(String vehicleId) {
+        highlightedVehicle = vehicleId;
+        Shipment duty = vehicleId == null ? null : activeByVehicle.get(vehicleId);
+        TrackingPoint fix = vehicleId == null ? null : currentTrackingSnapshot.byVehicle().get(vehicleId);
+        if (fix != null && map != null) map.zoomTo(fix.x(), fix.y());
+        map.requestRedraw();
+        if (duty != null) app.refreshFocusChip();
+    }
+
+    private String nearestVehicle(double[] point) {
+        if (point == null || plots.isEmpty()) return null;
+        MapRenderer.ViewBounds view = map.currentView();
+        double w = map.canvas.getWidth(), h = map.canvas.getHeight();
+        String hit = null;
+        double best = 16 * 16;
+        for (Map.Entry<String, VehiclePlot> entry : plots.entrySet()) {
+            double[] p = MapRenderer.projectIfVisible(entry.getValue().lon(), entry.getValue().lat(), w, h, view);
+            if (p == null) continue;
+            double dx = p[0] - point[0];
+            double dy = p[1] - point[1];
+            double d = dx * dx + dy * dy;
+            if (d < best) { best = d; hit = entry.getKey(); }
+        }
+        return hit;
+    }
+
     private void installHover() {
         Tooltip tip = new Tooltip();
         map.canvas.setOnMouseMoved(event -> {
@@ -386,6 +506,13 @@ final class DashboardView {
         refreshPlots(shipmentRows, vehiclesById, currentTrackingSnapshot);
         refreshVehicleList(currentTrackingSnapshot);
         refreshDeliveries(shipmentRows, currentTrackingSnapshot);
+        // Auto-fit only on the first load. Every later refresh redraws with the sticky
+        // manual view, so an operator who zoomed or panned keeps their view.
+        if (!framed && map.manual == null) {
+            framed = true;
+            map.manual = map.currentView();
+        }
+        noFixNotice.setVisible(!anyHasFix());
     }
 
     private void refreshAttention(List<Vehicle> vehicleRows, long pending, long trackingIssues, long active) {
@@ -507,17 +634,42 @@ final class DashboardView {
         }
     }
 
-    private HBox deliveryRow(Shipment shipment) {
-        Label id = new Label(shipment.id());
+    /** Shortens a UUID-style order id to its last 4 characters so the card stays readable.
+     *  Regular order ids (e.g. "DCLS-2401") are returned unchanged. */
+    static String shortOrderId(String id) {
+        if (id == null) return "—";
+        if (id.length() <= 8) return id;
+        if (id.contains("-") && id.length() > 20) {
+            return "…" + id.substring(id.length() - 4);
+        }
+        return id;
+    }
+
+    private VBox deliveryRow(Shipment shipment) {
+        Label id = new Label(shortOrderId(shipment.id()));
         id.getStyleClass().add("delivery-id");
-        Label pill = new Label(shipment.status().label());
-        pill.getStyleClass().addAll("status-pill", pillClassFor(shipment.status().label()));
+        id.setTooltip(new Tooltip(shipment.id()));
+        Label vehicle = new Label(app.vehiclePlate(shipment.vehicleId()));
+        vehicle.getStyleClass().add("muted");
         Label eta = new Label(etaFor(shipment));
         eta.getStyleClass().add("detail-value");
         Region spacer = new Region();
         HBox.setHgrow(spacer, ALWAYS);
-        HBox row = new HBox(8, id, pill, spacer, eta);
+        HBox line1 = new HBox(8, id, vehicle, spacer, eta);
+        line1.setAlignment(Pos.CENTER_LEFT);
+        line1.setPickOnBounds(false);
+
+        Label destination = new Label(shipment.address());
+        destination.getStyleClass().add("muted");
+        destination.setWrapText(true);
+        destination.setMaxWidth(Double.MAX_VALUE);
+        destination.setTooltip(new Tooltip(shipment.address()));
+
+        VBox row = new VBox(2, line1, destination);
         row.getStyleClass().add("pill-row");
+        row.setOnMouseClicked(e -> {
+            if (shipment.vehicleId() != null) highlightVehicle(shipment.vehicleId());
+        });
         return row;
     }
 

@@ -31,6 +31,7 @@ import javafx.scene.control.PasswordField;
 import javafx.scene.control.ScrollPane;
 import javafx.scene.control.SeparatorMenuItem;
 import javafx.scene.control.TextField;
+import javafx.scene.control.Tooltip;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Region;
@@ -118,6 +119,9 @@ public final class DclsApp extends Application {
     DashboardView dashboard;
     String focusedShipmentId;
     String focusedVehicleId;
+    /** Vehicles the Layers panel has unticked. Empty means "draw the whole fleet";
+     *  containing every vehicle means a clean map. */
+    final java.util.Set<String> hiddenVehicles = new java.util.LinkedHashSet<>();
     List<String> pendingRouteShipmentIds = List.of();
     final Map<String, Double> routeStopConfidence = new java.util.HashMap<>();
     final java.util.Set<String> routeStopConfirmed = new java.util.HashSet<>();
@@ -469,6 +473,10 @@ public final class DclsApp extends Application {
             pageScroll.setStyle("-fx-background: #f6f8fb; -fx-background-color: #f6f8fb;");
             content.setCenter(pageScroll);
         }
+        // Live tracking is a full-bleed map page: it takes the viewport height as well
+        // as the width, so there is no scrolling and no dead space under the map. Every
+        // other page keeps its natural height and scrolls as before.
+        pageScroll.setFitToHeight("tracking".equals(page));
         fadePageIn(pageScroll, view);
     }
 
@@ -691,57 +699,132 @@ public final class DclsApp extends Application {
         focusChipBox.getChildren().clear();
         Shipment focused = focusedShipment();
         String vehicleFocus = focusedVehicleId;
+        // The card floats over the map bottom-left and exists only while something is
+        // focused: an empty card would otherwise sit on top of the scale bar.
+        focusChipBox.setVisible(focused != null || vehicleFocus != null);
         if (focused == null && vehicleFocus == null) return;
+        // The long vehicle/tour id is an implementation detail an operator never
+        // reads on screen, so it lives in the tooltip and the copy action instead of
+        // being rendered as a row of digits next to the plate.
+        String focusId = vehicleFocus != null ? vehicleFocus
+                : focused == null ? "" : focused.id();
         // Build label safely (tour size, not route object).
         String tourInfo = "";
         if (vehicleFocus != null) {
             try {
                 var tour = tracking.tourForVehicle(vehicleFocus);
-                tourInfo = "Tour " + vehiclePlate(vehicleFocus) + " · " + (tour.ordered().size() - 1) + " stops · "
-                        + String.format("%.1f km left", tour.remainingKm());
+                tourInfo = TrackingView.tourCardText(vehiclePlate(vehicleFocus),
+                        tour.ordered().size() - 1, tour.remainingKm());
             } catch (RuntimeException ignored) {
-                tourInfo = "Tour " + vehiclePlate(vehicleFocus);
+                tourInfo = TrackingView.tourCardText(vehiclePlate(vehicleFocus));
             }
         }
         TrackingFocus focus = focused == null ? null : trackingFocusFor(focused);
         Label text = new Label(vehicleFocus != null ? tourInfo + (focused == null ? "" : " · " + focused.id())
                 : ("Following " + focused.id() + (focus == null ? "" : " · " + focus.label())));
         text.getStyleClass().add("muted");
-        javafx.scene.control.Button clear = new javafx.scene.control.Button("Clear");
+        text.setTooltip(new Tooltip("Focus id: " + focusId));
+        Button copy = new Button("Copy id");
+        copy.getStyleClass().add("link-button");
+        copy.setAccessibleText("Copy the focus id to the clipboard");
+        copy.setOnAction(event -> {
+            if (copyToClipboard(focusId)) toast("Copied focus id: " + focusId);
+            else toast("Copy the id from the tooltip instead.");
+        });
+        Button clear = new Button("Clear");
         clear.getStyleClass().add("link-button");
         clear.setOnAction(event -> clearTrackingFocus());
-        HBox row = new HBox(8, text, new Region(), clear);
+        // Solo mode is the other half of "clear": dropping the focus is what brings the
+        // rest of the fleet back on the map.
+        Button showAll = new Button("Show all");
+        showAll.getStyleClass().add("link-button");
+        showAll.setVisible(vehicleFocus != null);
+        showAll.setManaged(vehicleFocus != null);
+        showAll.setOnAction(event -> clearTrackingFocus());
+        HBox row = new HBox(8, text, new Region(), copy, showAll, clear);
+        row.getStyleClass().add("tour-row");
         row.setAlignment(Pos.CENTER_LEFT);
+        row.setPickOnBounds(false);
         HBox.setHgrow(row.getChildren().get(1), ALWAYS);
         focusChipBox.getChildren().add(row);
-        // Solo-mode exit: only the focused tour is on the map.
-        if (vehicleFocus != null) {
-            Label solo = new Label("Showing only " + vehiclePlate(vehicleFocus));
-            solo.getStyleClass().add("muted");
-            javafx.scene.control.Button showAll = new javafx.scene.control.Button("Show all");
-            showAll.getStyleClass().add("link-button");
-            showAll.setOnAction(event -> clearTrackingFocus());
-            HBox soloRow = new HBox(8, solo, new Region(), showAll);
-            soloRow.setAlignment(Pos.CENTER_LEFT);
-            HBox.setHgrow(soloRow.getChildren().get(1), ALWAYS);
-            focusChipBox.getChildren().add(soloRow);
+    }
+
+    /** Clipboard write. Returns false when the clipboard is unavailable — a locked or
+     *  headless clipboard must not take the page down with it. */
+    private boolean copyToClipboard(String text) {
+        try {
+            javafx.scene.input.ClipboardContent content = new javafx.scene.input.ClipboardContent();
+            content.putString(text);
+            javafx.scene.input.Clipboard.getSystemClipboard().setContent(content);
+            return true;
+        } catch (Exception unavailable) {
+            return false;
         }
     }
 
     /** Vehicles drawn on the map: solo focused tour, or the whole fleet.
      *  Pure and headless-testable. Unknown focus falls back to show-all. */
     static List<String> visibleVehicles(String focusedId, java.util.Set<String> vehicleIds) {
+        return visibleVehicles(focusedId, vehicleIds, java.util.Set.of());
+    }
+
+    /**
+     * Vehicles drawn on the map, combining two independent things:
+     * <ul>
+     *   <li><b>Solo focus</b> — a focused delivery or vehicle shows only its own tour,
+     *       trail and marker.</li>
+     *   <li><b>Layers ticks</b> — the Live tracking Layers panel unticks vehicles, and
+     *       unticked vehicles are dropped whatever else is going on.</li>
+     * </ul>
+     * Solo wins when the focused vehicle is still ticked, because "follow this one
+     * delivery" is the stronger intent. Hiding every vehicle leaves a clean map: no
+     * routes, no trails, no markers.
+     *
+     * <p>Pure and headless-testable, and the only thing that decides what the tracking
+     * map iterates over.
+     */
+    static List<String> visibleVehicles(String focusedId, java.util.Set<String> vehicleIds,
+                                         java.util.Set<String> hiddenIds) {
         if (vehicleIds == null) return List.of();
-        if (focusedId == null || !vehicleIds.contains(focusedId)) return new ArrayList<>(vehicleIds);
-        return List.of(focusedId);
+        java.util.Set<String> hidden = hiddenIds == null ? java.util.Set.of() : hiddenIds;
+        if (focusedId != null && vehicleIds.contains(focusedId) && !hidden.contains(focusedId)) {
+            return List.of(focusedId);
+        }
+        List<String> shown = new ArrayList<>();
+        for (String vehicleId : vehicleIds) {
+            if (!hidden.contains(vehicleId)) shown.add(vehicleId);
+        }
+        return shown;
+    }
+
+    /** Applies one Layers tick. Solo focus is dropped so the ticks are what the map
+     *  obeys — otherwise an earlier focus silently overrides the panel. The zoom is
+     *  left alone: unticking a vehicle is not a request to reframe the map. */
+    void setVehicleVisible(String vehicleId, boolean visible) {
+        if (vehicleId == null) return;
+        if (visible) hiddenVehicles.remove(vehicleId);
+        else hiddenVehicles.add(vehicleId);
+        focusedVehicleId = null;
+        focusedShipmentId = null;
+        drawTracking();
+        refreshFocusChip();
+    }
+
+    /** The Layers panel's "Show all": every vehicle visible again, no solo focus. */
+    void showAllVehicles() {
+        hiddenVehicles.clear();
+        focusedVehicleId = null;
+        focusedShipmentId = null;
+        drawTracking();
+        refreshFocusChip();
     }
 
     void paintTracking(GraphicsContext g, double w, double h, ViewBounds view) {
         Shipment focused = focusedShipment();
         String focusVehicle = focusedVehicleId != null ? focusedVehicleId
                 : (focused == null ? null : focused.vehicleId());
-        // Solo mode: a focused delivery shows only its own tour, trail and marker.
-        for (String vehicleId : visibleVehicles(focusVehicle, trackingTrails.keySet())) {
+        // Solo focus, minus whatever the Layers panel has unticked.
+        for (String vehicleId : visibleVehicles(focusVehicle, trackingTrails.keySet(), hiddenVehicles)) {
             g.setGlobalAlpha(1.0);
             String color = vehicleColor(vehicleId);
             RoutePlan route = trackingRoutes.get(vehicleId);
@@ -836,9 +919,20 @@ public final class DclsApp extends Application {
         Label title = new Label(focusedVehicleId != null ? "Showing" : "On the road"); title.getStyleClass().add("eyebrow");
         trackingLegend.getChildren().add(title);
         int shown = 0, lost = 0;
-        for (Map.Entry<String, List<Shipment>> entry : byVehicle.entrySet()) {
+        // "On the road" with every vehicle unticked would be a heading over nothing.
+        if (!hiddenVehicles.isEmpty() && visibleVehicles(null, byVehicle.keySet(), hiddenVehicles).isEmpty()) {
+            Label none = new Label("No vehicles shown — the map is showing layers only.");
+            none.getStyleClass().add("muted");
+            trackingLegend.getChildren().add(none);
+            narrateMap(0, 0);
+            return;
+        }
+for (Map.Entry<String, List<Shipment>> entry : byVehicle.entrySet()) {
      String vehicleId = entry.getKey();
-            if (focusedVehicleId != null && !focusedVehicleId.equals(vehicleId)) continue;
+     // The legend has to describe what is actually drawn, so it obeys the same
+     // visibility rule as the map: solo focus, and the Layers panel's unticked vehicles.
+     if (hiddenVehicles.contains(vehicleId)) continue;
+     if (focusedVehicleId != null && !focusedVehicleId.equals(vehicleId)) continue;
           boolean stale = tracking.gps().isStale(vehicleId);
             shown++;
             if (stale) lost++;
@@ -879,6 +973,10 @@ public final class DclsApp extends Application {
     final class MapController {
         final Canvas canvas;
         final HBox zoomBar;
+        /** The same three controls stacked vertically, for the tracking page's
+         *  bottom-right corner. Separate nodes from {@link #zoomBar} so a button
+         *  cannot be in two parents at once; the handlers are shared behaviour. */
+        final VBox zoomStack;
 Supplier<List<double[]>> content = List::of;
         BiConsumer<GraphicsContext, ViewBounds> painter = (g, v) -> { };
         Consumer<double[]> clickAction;
@@ -939,6 +1037,24 @@ Supplier<List<double[]>> content = List::of;
             out.setOnAction(event -> zoomAt(1 / 1.4, canvas.getWidth() / 2, canvas.getHeight() / 2));
             reset.setOnAction(event -> { manual = null; redraw(); });
             zoomBar = new HBox(6, in, out, reset);
+            // Corner stack: separate button nodes, identical actions.
+            Button stackIn = button("+", "secondary-button");
+            Button stackOut = button("−", "secondary-button");
+            Button stackReset = button("Reset view", "secondary-button");
+            stackIn.setAccessibleText("Zoom in");
+            stackIn.setTooltip(new javafx.scene.control.Tooltip("Zoom in (+)"));
+            stackOut.setAccessibleText("Zoom out");
+            stackOut.setTooltip(new javafx.scene.control.Tooltip("Zoom out (−)"));
+            stackReset.setTooltip(new javafx.scene.control.Tooltip("Reset view (R)"));
+            stackIn.setMaxWidth(Double.MAX_VALUE);
+            stackOut.setMaxWidth(Double.MAX_VALUE);
+            stackReset.setMaxWidth(Double.MAX_VALUE);
+            stackIn.setOnAction(event -> zoomAt(1.4, canvas.getWidth() / 2, canvas.getHeight() / 2));
+            stackOut.setOnAction(event -> zoomAt(1 / 1.4, canvas.getWidth() / 2, canvas.getHeight() / 2));
+            stackReset.setOnAction(event -> { manual = null; redraw(); });
+            zoomStack = new VBox(6, stackIn, stackOut, stackReset);
+            zoomStack.getStyleClass().add("zoom-stack");
+            zoomStack.setPickOnBounds(false);
             canvas.setOnScroll(event -> { zoomAt(event.getDeltaY() > 0 ? 1.25 : 0.8, event.getX(), event.getY()); event.consume(); });
             canvas.setOnMousePressed(event -> { pressX = event.getX(); pressY = event.getY(); dragging = false; });
             canvas.setOnMouseDragged(event -> {

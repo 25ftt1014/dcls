@@ -105,6 +105,26 @@
 .link-button { -fx-background-color: transparent; -fx-text-fill: -accent; -fx-font-weight: 700; -fx-cursor: hand; -fx-padding: 4 2; }
 .link-button:hover { -fx-text-fill: -accent-hover; -fx-underline: true; }
 
+/* Toggle buttons carry their own on/off state; an unstyled toggle looked identical
+   either way, so "Follow selected" gave no clue whether it was armed. */
+.toggle-button {
+    -fx-background-color: -surface;
+    -fx-text-fill: #273349;
+    -fx-border-color: #d3dbe8;
+    -fx-border-radius: 9;
+    -fx-padding: 6 12 6 12;
+    -fx-font-size: 12px;
+    -fx-cursor: hand;
+}
+.toggle-button:hover { -fx-background-color: -accent-soft; -fx-border-color: -accent; }
+.toggle-button:selected {
+    -fx-background-color: -accent;
+    -fx-text-fill: #ffffff;
+    -fx-border-color: -accent;
+    -fx-font-weight: 700;
+}
+.toggle-button:disabled { -fx-opacity: 0.55; -fx-cursor: default; }
+
 /* ---- navigation ---------------------------------------------- */
 .nav-button {
     -fx-background-color: transparent;
@@ -355,8 +375,36 @@
    Row height is deliberately NOT set here: TrackingView's setFixedCellSize(-1d) owns it,
    and the two used to disagree, leaving every cell single-line and ellipsized. */
 .table-view.wrap-rows .table-cell { -fx-padding: 8 10 8 10; -fx-wrap-text: true; }
-/* Tighter pill inside the 440px drawer so "In transit" clears the 68px Status column. */
-.tracking-drawer .status-pill { -fx-padding: 3 7; }
+/* Tighter cells in the drawer buy the columns back; four of them are pinned. */
+.tracking-drawer .table-cell { -fx-padding: 6 8 6 8; }
+/* One chip size everywhere in the drawer, so a row is one height. */
+.tracking-drawer .status-pill {
+    -fx-padding: 3 8;
+    -fx-min-height: 20px;
+    -fx-font-size: 10px;
+}
+/* A vehicle that has never had a fix is information, not an alarm: red stays reserved
+   for a signal we had and lost. */
+.status-muted { -fx-background-color: #eef1f6; -fx-text-fill: #5d6b85; }
+
+/* Selected row: unmistakably selected. The accent bar on the first cell keeps it
+   readable on the striped background as well as the accent fill. */
+.table-row-cell:selected {
+    -fx-background-color: #dbe6ff;
+    -fx-text-background-color: -ink;
+    -fx-font-weight: 700;
+}
+.table-row-cell:selected:hover { -fx-background-color: #cfdfff; }
+.tracking-drawer .table-row-cell:selected .table-cell:first-child {
+    -fx-border-color: -accent;
+    -fx-border-width: 0 0 0 3;
+}
+
+/* Sortable headers. The default arrow is oversized for a compact drawer. */
+.table-view .column-header { -fx-cursor: hand; -fx-size: 30px; }
+.table-view .column-header:hover { -fx-background-color: #eef3fb; }
+.column-header > .sort-order { -fx-scale: 0.7; -fx-fill: -accent; }
+.column-header > .sort-order > .arrow { -fx-scale: 0.8; }
 
 .count-badge {
     -fx-background-color: -accent;
@@ -371,46 +419,29 @@
 .tracking-detail .titled-pane > .title { -fx-background-color: transparent; -fx-padding: 6 0 6 0; }
 .tracking-detail .titled-pane > .content { -fx-background-color: transparent; -fx-padding: 4 0 0 0; }
 
-/* Drawer: right-edge panel anchored to the map container. It is positioned by
-   TranslateTransition, never by layout reflow, so nothing can drag or resize it. */
+/* Detail panel: live facts and one status line, both inside a scroll pane so the
+   drawer never has to grow past its height. */
+.detail-facts { -fx-padding: 2 0 2 0; }
+.detail-facts .eyebrow { -fx-min-width: 64px; }
+.status-strip {
+    -fx-background-color: #f6f8fb;
+    -fx-background-radius: 8;
+    -fx-padding: 8 10 8 10;
+}
+.status-strip .label { -fx-font-size: 11px; }
+.drawer-empty { -fx-padding: 6 0 2 0; -fx-font-size: 12px; }
+.drawer-detail-scroll { -fx-background-color: transparent; -fx-padding: 0; }
+
+/* Drawer: a floating card, inset from the right and bottom edges and clear of the
+   rail above it. It is positioned by TranslateTransition, never by layout reflow, so
+   nothing can drag or resize it. */
 .tracking-drawer {
     -fx-background-color: -surface;
     -fx-border-color: -line;
-    -fx-border-width: 1 0 0 1;
-    -fx-border-radius: 14 0 0 14;
-    -fx-background-radius: 14 0 0 14;
-    -fx-effect: dropshadow(gaussian, rgba(20,27,45,0.16), 20, 0, 0, 6);
-}
-
-/* Icon toggle: fixed position top-right of the map area, never inside the drawer. */
-.tracking-toggle {
-    -fx-background-color: -surface;
-    -fx-border-color: -line;
-    -fx-background-radius: 10;
-    -fx-border-radius: 10;
-    -fx-cursor: hand;
-    -fx-effect: dropshadow(gaussian, rgba(20,27,45,0.12), 10, 0, 0, 3);
-}
-.tracking-toggle:hover { -fx-border-color: -accent; }
-.tracking-toggle:focused { -fx-border-color: -accent; -fx-background-color: -accent-soft; }
-.tracking-toggle .glyph { -fx-font-size: 14px; -fx-text-fill: -ink; }
-
-/* Overlay-mode backdrop: dims the map, click anywhere to dismiss. */
-.drawer-scrim { -fx-background-color: rgba(20,27,45,0.34); }
-
-/* Follow-selected and NO FIX, floated over the map rather than stacked below it. */
-.map-overlay {
-    -fx-background-color: -surface;
-    -fx-background-radius: 10;
-    -fx-padding: 5 10 5 8;
-    -fx-effect: dropshadow(gaussian, rgba(20,27,45,0.10), 10, 0, 0, 3);
-}
-/* Floating legend / shortcut list. */
-.legend-popover {
--fx-background-color: -surface;
-    -fx-background-radius: 10;
-    -fx-padding: 12;
-    -fx-effect: dropshadow(gaussian, rgba(20,27,45,0.18), 16, 0, 0, 4);
+    -fx-border-width: 1;
+    -fx-border-radius: 14;
+    -fx-background-radius: 14;
+    -fx-effect: dropshadow(gaussian, rgba(20,27,45,0.18), 22, 0, 0, 8);
 }
 
 .drawer-close {
@@ -431,4 +462,132 @@
     -fx-min-height: 8px; -fx-pref-height: 8px; -fx-max-height: 8px;
     -fx-border-color: -surface;
     -fx-border-width: 1;
+}
+
+/* ---- full-bleed map page --------------------------------------------- */
+/* The map host fills the page and paints nothing itself: the canvas below it is
+   the map, and every other layer floats above it. */
+.map-shell { -fx-background-color: transparent; }
+
+/* Floating search bar, top-left. */
+.search-float {
+    -fx-background-color: -surface;
+    -fx-background-radius: 12;
+    -fx-border-radius: 12;
+    -fx-padding: 4 4 4 10;
+    -fx-alignment: center-left;
+    -fx-effect: dropshadow(gaussian, rgba(20,27,45,0.16), 16, 0, 0, 4);
+}
+/* The field inside the card borrows its shape: a second border would double up. */
+.search-float .text-field {
+    -fx-background-color: transparent;
+    -fx-border-color: transparent;
+    -fx-padding: 4 2 4 2;
+}
+.search-clear {
+    -fx-background-color: transparent;
+    -fx-text-fill: -ink-soft;
+    -fx-font-size: 12px;
+    -fx-padding: 3 7 3 7;
+    -fx-cursor: hand;
+    -fx-background-radius: 8;
+}
+.search-clear:hover { -fx-background-color: -accent-soft; -fx-text-fill: -accent-hover; }
+
+/* Search results dropdown, directly under the bar. */
+.search-results {
+    -fx-background-color: -surface;
+    -fx-background-radius: 12;
+    -fx-border-radius: 12;
+    -fx-padding: 6;
+    -fx-effect: dropshadow(gaussian, rgba(20,27,45,0.18), 18, 0, 0, 5);
+}
+.search-result {
+    -fx-background-color: transparent;
+    -fx-text-fill: -ink;
+    -fx-font-size: 12px;
+    -fx-alignment: center-left;
+    -fx-padding: 6 8 6 8;
+    -fx-background-radius: 8;
+    -fx-cursor: hand;
+}
+.search-result:hover { -fx-background-color: -accent-soft; }
+.search-result:disabled { -fx-opacity: 0.7; -fx-cursor: default; }
+
+/* Icon rail, top-right. Padding and gap mirror TrackingView.RAIL_PADDING and
+   RAIL_ITEM_GAP: the drawer positions itself from the rail's resulting height. */
+.rail {
+    -fx-background-color: -surface;
+    -fx-background-radius: 14;
+    -fx-spacing: 8;
+    -fx-padding: 6;
+    -fx-effect: dropshadow(gaussian, rgba(20,27,45,0.16), 16, 0, 0, 4);
+}
+.rail-button {
+    -fx-background-color: transparent;
+    -fx-background-radius: 10;
+    -fx-border-color: transparent;
+    -fx-border-radius: 10;
+    -fx-padding: 0;
+    -fx-cursor: hand;
+}
+/* Vector icon, recoloured by the rail state exactly like the nav rail does it: a
+   Region painted with an SVGPath shape takes its colour from -fx-background-color. */
+.rail-icon { -fx-background-color: -ink; }
+.rail-button:hover { -fx-background-color: -accent-soft; }
+.rail-button.active {
+    -fx-background-color: -accent;
+    -fx-text-fill: white;
+}
+.rail-button.active .rail-icon { -fx-background-color: white; }
+
+/* Zoom controls, bottom-right, stacked above the map's attribution line. */
+.zoom-stack { -fx-background-color: transparent; }
+.zoom-stack .button {
+    -fx-background-color: -surface;
+    -fx-background-radius: 10;
+    -fx-border-color: -line;
+    -fx-border-radius: 10;
+    -fx-font-size: 12px;
+    -fx-padding: 5 10 5 10;
+    -fx-effect: dropshadow(gaussian, rgba(20,27,45,0.12), 10, 0, 0, 3);
+}
+.zoom-stack .button:hover { -fx-border-color: -accent; }
+
+/* Tour info card, bottom-left: sits clear of the scale bar the map paints itself. */
+.tour-card {
+    -fx-background-color: -surface;
+    -fx-background-radius: 12;
+    -fx-padding: 8 10 8 10;
+    -fx-effect: dropshadow(gaussian, rgba(20,27,45,0.16), 16, 0, 0, 4);
+}
+.tour-row { -fx-background-color: transparent; }
+.tour-card .link-button { -fx-font-size: 11px; -fx-padding: 2 6 2 6; }
+
+/* Popover card anchored beside the rail (legend, help, layers). */
+.panel-popover {
+    -fx-background-color: -surface;
+    -fx-background-radius: 12;
+    -fx-padding: 12;
+    -fx-effect: dropshadow(gaussian, rgba(20,27,45,0.20), 20, 0, 0, 6);
+}
+/* Bottom-sheet variant on a narrow window: it drops from the bottom edge instead. */
+.panel-popover.sheet-popover {
+    -fx-background-radius: 14;
+    -fx-effect: dropshadow(gaussian, rgba(20,27,45,0.24), 24, 0, 0, -4);
+}
+
+/* Bottom sheets get a visible grip instead of a close button in their header. */
+.sheet-handle {
+    -fx-background-color: #cbd4e3;
+    -fx-background-radius: 20;
+    -fx-min-width: 72px; -fx-pref-width: 72px; -fx-max-width: 72px;
+    -fx-min-height: 5px; -fx-pref-height: 5px; -fx-max-height: 5px;
+    -fx-cursor: hand;
+}
+.sheet-handle:hover { -fx-background-color: #9aa7bd; }
+.tracking-drawer.bottom-sheet {
+    -fx-border-radius: 14 14 0 0;
+    -fx-background-radius: 14 14 0 0;
+    -fx-border-width: 1 1 0 1;
 }

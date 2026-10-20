@@ -3,7 +3,6 @@ package edu.pb.dcls;
 import edu.pb.dcls.Domain.Role;
 import edu.pb.dcls.Domain.Shipment;
 import edu.pb.dcls.Domain.User;
-import javafx.application.Platform;
 import javafx.collections.FXCollections;
 import javafx.scene.control.Button;
 import javafx.scene.control.ProgressBar;
@@ -17,8 +16,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Consumer;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -27,40 +24,31 @@ class OrdersSelectionTest {
 
     @Test
     void ordersPageBuildsForAnAdmin() throws Exception {
-        AtomicReference<Throwable> failure = new AtomicReference<>();
-        CountDownLatch done = new CountDownLatch(1);
-        Platform.startup(() -> {
-            try {
-                MockRepository source = new MockRepository();
-                CachedRepository cached = new CachedRepository(source);
-                cached.refresh();
+        // FxTestKit owns the one toolkit this JVM gets; OrdersView and DashboardView
+        // both have to build on the FX thread.
+        FxTestKit.run(() -> {
+            MockRepository source = new MockRepository();
+            CachedRepository cached = new CachedRepository(source);
+            cached.refresh();
 
-                DclsApp app = new DclsApp();
-                app.repository = cached;
-                app.auth = new AppServices.AuthService(cached);
-                app.access = new AppServices.AccessService();
-                app.fleet = new AppServices.FleetService(cached);
-                app.orders = new AppServices.OrderService(cached);
-                app.routeService = new AppServices.RouteService(cached);
-                app.tracking = new AppServices.TrackingService(cached);
-                app.currentUser = admin(app);
+            DclsApp app = new DclsApp();
+            app.repository = cached;
+            app.auth = new AppServices.AuthService(cached);
+            app.access = new AppServices.AccessService();
+            app.fleet = new AppServices.FleetService(cached);
+            app.orders = new AppServices.OrderService(cached);
+            app.routeService = new AppServices.RouteService(cached);
+            app.tracking = new AppServices.TrackingService(cached);
+            app.currentUser = admin(app);
 
-                VBox page = new OrdersView(app).page();
-                assertNotNull(page, "Orders page must build");
-                assertNotNull(page.getChildren());
-                assertNotNull(page.getChildren().get(0), "page must have a header");
+            VBox page = new OrdersView(app).page();
+            assertNotNull(page, "Orders page must build");
+            assertNotNull(page.getChildren());
+            assertNotNull(page.getChildren().get(0), "page must have a header");
 
-                selectionSurvivesSearch(page);
-                dashboardBuildsAndTicksInPlace(app);
-            } catch (Throwable t) {
-                failure.set(t);
-            } finally {
-                done.countDown();
-            }
+            selectionSurvivesSearch(page);
+            dashboardBuildsAndTicksInPlace(app);
         });
-        done.await();
-        Platform.exit();
-        if (failure.get() != null) throw new AssertionError(failure.get());
     }
 
 /** Typing in the search box re-runs refresh(); the selected order must stay selected. */

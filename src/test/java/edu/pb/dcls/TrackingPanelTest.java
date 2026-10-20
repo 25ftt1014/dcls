@@ -30,24 +30,25 @@ class TrackingPanelTest {
                 LocalDateTime.now(), null);
     }
 
-    @Nested
+@Nested
     @DisplayName("fixed width")
     class FixedWidth {
-/** Column widths as laid out in TrackingView. They must leave room for the
-         *  vertical scrollbar, not merely fit the content area: hitting the content
-         *  width exactly is what made CONSTRAINED_RESIZE_POLICY shrink every column
-         *  and ellipsis-clip them all at once. */
-        private final double columns = 88 + 76 + 76 + 84 + 68;
+/** Columns that hold their width in TrackingView. Destination is not listed: it is
+         *  the flexible one, taking whatever these leave. They must fit the content
+         *  width *including* what the vertical scrollbar claims, because hitting the
+         *  content width exactly is what made CONSTRAINED_RESIZE_POLICY shrink every
+         *  column and ellipsis-clip the Status chips. */
+        private final double columns = 72 + 68 + 76 + 96;
 
         /** What TableView's vertical scrollbar claims from the content width. */
         private final double scrollbar = 16;
 
         @Test
         void widthIsFixed() {
-            assertEquals(440, TrackingView.PANEL_WIDTH);
+            assertEquals(480, TrackingView.PANEL_WIDTH);
     }
 
-    @Test
+        @Test
     void columnsFitInsideThePanel() {
             double content = TrackingView.PANEL_WIDTH - UiFactory.PANEL_PADDING_H;
         assertTrue(columns <= content,
@@ -56,22 +57,34 @@ class TrackingPanelTest {
 
     @Test
     void columnsLeaveRoomForTheScrollbar() {
-        double content = TrackingView.PANEL_WIDTH - UiFactory.PANEL_PADDING_H;
-        assertTrue(columns + scrollbar <= content,
+            double content = TrackingView.PANEL_WIDTH - UiFactory.PANEL_PADDING_H;
+            assertTrue(columns + scrollbar <= content,
        "columns " + columns + " plus a " + scrollbar
                         + "px scrollbar do not fit inside " + content);
-    }
+        }
 
         @Test
+    void destinationKeepsAUsableShare() {
+            // The flexible column must still be wide enough to wrap a town and a street
+            // rather than showing one word per line.
+            double content = TrackingView.PANEL_WIDTH - UiFactory.PANEL_PADDING_H;
+            double destination = content - columns - scrollbar;
+            assertTrue(destination >= 100,
+                    "Destination would be left with " + destination + "px");
+        }
+
+@Test
     void overlayBelowTheBreakpointAndPushAbove() {
-        // Below the breakpoint the drawer floats over the map with a scrim; at or above
-        // it pushes the map aside. Measured on the map container, not the stage, because
-        // the nav sidebar already consumes ~200px.
-        assertTrue(TrackingView.drawerOverlay(0));
-        assertTrue(TrackingView.drawerOverlay(900));
-        assertTrue(TrackingView.drawerOverlay(TrackingView.PUSH_MIN_WIDTH - 0.1));
-        assertFalse(TrackingView.drawerOverlay(TrackingView.PUSH_MIN_WIDTH));
-        assertFalse(TrackingView.drawerOverlay(1600));
+        // The drawer never pushes the map any more: it is an overlay at every width.
+        // What the breakpoint decides instead is whether the layout is compact — the
+        // rail collapses into one menu button and the panels become bottom sheets.
+        // Measured on the map container, not the stage, because the nav sidebar already
+        // consumes ~200px.
+        assertTrue(TrackingView.compactLayout(0));
+        assertTrue(TrackingView.compactLayout(799));
+        assertTrue(TrackingView.compactLayout(TrackingView.COMPACT_MIN_WIDTH - 0.1));
+        assertFalse(TrackingView.compactLayout(TrackingView.COMPACT_MIN_WIDTH));
+        assertFalse(TrackingView.compactLayout(1600));
     }
 
     @Test

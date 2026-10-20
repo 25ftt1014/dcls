@@ -67,7 +67,7 @@ public final class JdbcRepository implements Repository {
             try (PreparedStatement statement = connection.prepareStatement("SELECT * FROM users ORDER BY full_name"); ResultSet rows = statement.executeQuery()) {
                 while (rows.next()) result.add(new User(rows.getString("id"), rows.getString("full_name"), rows.getString("email"),
                         rows.getString("phone"), rows.getString("password_hash"), rows.getString("password_salt"),
-                        Role.valueOf(rows.getString("role_code")), rows.getBoolean("active")));
+                        Role.valueOf(rows.getString("role_code")), rows.getBoolean("active"), rows.getBoolean("pending")));
             }
             return result;
         });
@@ -81,7 +81,7 @@ public final class JdbcRepository implements Repository {
                     if (!rows.next()) return Optional.empty();
                     return Optional.of(new User(rows.getString("id"), rows.getString("full_name"), rows.getString("email"),
                             rows.getString("phone"), rows.getString("password_hash"), rows.getString("password_salt"),
-                            Role.valueOf(rows.getString("role_code")), rows.getBoolean("active")));
+                            Role.valueOf(rows.getString("role_code")), rows.getBoolean("active"), rows.getBoolean("pending")));
                 }
             }
         });
@@ -90,14 +90,15 @@ public final class JdbcRepository implements Repository {
     @Override public void saveUser(User user) {
         write(connection -> {
             try (PreparedStatement statement = connection.prepareStatement("""
-                    INSERT INTO users(id, full_name, email, phone, password_hash, password_salt, role_code, active)
-                    VALUES(?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE full_name=VALUES(full_name), email=VALUES(email),
+                    INSERT INTO users(id, full_name, email, phone, password_hash, password_salt, role_code, active, pending)
+                    VALUES(?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE full_name=VALUES(full_name), email=VALUES(email),
                     phone=VALUES(phone), password_hash=VALUES(password_hash), password_salt=VALUES(password_salt),
-                    role_code=VALUES(role_code), active=VALUES(active)
+                    role_code=VALUES(role_code), active=VALUES(active), pending=VALUES(pending)
                     """)) {
                 statement.setString(1, user.id()); statement.setString(2, user.name()); statement.setString(3, user.email());
                 statement.setString(4, user.phone()); statement.setString(5, user.passwordHash()); statement.setString(6, user.passwordSalt());
-                statement.setString(7, user.role().name()); statement.setBoolean(8, user.active()); statement.executeUpdate();
+                statement.setString(7, user.role().name()); statement.setBoolean(8, user.active());
+                statement.setBoolean(9, user.pending()); statement.executeUpdate();
             }
             return null;
         });
@@ -244,6 +245,7 @@ public final class JdbcRepository implements Repository {
             return null;
         });
     }
+    @Override public void deleteRoute(String id) { write(connection -> { execute(connection, "DELETE FROM routes WHERE id=?", id); return null; }); }
 
     @Override public List<MaintenanceRecord> maintenanceRecords() {
         return read(connection -> {
@@ -260,6 +262,14 @@ public final class JdbcRepository implements Repository {
             statement.setString(1, record.id()); statement.setString(2, record.vehicleId()); statement.setDate(3, Date.valueOf(record.date())); statement.setDouble(4, record.mileageKm()); statement.setString(5, record.description()); statement.setDouble(6, record.cost()); statement.executeUpdate();
         } return null;
     }); }
+    @Override public void saveMaintenanceAndVehicle(MaintenanceRecord record, Vehicle vehicle) { transaction(connection -> {
+        try (PreparedStatement statement = connection.prepareStatement("INSERT INTO maintenance_records(id,vehicle_id,service_date,mileage_km,description,cost) VALUES(?,?,?,?,?,?) ON DUPLICATE KEY UPDATE service_date=VALUES(service_date), mileage_km=VALUES(mileage_km), description=VALUES(description), cost=VALUES(cost)")) {
+            statement.setString(1, record.id()); statement.setString(2, record.vehicleId()); statement.setDate(3, Date.valueOf(record.date())); statement.setDouble(4, record.mileageKm()); statement.setString(5, record.description()); statement.setDouble(6, record.cost()); statement.executeUpdate();
+        }
+        saveVehicle(connection, vehicle);
+        return null;
+    }); }
+    @Override public void deleteMaintenance(String id) { write(connection -> { execute(connection, "DELETE FROM maintenance_records WHERE id=?", id); return null; }); }
     @Override public List<FuelRecord> fuelRecords() {
         return read(connection -> {
             List<FuelRecord> result = new ArrayList<>();
@@ -275,12 +285,26 @@ public final class JdbcRepository implements Repository {
             statement.setString(1, record.id()); statement.setString(2, record.vehicleId()); statement.setDate(3, Date.valueOf(record.date())); statement.setDouble(4, record.mileageKm()); statement.setDouble(5, record.litres()); statement.setDouble(6, record.cost()); statement.executeUpdate();
         } return null;
     }); }
+    @Override public void saveFuelAndVehicle(FuelRecord record, Vehicle vehicle) { transaction(connection -> {
+        try (PreparedStatement statement = connection.prepareStatement("INSERT INTO fuel_records(id,vehicle_id,refuel_date,mileage_km,litres,cost) VALUES(?,?,?,?,?,?) ON DUPLICATE KEY UPDATE refuel_date=VALUES(refuel_date), mileage_km=VALUES(mileage_km), litres=VALUES(litres), cost=VALUES(cost)")) {
+            statement.setString(1, record.id()); statement.setString(2, record.vehicleId()); statement.setDate(3, Date.valueOf(record.date())); statement.setDouble(4, record.mileageKm()); statement.setDouble(5, record.litres()); statement.setDouble(6, record.cost()); statement.executeUpdate();
+        }
+        saveVehicle(connection, vehicle);
+        return null;
+    }); }
+    @Override public void deleteFuel(String id) { write(connection -> { execute(connection, "DELETE FROM fuel_records WHERE id=?", id); return null; }); }
     @Override public List<TrackingPoint> trackingHistory() {
         return read(connection -> {
             List<TrackingPoint> result = new ArrayList<>();
             try (PreparedStatement statement = connection.prepareStatement("SELECT * FROM tracking_history ORDER BY recorded_at DESC LIMIT 500"); ResultSet rows = statement.executeQuery()) {
                 while (rows.next()) { Timestamp recorded = rows.getTimestamp("recorded_at");
-                    result.add(new TrackingPoint(rows.getString("id"), rows.getString("vehicle_id"), rows.getString("shipment_id"), rows.getDouble("x_coord"), rows.getDouble("y_coord"), rows.getInt("eta_minutes"), recorded.toLocalDateTime())); }
+                    double heading = rows.getDouble("heading_deg");
+                    Double headingDeg = rows.wasNull() ? null : heading;
+                    double accuracy = rows.getDouble("accuracy_m");
+                    Double accuracyM = rows.wasNull() ? null : accuracy;
+                    result.add(new TrackingPoint(rows.getString("id"), rows.getString("vehicle_id"), rows.getString("shipment_id"),
+                            rows.getDouble("x_coord"), rows.getDouble("y_coord"), rows.getInt("eta_minutes"), recorded.toLocalDateTime(),
+                            rows.getDouble("speed_kmh"), headingDeg, accuracyM, FixType.valueOf(rows.getString("fix_type")), rows.getString("source"))); }
             }
             return result;
         });
@@ -295,12 +319,21 @@ public final class JdbcRepository implements Repository {
     }
 
     @Override public void saveTrackingPoint(TrackingPoint point) { write(connection -> {
-        try (PreparedStatement statement = connection.prepareStatement("INSERT INTO tracking_history(vehicle_id,shipment_id,x_coord,y_coord,eta_minutes,recorded_at) VALUES(?,?,?,?,?,?)")) {
-            statement.setString(1, point.vehicleId()); statement.setString(2, point.shipmentId()); statement.setDouble(3, point.x()); statement.setDouble(4, point.y()); statement.setInt(5, point.etaMinutes()); statement.setTimestamp(6, Timestamp.valueOf(point.recordedAt())); statement.executeUpdate();
+        try (PreparedStatement statement = connection.prepareStatement("INSERT INTO tracking_history(vehicle_id,shipment_id,x_coord,y_coord,eta_minutes,recorded_at,speed_kmh,heading_deg,accuracy_m,fix_type,source) VALUES(?,?,?,?,?,?,?,?,?,?,?)")) {
+            statement.setString(1, point.vehicleId()); statement.setString(2, point.shipmentId()); statement.setDouble(3, point.x()); statement.setDouble(4, point.y()); statement.setInt(5, point.etaMinutes()); statement.setTimestamp(6, Timestamp.valueOf(point.recordedAt()));
+            statement.setDouble(7, point.speedKmh());
+            if (point.headingDeg() == null) statement.setNull(8, java.sql.Types.DECIMAL); else statement.setDouble(8, point.headingDeg());
+            if (point.accuracyM() == null) statement.setNull(9, java.sql.Types.DECIMAL); else statement.setDouble(9, point.accuracyM());
+            statement.setString(10, point.fixType().name()); statement.setString(11, point.source());
+            statement.executeUpdate();
         }
         pruneTrackingHistory(connection);
         return null;
     }); }
+
+    @Override public void deleteTrackingForVehicle(String vehicleId) {
+        write(connection -> { execute(connection, "DELETE FROM tracking_history WHERE vehicle_id=?", vehicleId); return null; });
+    }
 
     private void transaction(SqlWork<Void> work) {
         try (Connection connection = connection()) {
