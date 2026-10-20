@@ -277,8 +277,8 @@ final class DashboardView {
         listPanel.getChildren().addAll(summary, deliveryRows);
 
         VBox rightColumn = new VBox(14, statusPanel, listPanel);
-        rightColumn.setPrefWidth(264);
-        rightColumn.setMinWidth(264);
+        rightColumn.setPrefWidth(300);
+        rightColumn.setMinWidth(300);
 
         HBox content = new HBox(14, mapPanel, rightColumn);
         HBox.setHgrow(mapPanel, ALWAYS);
@@ -634,21 +634,38 @@ final class DashboardView {
         }
     }
 
-    private HBox deliveryRow(Shipment shipment) {
-        Label id = new Label(shipment.id());
+    /** Shortens a UUID-style order id to its last 4 characters so the card stays readable.
+     *  Regular order ids (e.g. "DCLS-2401") are returned unchanged. */
+    static String shortOrderId(String id) {
+        if (id == null) return "—";
+        if (id.length() <= 8) return id;
+        if (id.contains("-") && id.length() > 20) {
+            return "…" + id.substring(id.length() - 4);
+        }
+        return id;
+    }
+
+    private VBox deliveryRow(Shipment shipment) {
+        Label id = new Label(shortOrderId(shipment.id()));
         id.getStyleClass().add("delivery-id");
+        id.setTooltip(new Tooltip(shipment.id()));
         Label vehicle = new Label(app.vehiclePlate(shipment.vehicleId()));
         vehicle.getStyleClass().add("muted");
-        Label destination = new Label(shipment.address());
-        destination.getStyleClass().add("muted");
-        destination.setWrapText(true);
-        destination.setMaxWidth(180);
-        destination.setTooltip(new Tooltip(shipment.address()));
         Label eta = new Label(etaFor(shipment));
         eta.getStyleClass().add("detail-value");
         Region spacer = new Region();
         HBox.setHgrow(spacer, ALWAYS);
-        HBox row = new HBox(8, id, vehicle, destination, spacer, eta);
+        HBox line1 = new HBox(8, id, vehicle, spacer, eta);
+        line1.setAlignment(Pos.CENTER_LEFT);
+        line1.setPickOnBounds(false);
+
+        Label destination = new Label(shipment.address());
+        destination.getStyleClass().add("muted");
+        destination.setWrapText(true);
+        destination.setMaxWidth(Double.MAX_VALUE);
+        destination.setTooltip(new Tooltip(shipment.address()));
+
+        VBox row = new VBox(2, line1, destination);
         row.getStyleClass().add("pill-row");
         row.setOnMouseClicked(e -> {
             if (shipment.vehicleId() != null) highlightVehicle(shipment.vehicleId());

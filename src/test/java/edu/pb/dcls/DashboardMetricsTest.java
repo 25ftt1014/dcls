@@ -70,6 +70,13 @@ class DashboardMetricsTest {
     }
 
     @Test
+    void shortOrderIdShortensUuidsAndKeepsRegularIds() {
+        assertEquals("DCLS-2401", DashboardView.shortOrderId("DCLS-2401"));
+        assertEquals("…157a", DashboardView.shortOrderId("009270a-31c9-48b7-31b7-157a"));
+        assertEquals("—", DashboardView.shortOrderId(null));
+    }
+
+    @Test
     void onRoadCountsOnlyVehiclesOnADelivery() {
         List<Vehicle> fleet = List.of(
                 vehicle("v-1", VehicleStatus.IN_DELIVERY),
