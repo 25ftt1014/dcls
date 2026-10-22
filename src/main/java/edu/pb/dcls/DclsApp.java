@@ -69,7 +69,7 @@ import static edu.pb.dcls.MapRenderer.*;
 import static edu.pb.dcls.UiFactory.*;
 import static javafx.scene.layout.Priority.ALWAYS;
 
-/** Desktop client for the Delivery Logistics Simulator. */
+/** Desktop client for the Delivery Company Logistics Simulator. */
 public final class DclsApp extends Application {
     static final String DEMO_EMAIL = "admin@dcls.local";
     static final String DEMO_PASSWORD = "demo1234";
@@ -154,7 +154,7 @@ public final class DclsApp extends Application {
 
     @Override public void start(Stage stage) {
         this.stage = stage;
-        stage.setTitle("DCLS — Delivery Logistics Simulator");
+        stage.setTitle("DCLS — Delivery Company Logistics Simulator");
         stage.setMinWidth(1080);
         stage.setMinHeight(560);
         stage.setWidth(900);
@@ -201,7 +201,7 @@ public final class DclsApp extends Application {
         VBox introduction = new VBox(0); introduction.setPrefWidth(404); introduction.setMinWidth(404); introduction.setPadding(new Insets(24, 50, 24, 50));
         introduction.getStyleClass().add("login-brand-panel");
         Label brand = new Label("Trackify"); brand.setStyle("-fx-font-size: 21px;-fx-font-weight:800;-fx-text-fill:white;");
-        Label subtitle = new Label("Delivery Logistics Simulator"); subtitle.setStyle("-fx-font-size:11px;-fx-text-fill:#d1d9eb;");
+        Label subtitle = new Label("Delivery Company Logistics Simulator"); subtitle.setStyle("-fx-font-size:11px;-fx-text-fill:#d1d9eb;");
         VBox brandLine = new VBox(2, brand, subtitle);
         Region brandGap = new Region(); VBox.setVgrow(brandGap, ALWAYS);
         VBox statement = new VBox(3); statement.setAlignment(Pos.CENTER);
@@ -292,7 +292,7 @@ public final class DclsApp extends Application {
         HBox frame = new HBox(0); frame.setAlignment(Pos.CENTER); frame.setMaxSize(742, 432); frame.setPrefSize(742, 432);
         VBox introduction = new VBox(0); introduction.setPrefWidth(404); introduction.setMinWidth(404); introduction.setPadding(new Insets(24, 32, 24, 32)); introduction.getStyleClass().add("login-brand-panel");
         Label brand = new Label("Trackify"); brand.setStyle("-fx-font-size:21px;-fx-font-weight:800;-fx-text-fill:white;");
-        Label subtitle = new Label("Delivery Logistics Simulator"); subtitle.setStyle("-fx-font-size:11px;-fx-text-fill:#d1d9eb;");
+        Label subtitle = new Label("Delivery Company Logistics Simulator"); subtitle.setStyle("-fx-font-size:11px;-fx-text-fill:#d1d9eb;");
         Label slogan = new Label("MOVE SMARTER"); slogan.setStyle("-fx-font-size:22px;-fx-font-weight:800;-fx-text-fill:white;");
         Label sloganText = new Label("Plan, dispatch, and monitor every delivery."); sloganText.setWrapText(true); sloganText.setStyle("-fx-font-size:10px;-fx-text-fill:#d1d9eb;");
         Region topGap = new Region(); VBox.setVgrow(topGap, ALWAYS); Region bottomGap = new Region(); VBox.setVgrow(bottomGap, ALWAYS);
