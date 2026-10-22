@@ -9,9 +9,9 @@ Requirements: Java 21 (JDK), Maven 3.9 or later, and a running MySQL database in
 Set the database connection variables in PowerShell, then start the app:
 
 ```powershell
-$env:DCLS_DB_URL = 'jdbc:mysql://localhost:3306/dcls'
-$env:DCLS_DB_USER = 'dcls_app'
-$env:DCLS_DB_PASSWORD = 'choose-a-strong-password'
+$env:DCLS_DB_URL = 'jdbc:mysql://database.jailanirahman.com/25FTT1014'
+$env:DCLS_DB_USER = '25FTT1014'
+$env:DCLS_DB_PASSWORD = 'password'
 mvn javafx:run
 ```
 
