@@ -2,7 +2,7 @@
 
 Java 21 and JavaFX desktop application for the DCLS mini project. MySQL is the normal data mode so app changes survive restarts. The in-memory classroom demo is available by explicit opt-in.
 
-## Run the app with MySQL
+## Run the app with the shared MySQL database
 
 Requirements: Java 21 (JDK), Maven 3.9 or later, and a running MySQL database initialized with `src\main\resources\db\schema.sql`.
 
@@ -11,7 +11,7 @@ Set the database connection variables in PowerShell, then start the app:
 ```powershell
 $env:DCLS_DB_URL = 'jdbc:mysql://database.jailanirahman.com/25FTT1014'
 $env:DCLS_DB_USER = '25FTT1014'
-$env:DCLS_DB_PASSWORD = 'password'
+$env:DCLS_DB_PASSWORD = 'pssword'
 mvn javafx:run
 ```
 
@@ -75,7 +75,7 @@ java -jar target\distribution\delivery-logistics-simulator-1.0.0.jar
 
 Java 21 must be installed on the computer running the JAR. JavaFX runtime libraries are included in `lib` for Windows builds.
 
-## MySQL setup
+## Optional local MySQL setup
 
 The app uses the JDBC repository by default. To set up a local MySQL database:
 
@@ -92,13 +92,13 @@ FLUSH PRIVILEGES;
 4. Set the connection variables in the PowerShell session, then start the app:
 
 ```powershell
-$env:DCLS_DB_URL = 'jdbc:mysql://database.jailanirahman.com/25FTT1014'
-$env:DCLS_DB_USER = '25FTT1014'
-$env:DCLS_DB_PASSWORD = '25FTT1014'
+$env:DCLS_DB_URL = 'jdbc:mysql://localhost:3306/dcls'
+$env:DCLS_DB_USER = 'dcls_app'
+$env:DCLS_DB_PASSWORD = 'choose-a-strong-password'
 mvn javafx:run
 ```
 
-On an empty database, the first account registered becomes its administrator. Later self-registered accounts must be approved by an administrator. MySQL mode does not insert demo users or sample business records. Keep real database credentials out of source control. Import the schema before starting the app; `schema.sql` needs an administrative account, while the app account only needs permission to read and write rows.
+On an empty database, the first account registered becomes its administrator. Later self-registered accounts must be approved by an administrator. MySQL mode does not insert demo users or sample business records. Import the schema before starting the app; `schema.sql` needs an administrative account, while the local app account only needs permission to read and write rows. The shared coursework connection is listed above; do not commit additional local or production credentials.
 
 ### Setting up on a new machine
 
