@@ -124,7 +124,7 @@ Because each developer has a separate copy, two people editing data at the same 
 ## Source layout
 
 - `Domain.java` — shared entities, roles, statuses, and repository contract
-- `AppServices.java` — authentication, role access, fleet/order rules, route estimates, and tracking simulation
+- `AppServices.java` — authentication, role access, fleet/order rules, route estimates, and GPS tracking services
 - `MockRepository.java` — classroom demo data
 - `JdbcRepository.java` — MySQL persistence through JDBC
 - `DclsApp.java` — JavaFX views, dialogs, tables, filters, and navigation
@@ -132,3 +132,18 @@ Because each developer has a separate copy, two people editing data at the same 
 - `src/main/resources/edu/pb/dcls/styles.css` — application styles
 
 The project report and signed task distribution sheet are separate group deliverables.
+
+## Feature guide and demonstration checks
+
+See [the current feature guide](docs/current-feature-guide.md) for role access,
+dashboard metric definitions, Fleet and Orders workflows, and the relationship
+between the wireframes and the implemented screens.
+
+See [the verification checklist](docs/verification-checklist.md) for repeatable
+demonstration steps and guidance on recording actual results for an individual
+reflection. These documents describe the existing build; they do not add a
+Warehouse or Reports screen.
+
+The [verification record](docs/verification-record-2026-10-31.md) records the
+automated checks run for this documentation change, including the Java setup
+issue and the limits of the results.
